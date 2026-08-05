@@ -1,0 +1,10 @@
+{
+  "gallery_root": "",
+  "todo_folder": ".toDo",
+  "script_folder": ".Script",
+  "trash_folder": ".trash",
+  "ai_folder": ".AI",
+  "multiple_folder": "!Multiple",
+  "crossovers_folder": "!Crossovers",
+  "franchise_codes": {}
+}

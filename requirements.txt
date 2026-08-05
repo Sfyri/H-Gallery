@@ -1,0 +1,2 @@
+fastapi[standard]
+Pillow>=11,<13

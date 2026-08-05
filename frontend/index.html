@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Galleria HDD</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header class="topbar">
+        <div class="brand-block">
+            <h1>Galleria HDD</h1>
+            <p>Archivio locale di immagini e video</p>
+        </div>
+
+        <nav class="main-nav" aria-label="Navigazione principale">
+            <button class="nav-button active" data-view="gallery" type="button">Galleria</button>
+            <button class="nav-button" data-view="todo" type="button">
+                New <span id="todo-badge" class="badge">0</span>
+            </button>
+            <button class="nav-button" data-view="trash" type="button">
+                Cestino <span id="trash-badge" class="badge">0</span>
+            </button>
+            <button class="nav-button" data-view="ranking" type="button">Classifica</button>
+            <button class="nav-button" data-view="settings" type="button">Impostazioni</button>
+        </nav>
+    </header>
+
+    <main>
+        <p id="global-status" class="status-message global-status"></p>
+
+        <section id="gallery-view" class="app-view">
+            <div class="gallery-toolbar">
+                <div id="breadcrumb" class="breadcrumb">
+                    <button type="button" data-gallery-home>Galleria</button>
+                </div>
+
+                <div class="global-search-wrap">
+                    <input
+                        id="global-search"
+                        type="search"
+                        autocomplete="off"
+                        placeholder="Cerca personaggio o tag..."
+                    >
+                    <div id="global-search-results" class="floating-results"></div>
+                </div>
+            </div>
+
+            <section id="overview-panel">
+                <div id="overview-summary" class="stat-grid"></div>
+                <div id="franchise-grid" class="collection-grid"></div>
+            </section>
+
+            <section id="franchise-panel" hidden>
+                <div class="section-heading">
+                    <div>
+                        <h2 id="franchise-title"></h2>
+                        <p id="franchise-subtitle"></p>
+                    </div>
+                    <button id="back-to-overview" class="secondary-button" type="button">Torna alle serie</button>
+                </div>
+                <div id="character-grid" class="collection-grid"></div>
+            </section>
+
+            <section id="media-panel" hidden>
+                <div class="section-heading media-heading">
+                    <div>
+                        <h2 id="media-title"></h2>
+                        <p id="media-subtitle"></p>
+                    </div>
+                    <div id="character-score-box" class="score-box" hidden>
+                        <button id="character-score-minus" type="button" aria-label="Diminuisci punteggio">−</button>
+                        <strong id="character-score-value">0</strong>
+                        <button id="character-score-plus" type="button" aria-label="Aumenta punteggio">+</button>
+                    </div>
+                </div>
+
+                <form id="media-filter-form" class="filter-bar">
+                    <input id="media-search" type="search" placeholder="Cerca nei file, tag o personaggi">
+                    <select id="media-type-filter" aria-label="Tipo di file">
+                        <option value="">Immagini e video</option>
+                        <option value="image">Solo immagini</option>
+                        <option value="video">Solo video</option>
+                    </select>
+                    <select id="media-ai-filter" aria-label="Filtro IA">
+                        <option value="">Tutti</option>
+                        <option value="true">Solo IA</option>
+                        <option value="false">Escludi IA</option>
+                    </select>
+                    <input id="media-tag-filter" type="text" placeholder="Tag separati da virgola">
+                    <select id="media-sort" aria-label="Ordinamento">
+                        <option value="newest">Più recenti</option>
+                        <option value="oldest">Meno recenti</option>
+                        <option value="name_asc">Nome A–Z</option>
+                        <option value="name_desc">Nome Z–A</option>
+                        <option value="size_desc">Più grandi</option>
+                        <option value="size_asc">Più piccoli</option>
+                    </select>
+                    <button type="submit">Applica</button>
+                    <button id="clear-media-filters" class="secondary-button" type="button">Pulisci</button>
+                </form>
+
+                <p id="media-result-summary" class="result-summary"></p>
+                <div id="gallery-media-grid" class="media-grid"></div>
+                <div id="pagination" class="pagination"></div>
+            </section>
+        </section>
+
+        <section id="todo-view" class="app-view" hidden>
+            <div class="section-heading">
+                <div>
+                    <h2>New</h2>
+                    <p id="todo-folder-path">File in attesa di organizzazione</p>
+                </div>
+                <button id="refresh-todo-button" type="button">Aggiorna file</button>
+            </div>
+            <p id="todo-file-count" class="result-summary">Caricamento...</p>
+            <div id="todo-media-grid" class="media-grid"></div>
+        </section>
+
+        <section id="trash-view" class="app-view" hidden>
+            <div class="section-heading">
+                <div>
+                    <h2>Cestino</h2>
+                    <p>I file restano recuperabili finché non vengono eliminati definitivamente.</p>
+                </div>
+                <div class="heading-actions">
+                    <button id="refresh-trash-button" type="button" class="secondary-button">Aggiorna</button>
+                    <button id="empty-trash-button" type="button" class="danger-button">Svuota cestino</button>
+                </div>
+            </div>
+            <p id="trash-summary" class="result-summary">Caricamento...</p>
+            <div id="trash-media-grid" class="media-grid"></div>
+            <div id="trash-pagination" class="pagination"></div>
+        </section>
+
+        <section id="ranking-view" class="app-view" hidden>
+            <div class="section-heading">
+                <div>
+                    <h2>Classifica personaggi</h2>
+                    <p>I pulsanti − e + correggono o aumentano il punteggio.</p>
+                </div>
+                <select id="ranking-franchise-filter" aria-label="Filtra per serie">
+                    <option value="">Tutte le serie</option>
+                </select>
+            </div>
+            <div id="ranking-list" class="ranking-list"></div>
+        </section>
+
+        <section id="settings-view" class="app-view" hidden>
+            <div class="section-heading">
+                <div>
+                    <h2>Impostazioni</h2>
+                    <p>Manutenzione dell’archivio, backup e cache delle miniature.</p>
+                </div>
+            </div>
+
+            <div class="settings-grid">
+                <section class="settings-card">
+                    <h3>Archivio</h3>
+                    <p>Rileggi la struttura delle serie e allinea il database ai file presenti sul disco.</p>
+                    <div class="settings-actions">
+                        <button id="archive-sync-button" type="button">Sincronizza archivio</button>
+                        <button id="folder-sync-button" type="button" class="secondary-button">Rileggi cartelle</button>
+                    </div>
+                </section>
+
+                <section class="settings-card settings-card-wide">
+                    <div class="settings-card-heading">
+                        <div>
+                            <h3>Backup e ripristino</h3>
+                            <p>Protegge database, tag, associazioni, punteggi e configurazione. Immagini e video non vengono copiati.</p>
+                        </div>
+                        <button id="refresh-backups-button" type="button" class="secondary-button">Aggiorna elenco</button>
+                    </div>
+
+                    <dl class="cache-stats">
+                        <div><dt>Backup manuali</dt><dd id="manual-backup-count">—</dd></div>
+                        <div><dt>Backup automatici</dt><dd id="automatic-backup-count">—</dd></div>
+                        <div><dt>Limite automatici</dt><dd id="automatic-backup-limit">10</dd></div>
+                        <div><dt>Ultimo backup</dt><dd id="latest-backup-date">—</dd></div>
+                    </dl>
+
+                    <p id="backup-status" class="status-message"></p>
+                    <div class="settings-actions">
+                        <button id="create-backup-button" type="button">Crea backup adesso</button>
+                        <button id="export-metadata-button" type="button" class="secondary-button">Esporta metadati JSON</button>
+                        <button id="open-backups-folder-button" type="button" class="secondary-button">Apri cartella backup</button>
+                    </div>
+
+                    <div id="backup-list" class="backup-list"></div>
+                    <small>I backup automatici vengono creati prima della sincronizzazione, prima dello svuotamento del cestino e prima di un ripristino. Un backup del database non può recuperare file multimediali eliminati definitivamente.</small>
+                </section>
+
+                <section class="settings-card">
+                    <div class="settings-card-heading">
+                        <div>
+                            <h3>Cache miniature</h3>
+                            <p>Le miniature sono copie temporanee. Gli originali non vengono modificati.</p>
+                        </div>
+                        <button id="refresh-cache-stats-button" type="button" class="secondary-button">Aggiorna dati</button>
+                    </div>
+
+                    <dl class="cache-stats">
+                        <div><dt>Dimensione</dt><dd id="cache-size">—</dd></div>
+                        <div><dt>File cache</dt><dd id="cache-files">—</dd></div>
+                        <div><dt>Miniature statiche</dt><dd id="cache-static-count">—</dd></div>
+                        <div><dt>Anteprime animate</dt><dd id="cache-preview-count">—</dd></div>
+                        <div><dt>Formato</dt><dd>WebP · 512 px · qualità 80</dd></div>
+                        <div><dt>FFmpeg</dt><dd id="ffmpeg-status">—</dd></div>
+                    </dl>
+
+                    <p id="cache-status" class="status-message"></p>
+                    <div class="settings-actions">
+                        <button id="clean-cache-button" type="button">Pulisci cache inutilizzata</button>
+                        <button id="regenerate-thumbnails-button" type="button">Rigenera le thumbnail</button>
+                        <button id="clear-cache-button" type="button" class="danger-button">Svuota cache</button>
+                    </div>
+                    <small>Le anteprime animate di GIF e video vengono caricate solo al passaggio del mouse. Senza FFmpeg i video usano una miniatura statica generica.</small>
+                </section>
+            </div>
+        </section>
+    </main>
+
+    <dialog id="organize-dialog" class="large-dialog">
+        <form id="organize-form">
+            <div class="dialog-header">
+                <div>
+                    <h2>Organizza file</h2>
+                    <p id="dialog-filename"></p>
+                </div>
+                <button id="close-organize-dialog" class="icon-button" type="button" aria-label="Chiudi">×</button>
+            </div>
+
+            <div class="dialog-layout">
+                <div class="dialog-preview" id="dialog-preview"></div>
+                <div class="dialog-controls">
+                    <div class="field-header">
+                        <label for="organize-character-search">Cerca personaggio</label>
+                        <button id="open-create-character" type="button" class="text-button">+ Crea personaggio</button>
+                    </div>
+                    <input id="organize-character-search" type="search" autocomplete="off" placeholder="Esempio: char">
+                    <div id="organize-search-results" class="search-results"></div>
+
+                    <p class="field-label">Personaggi selezionati</p>
+                    <div id="organize-selected-characters" class="selected-characters"></div>
+
+                    <label for="organize-tags-input">Tag</label>
+                    <input id="organize-tags-input" type="text" placeholder="armor, smile, wallpaper">
+                    <small>Separali con una virgola.</small>
+
+                    <label class="checkbox-row">
+                        <input id="organize-ai-checkbox" type="checkbox">
+                        <span>Generato con IA</span>
+                    </label>
+
+                    <section class="destination-box">
+                        <strong>Destinazione automatica</strong>
+                        <span id="destination-preview">Seleziona almeno un personaggio.</span>
+                    </section>
+
+                    <p id="organize-status" class="status-message"></p>
+                    <div class="dialog-actions">
+                        <button id="cancel-organize" type="button" class="secondary-button">Annulla</button>
+                        <button id="submit-organize" type="submit">Rinomina e sposta</button>
+                    </div>
+                </div>
+            </div>
+        </form>
+    </dialog>
+
+    <dialog id="create-character-dialog" class="small-dialog">
+        <form id="create-character-form">
+            <div class="dialog-header">
+                <div>
+                    <h2>Crea personaggio</h2>
+                    <p>La cartella viene creata automaticamente.</p>
+                </div>
+                <button id="close-create-character" class="icon-button" type="button" aria-label="Chiudi">×</button>
+            </div>
+            <div class="small-dialog-body">
+                <label for="new-character-name">Nome personaggio</label>
+                <input id="new-character-name" type="text" maxlength="120" required>
+
+                <label for="franchise-select">Serie</label>
+                <select id="franchise-select" required></select>
+
+                <section id="new-franchise-fields" class="new-franchise-fields" hidden>
+                    <label for="new-franchise-name">Nome nuova serie</label>
+                    <input id="new-franchise-name" type="text" maxlength="120">
+
+                    <label for="new-franchise-code">Codice dei file (automatico)</label>
+                    <input id="new-franchise-code" type="text" maxlength="10" placeholder="Viene generato dal nome">
+                    <small>Può essere modificato. Se è già occupato, il programma aggiunge 01, 02, 03…</small>
+                </section>
+
+                <p id="create-character-status" class="status-message"></p>
+                <div class="dialog-actions">
+                    <button id="cancel-create-character" type="button" class="secondary-button">Annulla</button>
+                    <button id="submit-create-character" type="submit">Crea e seleziona</button>
+                </div>
+            </div>
+        </form>
+    </dialog>
+
+    <dialog id="file-dialog" class="large-dialog">
+        <form id="file-edit-form">
+            <div class="dialog-header">
+                <div>
+                    <h2 id="file-dialog-title">Dettagli file</h2>
+                    <p id="file-dialog-path"></p>
+                </div>
+                <button id="close-file-dialog" class="icon-button" type="button" aria-label="Chiudi">×</button>
+            </div>
+
+            <div class="dialog-layout">
+                <div class="dialog-preview" id="file-dialog-preview"></div>
+                <div class="dialog-controls">
+                    <dl id="file-properties" class="file-properties"></dl>
+
+                    <label for="edit-character-search">Personaggi presenti</label>
+                    <input id="edit-character-search" type="search" autocomplete="off" placeholder="Cerca e aggiungi personaggi">
+                    <div id="edit-search-results" class="search-results"></div>
+                    <div id="edit-selected-characters" class="selected-characters"></div>
+
+                    <label for="edit-tags-input">Tag</label>
+                    <input id="edit-tags-input" type="text" placeholder="Tag separati da virgola">
+
+                    <label class="checkbox-row">
+                        <input id="edit-ai-checkbox" type="checkbox">
+                        <span>Generato con IA</span>
+                    </label>
+                    <small>Modificare personaggi o IA può spostare e rinominare il file.</small>
+
+                    <p id="file-dialog-status" class="status-message"></p>
+                    <div class="dialog-actions split-actions">
+                        <div class="dialog-left-actions">
+                            <button id="reveal-file-button" type="button" class="secondary-button">Mostra in Esplora file</button>
+                            <button id="trash-file-button" type="button" class="danger-button">Sposta nel cestino</button>
+                        </div>
+                        <div>
+                            <button id="cancel-file-edit" type="button" class="secondary-button">Chiudi</button>
+                            <button id="save-file-edit" type="submit">Salva modifiche</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </form>
+    </dialog>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
