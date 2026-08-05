@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 from backend.database import get_connection
 from backend.file_manager import calculate_sha256
-from backend.scanner import get_media_type, load_config
+from backend.scanner import cleanup_empty_entities, get_media_type, load_config
 from backend.thumbnails import trash_preview_url, trash_thumbnail_url
 
 
@@ -137,6 +137,7 @@ def trash_gallery_file(file_id: int) -> dict[str, Any]:
             shutil.move(str(target), str(source))
         raise
 
+    cleanup_empty_entities()
     return {
         "status": "trashed",
         "trash_id": trash_id,
@@ -404,6 +405,8 @@ def restore_trash_item(trash_id: int, auto_rename: bool = False) -> dict[str, An
             shutil.move(str(destination), str(source))
         raise
 
+    _remove_empty_parents(source.parent, trash_root)
+    cleanup_empty_entities()
     return {
         "status": "restored",
         "trash_id": trash_id,
@@ -413,7 +416,11 @@ def restore_trash_item(trash_id: int, auto_rename: bool = False) -> dict[str, An
     }
 
 
-def permanently_delete_trash_item(trash_id: int) -> dict[str, Any]:
+def permanently_delete_trash_item(
+    trash_id: int,
+    *,
+    run_cleanup: bool = True,
+) -> dict[str, Any]:
     gallery_root, trash_root, _trash_name = _trash_root()
 
     with get_connection() as connection:
@@ -451,6 +458,8 @@ def permanently_delete_trash_item(trash_id: int) -> dict[str, Any]:
         )
 
     _remove_empty_parents(file_path.parent, trash_root)
+    if run_cleanup:
+        cleanup_empty_entities()
     return {"status": "deleted", "trash_id": trash_id}
 
 
@@ -468,11 +477,12 @@ def empty_trash(confirmation: str) -> dict[str, Any]:
     for row in rows:
         trash_id = int(row["id"])
         try:
-            permanently_delete_trash_item(trash_id)
+            permanently_delete_trash_item(trash_id, run_cleanup=False)
             deleted += 1
         except Exception as error:  # continua con gli altri elementi
             errors.append({"id": trash_id, "error": str(error)})
 
+    cleanup_empty_entities()
     return {"status": "emptied", "deleted": deleted, "errors": errors}
 
 

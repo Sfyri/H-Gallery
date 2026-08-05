@@ -14,7 +14,12 @@ from backend.file_manager import (
     find_next_filename,
     get_characters_by_ids,
 )
-from backend.scanner import list_todo_files, load_config, normalize_search_text
+from backend.scanner import (
+    cleanup_empty_entities,
+    list_todo_files,
+    load_config,
+    normalize_search_text,
+)
 from backend.thumbnails import gallery_preview_url, gallery_thumbnail_url
 
 
@@ -105,6 +110,43 @@ def _get_cover_for_prefix(connection, prefix: str) -> str | None:
     )
 
 
+def _get_cover_for_franchise(
+    connection,
+    franchise_id: int,
+    prefix: str,
+) -> str | None:
+    condition, params = _path_condition(prefix)
+    row = connection.execute(
+        f"""
+        SELECT f.id, f.size, f.modified_at
+        FROM files f
+        WHERE f.is_trashed = 0
+          AND f.media_type = 'image'
+          AND (
+              {condition}
+              OR EXISTS (
+                  SELECT 1
+                  FROM file_characters fc
+                  JOIN characters c ON c.id = fc.character_id
+                  WHERE fc.file_id = f.id AND c.franchise_id = ?
+              )
+          )
+        ORDER BY f.modified_at DESC, f.id DESC
+        LIMIT 1
+        """,
+        [*params, franchise_id],
+    ).fetchone()
+    return (
+        gallery_thumbnail_url(
+            int(row["id"]),
+            int(row["size"]),
+            float(row["modified_at"] or 0),
+        )
+        if row
+        else None
+    )
+
+
 def get_gallery_overview() -> dict[str, Any]:
     config = load_config()
     crossovers_folder = str(config.get("crossovers_folder", "!Crossovers"))
@@ -123,39 +165,62 @@ def get_gallery_overview() -> dict[str, Any]:
         for row in rows:
             prefix = str(row["relative_path"])
             condition, params = _path_condition(prefix)
+            franchise_id = int(row["id"])
             stats = connection.execute(
                 f"""
                 SELECT
-                    COUNT(*) AS total_files,
-                    SUM(CASE WHEN f.media_type = 'image' THEN 1 ELSE 0 END) AS images,
-                    SUM(CASE WHEN f.media_type = 'video' THEN 1 ELSE 0 END) AS videos,
-                    SUM(CASE WHEN f.ai_generated = 1 THEN 1 ELSE 0 END) AS ai_files
+                    COUNT(DISTINCT f.id) AS total_files,
+                    COUNT(DISTINCT CASE WHEN f.media_type = 'image' THEN f.id END) AS images,
+                    COUNT(DISTINCT CASE WHEN f.media_type = 'video' THEN f.id END) AS videos,
+                    COUNT(DISTINCT CASE WHEN f.ai_generated = 1 THEN f.id END) AS ai_files
                 FROM files f
-                WHERE {condition} AND f.is_trashed = 0
+                WHERE f.is_trashed = 0
+                  AND (
+                      {condition}
+                      OR EXISTS (
+                          SELECT 1
+                          FROM file_characters fc
+                          JOIN characters c ON c.id = fc.character_id
+                          WHERE fc.file_id = f.id AND c.franchise_id = ?
+                      )
+                  )
                 """,
-                params,
+                [*params, franchise_id],
             ).fetchone()
+            total_files = int(stats["total_files"] or 0)
+            if total_files == 0:
+                continue
+
             character_count = connection.execute(
                 """
                 SELECT COUNT(*) AS count
-                FROM characters
-                WHERE franchise_id = ? AND is_active = 1
+                FROM characters c
+                WHERE c.franchise_id = ?
+                  AND c.is_active = 1
+                  AND EXISTS (
+                      SELECT 1
+                      FROM file_characters fc
+                      JOIN files f ON f.id = fc.file_id
+                      WHERE fc.character_id = c.id AND f.is_trashed = 0
+                  )
                 """,
-                (int(row["id"]),),
+                (franchise_id,),
             ).fetchone()
 
             franchises.append(
                 {
-                    "id": int(row["id"]),
+                    "id": franchise_id,
                     "name": str(row["name"]),
                     "code": str(row["code"]),
                     "relative_path": prefix,
                     "character_count": int(character_count["count"]),
-                    "total_files": int(stats["total_files"] or 0),
+                    "total_files": total_files,
                     "images": int(stats["images"] or 0),
                     "videos": int(stats["videos"] or 0),
                     "ai_files": int(stats["ai_files"] or 0),
-                    "cover_url": _get_cover_for_prefix(connection, prefix),
+                    "cover_url": _get_cover_for_franchise(
+                        connection, franchise_id, prefix
+                    ),
                 }
             )
 
@@ -257,6 +322,8 @@ def get_franchise_characters(franchise_id: int) -> dict[str, Any]:
 
         characters: list[dict[str, Any]] = []
         for row in rows:
+            if int(row["total_files"] or 0) == 0:
+                continue
             cover = connection.execute(
                 """
                 SELECT f.id, f.relative_path, f.size, f.modified_at, f.media_type, f.extension
@@ -798,6 +865,7 @@ def update_file_metadata(
             shutil.move(str(destination_file), str(current_file))
         raise
 
+    cleanup_empty_entities()
     result = get_gallery_file(file_id)
     result["moved"] = moved
     result["old_relative_path"] = old_relative

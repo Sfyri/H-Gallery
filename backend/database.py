@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Iterator
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_ROOT = PROJECT_ROOT / "data"
+from backend.paths import DATA_ROOT, migrate_legacy_user_storage
+
+
+migrate_legacy_user_storage()
 DATABASE_PATH = DATA_ROOT / "gallery.db"
 
 

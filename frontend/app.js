@@ -59,6 +59,12 @@ const dom = {
     todoFileCount: byId("todo-file-count"),
     todoMediaGrid: byId("todo-media-grid"),
     refreshTodoButton: byId("refresh-todo-button"),
+    todoSelectionToolbar: byId("todo-selection-toolbar"),
+    todoSelectionCount: byId("todo-selection-count"),
+    selectAllTodoButton: byId("select-all-todo"),
+    clearTodoSelectionButton: byId("clear-todo-selection"),
+    organizeSelectedTodoButton: byId("organize-selected-todo"),
+    trashSelectedTodoButton: byId("trash-selected-todo"),
 
     trashSummary: byId("trash-summary"),
     trashMediaGrid: byId("trash-media-grid"),
@@ -85,6 +91,7 @@ const dom = {
     closeOrganizeDialog: byId("close-organize-dialog"),
     cancelOrganize: byId("cancel-organize"),
     submitOrganize: byId("submit-organize"),
+    organizeDialogTitle: byId("organize-dialog-title"),
     dialogFilename: byId("dialog-filename"),
     dialogPreview: byId("dialog-preview"),
     organizeStatus: byId("organize-status"),
@@ -93,6 +100,8 @@ const dom = {
     organizeSelectedCharacters: byId("organize-selected-characters"),
     organizeTagsInput: byId("organize-tags-input"),
     organizeAiCheckbox: byId("organize-ai-checkbox"),
+    organizeKeepDuplicatesRow: byId("organize-keep-duplicates-row"),
+    organizeKeepDuplicatesCheckbox: byId("organize-keep-duplicates-checkbox"),
     destinationPreview: byId("destination-preview"),
     openCreateCharacter: byId("open-create-character"),
 
@@ -137,6 +146,10 @@ const state = {
     mediaPage: 1,
     trashPage: 1,
     activeTodoFile: null,
+    activeTodoFiles: [],
+    todoFiles: [],
+    todoSelectedPaths: new Set(),
+    lastTodoSelectionIndex: null,
     organizeCharacters: [],
     activeGalleryFile: null,
     editCharacters: [],
@@ -488,13 +501,22 @@ function renderOverview() {
     });
 
     const crossovers = state.overview.crossovers;
-    fragment.appendChild(createCollectionCard({
-        title: crossovers.name,
-        subtitle: `${crossovers.total_files} file con serie differenti`,
-        coverUrl: crossovers.cover_url,
-        badges: [`${crossovers.images} immagini`, `${crossovers.videos} video`, `${crossovers.ai_files} IA`],
-        onClick: () => openMediaContext({ kind: "crossovers", title: crossovers.name })
-    }));
+    if (crossovers.total_files > 0) {
+        fragment.appendChild(createCollectionCard({
+            title: crossovers.name,
+            subtitle: `${crossovers.total_files} file con serie differenti`,
+            coverUrl: crossovers.cover_url,
+            badges: [`${crossovers.images} immagini`, `${crossovers.videos} video`, `${crossovers.ai_files} IA`],
+            onClick: () => openMediaContext({ kind: "crossovers", title: crossovers.name })
+        }));
+    }
+
+    if (!fragment.childNodes.length) {
+        const empty = document.createElement("p");
+        empty.className = "empty-message";
+        empty.textContent = "La galleria non contiene ancora file organizzati.";
+        fragment.appendChild(empty);
+    }
     dom.franchiseGrid.appendChild(fragment);
 }
 
@@ -541,18 +563,26 @@ function renderCharacterGrid(data) {
         }));
     });
 
-    fragment.appendChild(createCollectionCard({
-        title: data.multiple.name,
-        subtitle: `${data.multiple.total_files} file con più personaggi`,
-        coverUrl: data.multiple.cover_url,
-        badges: [`${data.multiple.images} immagini`, `${data.multiple.videos} video`, `${data.multiple.ai_files} IA`],
-        onClick: () => openMediaContext({
-            kind: "multiple",
-            title: `${data.franchise.name} / ${data.multiple.name}`,
-            franchise: data.franchise
-        })
-    }));
+    if (data.multiple.total_files > 0) {
+        fragment.appendChild(createCollectionCard({
+            title: data.multiple.name,
+            subtitle: `${data.multiple.total_files} file con più personaggi`,
+            coverUrl: data.multiple.cover_url,
+            badges: [`${data.multiple.images} immagini`, `${data.multiple.videos} video`, `${data.multiple.ai_files} IA`],
+            onClick: () => openMediaContext({
+                kind: "multiple",
+                title: `${data.franchise.name} / ${data.multiple.name}`,
+                franchise: data.franchise
+            })
+        }));
+    }
 
+    if (!fragment.childNodes.length) {
+        const empty = document.createElement("p");
+        empty.className = "empty-message";
+        empty.textContent = "Questa serie non contiene file organizzati.";
+        fragment.appendChild(empty);
+    }
     dom.characterGrid.appendChild(fragment);
 }
 
@@ -799,16 +829,76 @@ function resetMediaFilters() {
     state.mediaPage = 1;
 }
 
+function updateTodoSelectionUi() {
+    const availablePaths = new Set(state.todoFiles.map(file => file.relative_path));
+    state.todoSelectedPaths = new Set(
+        [...state.todoSelectedPaths].filter(path => availablePaths.has(path))
+    );
+
+    const selectedCount = state.todoSelectedPaths.size;
+    const totalCount = state.todoFiles.length;
+    dom.todoSelectionToolbar.hidden = totalCount === 0;
+    dom.todoSelectionCount.textContent = `${selectedCount} ${selectedCount === 1 ? "file selezionato" : "file selezionati"}`;
+    dom.selectAllTodoButton.disabled = totalCount === 0 || selectedCount === totalCount;
+    dom.clearTodoSelectionButton.disabled = selectedCount === 0;
+    dom.organizeSelectedTodoButton.disabled = selectedCount === 0;
+    dom.trashSelectedTodoButton.disabled = selectedCount === 0;
+
+    document.querySelectorAll(".todo-select-checkbox").forEach(checkbox => {
+        const selected = state.todoSelectedPaths.has(checkbox.dataset.relativePath);
+        checkbox.checked = selected;
+        checkbox.closest(".media-card")?.classList.toggle("selected-card", selected);
+    });
+}
+
+function changeTodoSelection(file, index, checked, useRange = false) {
+    if (useRange && state.lastTodoSelectionIndex !== null) {
+        const start = Math.min(state.lastTodoSelectionIndex, index);
+        const end = Math.max(state.lastTodoSelectionIndex, index);
+        state.todoFiles.slice(start, end + 1).forEach(item => {
+            if (checked) state.todoSelectedPaths.add(item.relative_path);
+            else state.todoSelectedPaths.delete(item.relative_path);
+        });
+    } else if (checked) {
+        state.todoSelectedPaths.add(file.relative_path);
+    } else {
+        state.todoSelectedPaths.delete(file.relative_path);
+    }
+
+    state.lastTodoSelectionIndex = index;
+    updateTodoSelectionUi();
+}
+
+function selectAllTodoFiles() {
+    state.todoFiles.forEach(file => state.todoSelectedPaths.add(file.relative_path));
+    state.lastTodoSelectionIndex = state.todoFiles.length ? state.todoFiles.length - 1 : null;
+    updateTodoSelectionUi();
+}
+
+function clearTodoSelection() {
+    state.todoSelectedPaths.clear();
+    state.lastTodoSelectionIndex = null;
+    updateTodoSelectionUi();
+}
+
+function getSelectedTodoFiles() {
+    return state.todoFiles.filter(file => state.todoSelectedPaths.has(file.relative_path));
+}
+
 async function loadTodoFiles() {
     dom.todoFileCount.textContent = "Caricamento...";
     dom.todoMediaGrid.replaceChildren();
     try {
         const data = await readJson(await fetch("/api/todo/files"));
+        state.todoFiles = data.files;
         dom.todoFileCount.textContent = `${data.total_files} file da sistemare`;
         dom.todoFolderPath.textContent = "File in attesa di organizzazione";
         dom.todoBadge.textContent = data.total_files;
 
         if (data.files.length === 0) {
+            state.todoSelectedPaths.clear();
+            state.lastTodoSelectionIndex = null;
+            updateTodoSelectionUi();
             const empty = document.createElement("p");
             empty.className = "empty-message";
             empty.textContent = "New non contiene immagini o video.";
@@ -817,9 +907,28 @@ async function loadTodoFiles() {
         }
 
         const fragment = document.createDocumentFragment();
-        data.files.forEach(file => {
+        data.files.forEach((file, index) => {
             const card = document.createElement("article");
-            card.className = "media-card";
+            card.className = "media-card todo-media-card";
+            card.dataset.todoPath = file.relative_path;
+
+            const selectionLabel = document.createElement("label");
+            selectionLabel.className = "todo-selection-toggle";
+            selectionLabel.title = `Seleziona ${file.name}`;
+            const selectionCheckbox = document.createElement("input");
+            selectionCheckbox.type = "checkbox";
+            selectionCheckbox.className = "todo-select-checkbox";
+            selectionCheckbox.dataset.relativePath = file.relative_path;
+            selectionCheckbox.checked = state.todoSelectedPaths.has(file.relative_path);
+            selectionCheckbox.setAttribute("aria-label", `Seleziona ${file.name}`);
+            selectionCheckbox.addEventListener("click", event => {
+                event.stopPropagation();
+                changeTodoSelection(file, index, selectionCheckbox.checked, event.shiftKey);
+            });
+            const selectionMark = document.createElement("span");
+            selectionMark.setAttribute("aria-hidden", "true");
+            selectionLabel.append(selectionCheckbox, selectionMark);
+
             const preview = document.createElement("div");
             preview.className = "preview-container";
             preview.classList.toggle("has-animated-preview", Boolean(file.animated_preview_url));
@@ -848,13 +957,16 @@ async function loadTodoFiles() {
             trashButton.addEventListener("click", () => trashTodoFile(file));
             actions.append(button, trashButton);
             info.append(name, details, actions);
-            card.append(preview, info);
+            card.append(selectionLabel, preview, info);
             fragment.appendChild(card);
         });
         dom.todoMediaGrid.appendChild(fragment);
+        updateTodoSelectionUi();
     } catch (error) {
         console.error(error);
+        state.todoFiles = [];
         dom.todoFileCount.textContent = "Errore";
+        updateTodoSelectionUi();
         setStatus(dom.globalStatus, error.message);
     }
 }
@@ -873,6 +985,44 @@ async function trashTodoFile(file) {
     } catch (error) {
         setStatus(dom.globalStatus, error.message);
     }
+}
+
+async function trashSelectedTodoFiles() {
+    const files = getSelectedTodoFiles();
+    if (!files.length) return;
+
+    const confirmed = window.confirm(
+        `Spostare ${files.length} file selezionati nel cestino?`
+    );
+    if (!confirmed) return;
+
+    dom.trashSelectedTodoButton.disabled = true;
+    const failedPaths = new Set();
+    let movedCount = 0;
+
+    for (const file of files) {
+        try {
+            await readJson(await fetch("/api/todo/trash", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ relative_path: file.relative_path })
+            }));
+            movedCount += 1;
+        } catch (error) {
+            console.error(error);
+            failedPaths.add(file.relative_path);
+        }
+    }
+
+    state.todoSelectedPaths = failedPaths;
+    await Promise.all([loadTodoFiles(), loadOverview(true, false)]);
+
+    const failedCount = failedPaths.size;
+    const message = failedCount
+        ? `${movedCount} file spostati nel cestino; ${failedCount} non elaborati.`
+        : `${movedCount} file spostati nel cestino.`;
+    setStatus(dom.globalStatus, message, movedCount > 0);
+    dom.trashSelectedTodoButton.disabled = false;
 }
 
 async function loadTrashItems(page = state.trashPage) {
@@ -1132,15 +1282,56 @@ async function searchCharacterNames(query, resultsContainer, selected, addCallba
     }
 }
 
-function openOrganizer(file) {
-    state.activeTodoFile = file;
+function renderOrganizerPreview(files) {
+    dom.dialogPreview.replaceChildren();
+    dom.dialogPreview.classList.toggle("bulk-dialog-preview", files.length > 1);
+
+    if (files.length === 1) {
+        dom.dialogPreview.appendChild(createMediaElement(files[0], true));
+        return;
+    }
+
+    files.slice(0, 6).forEach(file => {
+        const preview = document.createElement("div");
+        preview.className = "bulk-preview-item";
+        preview.appendChild(createMediaElement(file));
+        dom.dialogPreview.appendChild(preview);
+    });
+
+    if (files.length > 6) {
+        const remaining = document.createElement("div");
+        remaining.className = "bulk-preview-more";
+        remaining.textContent = `+${files.length - 6}`;
+        dom.dialogPreview.appendChild(remaining);
+    }
+}
+
+function openOrganizer(fileOrFiles) {
+    const files = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles];
+    if (!files.length) return;
+
+    state.activeTodoFiles = files;
+    state.activeTodoFile = files[0];
     state.organizeCharacters = [];
-    dom.dialogFilename.textContent = file.relative_path;
-    dom.dialogPreview.replaceChildren(createMediaElement(file, true));
+
+    const isBatch = files.length > 1;
+    dom.organizeDialogTitle.textContent = isBatch
+        ? `Organizza ${files.length} file`
+        : "Organizza file";
+    dom.dialogFilename.textContent = isBatch
+        ? "I personaggi, i tag e lo stato IA verranno applicati a tutti i file selezionati."
+        : files[0].relative_path;
+    renderOrganizerPreview(files);
+
     dom.organizeCharacterSearch.value = "";
     dom.organizeSearchResults.replaceChildren();
     dom.organizeTagsInput.value = "";
     dom.organizeAiCheckbox.checked = false;
+    dom.organizeKeepDuplicatesRow.hidden = !isBatch;
+    dom.organizeKeepDuplicatesCheckbox.checked = false;
+    dom.submitOrganize.textContent = isBatch
+        ? `Organizza ${files.length} file`
+        : "Rinomina e sposta";
     dom.destinationPreview.textContent = "Seleziona almeno un personaggio.";
     setStatus(dom.organizeStatus, "");
     renderSelectedCharacters(dom.organizeSelectedCharacters, state.organizeCharacters, removeOrganizeCharacter);
@@ -1150,7 +1341,9 @@ function openOrganizer(file) {
 
 function closeOrganizer() {
     dom.organizeDialog.close();
+    dom.dialogPreview.classList.remove("bulk-dialog-preview");
     state.activeTodoFile = null;
+    state.activeTodoFiles = [];
 }
 
 function addOrganizeCharacter(character) {
@@ -1185,10 +1378,67 @@ async function updateDestinationPreview() {
             })
         });
         const data = await readJson(response);
-        dom.destinationPreview.textContent = data.destination_relative_path;
+        if (state.activeTodoFiles.length > 1) {
+            dom.destinationPreview.textContent = `${data.destination_folder}/ · ${state.activeTodoFiles.length} nomi progressivi (primo: ${data.filename})`;
+        } else {
+            dom.destinationPreview.textContent = data.destination_relative_path;
+        }
     } catch (error) {
         dom.destinationPreview.textContent = error.message;
     }
+}
+
+function buildBatchResultMessage(result) {
+    const parts = [`${result.organized_count} organizzati`];
+    if (result.duplicate_count) parts.push(`${result.duplicate_count} duplicati ignorati`);
+    if (result.error_count) parts.push(`${result.error_count} non elaborati`);
+    return `${parts.join(" · ")}.`;
+}
+
+async function submitBatchOrganization() {
+    const files = state.activeTodoFiles;
+    const tags = parseTags(dom.organizeTagsInput.value);
+    const aiGenerated = dom.organizeAiCheckbox.checked;
+    const allowDuplicates = dom.organizeKeepDuplicatesCheckbox.checked;
+
+    const confirmationLines = [
+        `Stai per organizzare ${files.length} file.`,
+        `Personaggi: ${state.organizeCharacters.map(character => `${character.franchise_name} / ${character.name}`).join(", ")}`,
+        `Tag comuni: ${tags.length ? tags.join(", ") : "nessuno"}`,
+        `IA: ${aiGenerated ? "sì" : "no"}`,
+        `Duplicati identici: ${allowDuplicates ? "conserva" : "ignora"}`
+    ];
+    if (!window.confirm(confirmationLines.join("\n\n"))) return;
+
+    const response = await fetch("/api/organize/batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            relative_paths: files.map(file => file.relative_path),
+            character_ids: state.organizeCharacters.map(character => character.id),
+            tags,
+            ai_generated: aiGenerated,
+            allow_duplicates: allowDuplicates
+        })
+    });
+    const result = await readJson(response);
+
+    const remainingPaths = new Set([
+        ...result.duplicates.map(item => item.relative_path),
+        ...result.errors.map(item => item.relative_path)
+    ]);
+    state.todoSelectedPaths = remainingPaths;
+
+    const message = buildBatchResultMessage(result);
+    if (result.organized_count === 0 && (result.duplicate_count || result.error_count)) {
+        setStatus(dom.organizeStatus, message);
+        updateTodoSelectionUi();
+        return;
+    }
+
+    closeOrganizer();
+    await Promise.all([loadTodoFiles(), loadOverview(true, false)]);
+    setStatus(dom.globalStatus, message, result.organized_count > 0 && result.error_count === 0);
 }
 
 async function submitOrganization(allowDuplicate = false) {
@@ -1201,6 +1451,11 @@ async function submitOrganization(allowDuplicate = false) {
     dom.submitOrganize.disabled = true;
     setStatus(dom.organizeStatus, "Spostamento in corso...");
     try {
+        if (state.activeTodoFiles.length > 1) {
+            await submitBatchOrganization();
+            return;
+        }
+
         const response = await fetch("/api/organize", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -1225,6 +1480,7 @@ async function submitOrganization(allowDuplicate = false) {
         }
 
         const result = await readJson(response);
+        state.todoSelectedPaths.delete(state.activeTodoFile.relative_path);
         setStatus(dom.globalStatus, `File organizzato: ${result.relative_path}`, true);
         closeOrganizer();
         await Promise.all([loadTodoFiles(), loadOverview(true, false)]);
@@ -1863,6 +2119,10 @@ dom.characterScorePlus.addEventListener("click", async () => {
 
 // New e organizzazione.
 dom.refreshTodoButton.addEventListener("click", loadTodoFiles);
+dom.selectAllTodoButton.addEventListener("click", selectAllTodoFiles);
+dom.clearTodoSelectionButton.addEventListener("click", clearTodoSelection);
+dom.organizeSelectedTodoButton.addEventListener("click", () => openOrganizer(getSelectedTodoFiles()));
+dom.trashSelectedTodoButton.addEventListener("click", trashSelectedTodoFiles);
 dom.refreshTrashButton.addEventListener("click", () => loadTrashItems());
 dom.emptyTrashButton.addEventListener("click", emptyTrashFromUi);
 dom.closeOrganizeDialog.addEventListener("click", closeOrganizer);

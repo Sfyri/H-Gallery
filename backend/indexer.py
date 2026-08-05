@@ -6,7 +6,12 @@ from typing import Any
 
 from backend.database import get_connection
 from backend.file_manager import calculate_sha256
-from backend.scanner import get_media_type, load_config, sync_characters
+from backend.scanner import (
+    cleanup_empty_entities,
+    get_media_type,
+    load_config,
+    sync_characters,
+)
 
 
 def _set_ai_state(connection, file_id: int, ai_generated: bool) -> None:
@@ -322,6 +327,7 @@ def synchronize_archive() -> dict[str, Any]:
 
         removed_tags = _remove_unused_tags(connection)
 
+    cleanup = cleanup_empty_entities()
     return {
         "added": added,
         "updated": updated,
@@ -333,6 +339,7 @@ def synchronize_archive() -> dict[str, Any]:
         "errors": errors,
         "total_on_disk": len(media_paths),
         "characters": character_sync,
+        "cleanup": cleanup,
     }
 
 

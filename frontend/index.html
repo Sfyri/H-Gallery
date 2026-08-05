@@ -115,6 +115,15 @@
                 <button id="refresh-todo-button" type="button">Aggiorna file</button>
             </div>
             <p id="todo-file-count" class="result-summary">Caricamento...</p>
+            <div id="todo-selection-toolbar" class="selection-toolbar" hidden>
+                <strong id="todo-selection-count">0 file selezionati</strong>
+                <div class="selection-toolbar-actions">
+                    <button id="select-all-todo" type="button" class="secondary-button">Seleziona tutto</button>
+                    <button id="clear-todo-selection" type="button" class="secondary-button">Deseleziona</button>
+                    <button id="organize-selected-todo" type="button">Organizza insieme</button>
+                    <button id="trash-selected-todo" type="button" class="danger-button">Cestino</button>
+                </div>
+            </div>
             <div id="todo-media-grid" class="media-grid"></div>
         </section>
 
@@ -226,7 +235,7 @@
         <form id="organize-form">
             <div class="dialog-header">
                 <div>
-                    <h2>Organizza file</h2>
+                    <h2 id="organize-dialog-title">Organizza file</h2>
                     <p id="dialog-filename"></p>
                 </div>
                 <button id="close-organize-dialog" class="icon-button" type="button" aria-label="Chiudi">×</button>
@@ -252,6 +261,11 @@
                     <label class="checkbox-row">
                         <input id="organize-ai-checkbox" type="checkbox">
                         <span>Generato con IA</span>
+                    </label>
+
+                    <label id="organize-keep-duplicates-row" class="checkbox-row" hidden>
+                        <input id="organize-keep-duplicates-checkbox" type="checkbox">
+                        <span>Conserva anche i duplicati identici</span>
                     </label>
 
                     <section class="destination-box">

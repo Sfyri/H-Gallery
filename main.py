@@ -23,6 +23,7 @@ from backend.backups import (
 from backend.file_manager import (
     get_ranking,
     organize_file,
+    organize_files_batch,
     preview_organization,
     update_character_score,
 )
@@ -86,6 +87,14 @@ class OrganizePreviewRequest(BaseModel):
     extension: str
 
 
+class BatchOrganizeRequest(BaseModel):
+    relative_paths: list[str] = Field(min_length=1, max_length=500)
+    character_ids: list[int] = Field(min_length=1)
+    tags: list[str] = Field(default_factory=list)
+    ai_generated: bool = False
+    allow_duplicates: bool = False
+
+
 class ScoreRequest(BaseModel):
     delta: int
 
@@ -132,7 +141,7 @@ async def lifespan(_: FastAPI):
 app = FastAPI(
     title="H-Gallery",
     description="Galleria locale per immagini e video",
-    version="0.9.0",
+    version="1.2.0",
     lifespan=lifespan,
 )
 
@@ -252,6 +261,25 @@ def organize(request: OrganizeRequest):
     except PermissionError as error:
         raise HTTPException(status_code=403, detail=str(error)) from error
     except (NotADirectoryError, ValueError, FileExistsError) as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.post("/api/organize/batch")
+def organize_batch(request: BatchOrganizeRequest):
+    try:
+        backup = create_automatic_backup("prima_dell_organizzazione_multipla")
+        result = organize_files_batch(
+            relative_paths=request.relative_paths,
+            character_ids=request.character_ids,
+            tags=request.tags,
+            ai_generated=request.ai_generated,
+            allow_duplicates=request.allow_duplicates,
+        )
+        result["automatic_backup"] = backup["id"]
+        return result
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+    except (FileNotFoundError, NotADirectoryError, ValueError, FileExistsError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
 

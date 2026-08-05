@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import quote
 
 from backend.database import get_connection
+from backend.paths import CONFIG_PATH, GALLERY_ROOT, ensure_user_layout, migrate_legacy_user_storage
 
 IMAGE_EXTENSIONS = {
     ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff",
@@ -17,8 +18,6 @@ VIDEO_EXTENSIONS = {
     ".mp4", ".mkv", ".webm", ".avi", ".mov", ".m4v",
 }
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-CONFIG_PATH = PROJECT_ROOT / "config.json"
 WINDOWS_RESERVED_NAMES = {
     "CON", "PRN", "AUX", "NUL",
     *(f"COM{number}" for number in range(1, 10)),
@@ -28,26 +27,47 @@ INVALID_WINDOWS_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1F]')
 
 
 def load_config() -> dict[str, Any]:
+    """Legge le impostazioni e ricava automaticamente la radice della galleria.
+
+    `.Script` deve trovarsi direttamente dentro la cartella principale. Il
+    percorso assoluto non viene più salvato in config.json, così l'intero
+    archivio può essere spostato o rinominato senza riconfigurazione.
+    """
+
     if not CONFIG_PATH.exists():
         raise FileNotFoundError(
             "File config.json non trovato. Avvia Install.bat oppure configure.py "
-            f"per configurare la galleria: {CONFIG_PATH}"
+            f"per configurare H-Gallery: {CONFIG_PATH}"
         )
 
     with CONFIG_PATH.open("r", encoding="utf-8") as config_file:
         config = json.load(config_file)
 
-    gallery_root = config.get("gallery_root")
-    if not gallery_root:
-        raise ValueError("La voce 'gallery_root' manca in config.json.")
+    if not isinstance(config, dict):
+        raise ValueError("config.json non contiene un oggetto JSON valido.")
 
-    root_path = Path(gallery_root)
-    if not root_path.exists():
-        raise FileNotFoundError(f"La cartella della galleria non esiste: {root_path}")
-    if not root_path.is_dir():
-        raise NotADirectoryError(f"Il percorso non è una cartella: {root_path}")
+    # Migrazione non distruttiva dalle versioni che salvavano un percorso
+    # assoluto. Le altre impostazioni e i codici già presenti restano invariati.
+    if "gallery_root" in config:
+        config.pop("gallery_root", None)
+        temporary_path = CONFIG_PATH.with_suffix(".json.tmp")
+        temporary_path.write_text(
+            json.dumps(config, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temporary_path.replace(CONFIG_PATH)
 
-    return config
+    if not GALLERY_ROOT.exists() or not GALLERY_ROOT.is_dir():
+        raise NotADirectoryError(
+            f"La cartella padre di .Script non è accessibile: {GALLERY_ROOT}"
+        )
+
+    migrate_legacy_user_storage()
+    ensure_user_layout()
+
+    runtime_config = dict(config)
+    runtime_config["gallery_root"] = str(GALLERY_ROOT)
+    return runtime_config
 
 
 def get_media_type(file_path: Path) -> str | None:
@@ -206,9 +226,313 @@ def get_character_folders(franchise_path: Path, config: dict[str, Any]) -> list[
     )
 
 
-def sync_characters() -> dict[str, int]:
+
+def _directory_contains_files(directory: Path) -> bool:
+    """Restituisce True se la directory contiene almeno un file o collegamento.
+
+    In caso di errore di accesso la directory viene considerata non vuota, così
+    la pulizia non rischia mai di rimuovere contenuti non verificati.
+    """
+
+    if not directory.exists() or not directory.is_dir():
+        return False
+
+    try:
+        for path in directory.rglob("*"):
+            if path.is_symlink() or path.is_file():
+                return True
+    except OSError:
+        return True
+
+    return False
+
+
+def _remove_tree_if_fileless(directory: Path) -> bool:
+    """Elimina una gerarchia composta esclusivamente da cartelle vuote."""
+
+    if (
+        not directory.exists()
+        or not directory.is_dir()
+        or directory.is_symlink()
+        or _directory_contains_files(directory)
+    ):
+        return False
+
+    try:
+        shutil.rmtree(directory)
+    except OSError:
+        return False
+    return True
+
+
+def prune_empty_directories() -> dict[str, int]:
+    """Rimuove dal disco soltanto cartelle gestite che non contengono file.
+
+    Le directory tecniche principali (.Script, .toDo e .trash) non vengono mai
+    eliminate. Le cartelle possono essere ricreate automaticamente quando un
+    file viene organizzato o ripristinato.
+    """
+
+    config = load_config()
+    gallery_root = Path(config["gallery_root"]).resolve()
+    ai_folder = str(config.get("ai_folder", ".AI"))
+    multiple_folder = str(config.get("multiple_folder", "!Multiple"))
+    crossovers_folder = str(config.get("crossovers_folder", "!Crossovers"))
+
+    removed_ai = 0
+    removed_characters = 0
+    removed_multiple = 0
+    removed_franchises = 0
+    removed_crossovers = 0
+
+    # Usa un elenco materializzato: alcune cartelle verranno eliminate durante
+    # l'iterazione.
+    franchise_paths = list(get_franchise_folders(config))
+    for franchise_path in franchise_paths:
+        if not franchise_path.exists():
+            continue
+
+        for character_path in list(get_character_folders(franchise_path, config)):
+            ai_path = character_path / ai_folder
+            if _remove_tree_if_fileless(ai_path):
+                removed_ai += 1
+            if _remove_tree_if_fileless(character_path):
+                removed_characters += 1
+
+        multiple_path = franchise_path / multiple_folder
+        if multiple_path.exists():
+            if _remove_tree_if_fileless(multiple_path / ai_folder):
+                removed_ai += 1
+            if _remove_tree_if_fileless(multiple_path):
+                removed_multiple += 1
+
+        if _remove_tree_if_fileless(franchise_path):
+            removed_franchises += 1
+
+    crossovers_path = gallery_root / crossovers_folder
+    if crossovers_path.exists():
+        if _remove_tree_if_fileless(crossovers_path / ai_folder):
+            removed_ai += 1
+        if _remove_tree_if_fileless(crossovers_path):
+            removed_crossovers += 1
+
+    return {
+        "removed_ai_folders": removed_ai,
+        "removed_character_folders": removed_characters,
+        "removed_multiple_folders": removed_multiple,
+        "removed_franchise_folders": removed_franchises,
+        "removed_crossovers_folders": removed_crossovers,
+    }
+
+
+def _path_has_database_file(
+    connection: Any,
+    relative_path: str,
+    *,
+    trashed: bool | None,
+) -> bool:
+    conditions = [
+        "(relative_path = ? OR substr(relative_path, 1, length(?) + 1) = ? || '/')"
+    ]
+    parameters: list[Any] = [relative_path, relative_path, relative_path]
+    if trashed is not None:
+        conditions.append("is_trashed = ?")
+        parameters.append(int(trashed))
+
+    row = connection.execute(
+        f"SELECT 1 FROM files WHERE {' AND '.join(conditions)} LIMIT 1",
+        parameters,
+    ).fetchone()
+    return row is not None
+
+
+def _path_has_trash_origin(connection: Any, relative_path: str) -> bool:
+    row = connection.execute(
+        """
+        SELECT 1
+        FROM trash_items
+        WHERE source_kind = 'gallery'
+          AND (
+              original_relative_path = ?
+              OR substr(original_relative_path, 1, length(?) + 1) = ? || '/'
+          )
+        LIMIT 1
+        """,
+        (relative_path, relative_path, relative_path),
+    ).fetchone()
+    return row is not None
+
+
+def cleanup_empty_entities() -> dict[str, int]:
+    """Pulisce cartelle e record inutilizzati senza compromettere il cestino.
+
+    Una serie o un personaggio con file nel cestino resta disponibile per nuove
+    associazioni e ripristini, ma la galleria lo nasconde finché non possiede
+    file attivi. I record senza file attivi né cestinati vengono eliminati.
+    """
+
+    directory_result = prune_empty_directories()
+    config = load_config()
+    gallery_root = Path(config["gallery_root"]).resolve()
+
+    removed_characters = 0
+    removed_franchises = 0
+    activated_characters = 0
+    deactivated_characters = 0
+    activated_franchises = 0
+    deactivated_franchises = 0
+
+    with get_connection() as connection:
+        character_rows = connection.execute(
+            """
+            SELECT id, franchise_id, relative_path, is_active
+            FROM characters
+            ORDER BY id
+            """
+        ).fetchall()
+
+        for row in character_rows:
+            character_id = int(row["id"])
+            relative_path = str(row["relative_path"])
+            directory = (gallery_root / relative_path).resolve()
+            try:
+                directory.relative_to(gallery_root)
+            except ValueError:
+                physical_files = False
+            else:
+                physical_files = _directory_contains_files(directory)
+
+            active_link = connection.execute(
+                """
+                SELECT 1
+                FROM file_characters fc
+                JOIN files f ON f.id = fc.file_id
+                WHERE fc.character_id = ? AND f.is_trashed = 0
+                LIMIT 1
+                """,
+                (character_id,),
+            ).fetchone() is not None
+            any_link = connection.execute(
+                """
+                SELECT 1
+                FROM file_characters
+                WHERE character_id = ?
+                LIMIT 1
+                """,
+                (character_id,),
+            ).fetchone() is not None
+
+            active_path = _path_has_database_file(
+                connection, relative_path, trashed=False
+            )
+            trashed_origin = _path_has_trash_origin(connection, relative_path)
+
+            has_active = physical_files or active_link or active_path
+            has_any = has_active or any_link or trashed_origin
+
+            if not has_any:
+                connection.execute(
+                    "DELETE FROM characters WHERE id = ?",
+                    (character_id,),
+                )
+                removed_characters += 1
+                continue
+
+            # Anche un personaggio presente soltanto nel cestino resta
+            # selezionabile durante l'organizzazione di nuovi file.
+            new_active = 1
+            old_active = int(row["is_active"])
+            if new_active != old_active:
+                connection.execute(
+                    "UPDATE characters SET is_active = ? WHERE id = ?",
+                    (new_active, character_id),
+                )
+                if new_active:
+                    activated_characters += 1
+                else:
+                    deactivated_characters += 1
+
+        franchise_rows = connection.execute(
+            """
+            SELECT id, relative_path, is_active
+            FROM franchises
+            ORDER BY id
+            """
+        ).fetchall()
+
+        for row in franchise_rows:
+            franchise_id = int(row["id"])
+            relative_path = str(row["relative_path"])
+            directory = (gallery_root / relative_path).resolve()
+            try:
+                directory.relative_to(gallery_root)
+            except ValueError:
+                physical_files = False
+            else:
+                physical_files = _directory_contains_files(directory)
+
+            active_character = connection.execute(
+                """
+                SELECT 1
+                FROM characters
+                WHERE franchise_id = ? AND is_active = 1
+                LIMIT 1
+                """,
+                (franchise_id,),
+            ).fetchone() is not None
+            any_character = connection.execute(
+                """
+                SELECT 1
+                FROM characters
+                WHERE franchise_id = ?
+                LIMIT 1
+                """,
+                (franchise_id,),
+            ).fetchone() is not None
+
+            active_path = _path_has_database_file(
+                connection, relative_path, trashed=False
+            )
+            trashed_origin = _path_has_trash_origin(connection, relative_path)
+
+            has_active = physical_files or active_character or active_path
+            has_any = has_active or any_character or trashed_origin
+
+            if not has_any:
+                connection.execute(
+                    "DELETE FROM franchises WHERE id = ?",
+                    (franchise_id,),
+                )
+                removed_franchises += 1
+                continue
+
+            new_active = 1
+            old_active = int(row["is_active"])
+            if new_active != old_active:
+                connection.execute(
+                    "UPDATE franchises SET is_active = ? WHERE id = ?",
+                    (new_active, franchise_id),
+                )
+                if new_active:
+                    activated_franchises += 1
+                else:
+                    deactivated_franchises += 1
+
+    return {
+        **directory_result,
+        "removed_character_records": removed_characters,
+        "removed_franchise_records": removed_franchises,
+        "activated_character_records": activated_characters,
+        "deactivated_character_records": deactivated_characters,
+        "activated_franchise_records": activated_franchises,
+        "deactivated_franchise_records": deactivated_franchises,
+    }
+
+
+def sync_characters() -> dict[str, Any]:
     """Sincronizza serie e personaggi presenti sul disco senza sovrascrivere i codici salvati."""
 
+    initial_cleanup = prune_empty_directories()
     config = load_config()
     gallery_root = Path(config["gallery_root"]).resolve()
     configured_codes = config.get("franchise_codes", {})
@@ -306,11 +630,17 @@ def sync_characters() -> dict[str, int]:
 
                 character_count += 1
 
+    entity_cleanup = cleanup_empty_entities()
+    combined_cleanup = dict(entity_cleanup)
+    for key, value in initial_cleanup.items():
+        combined_cleanup[key] = int(combined_cleanup.get(key, 0)) + int(value)
+
     return {
         "franchises": franchise_count,
         "characters": character_count,
         "created_franchises": created_franchises,
         "created_characters": created_characters,
+        "cleanup": combined_cleanup,
     }
 
 

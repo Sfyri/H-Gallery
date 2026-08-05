@@ -8,6 +8,7 @@ Il programma lavora esclusivamente sul computer dell'utente tramite `127.0.0.1`.
 
 - galleria organizzata per serie e personaggi;
 - area **New** collegata alla cartella fisica `.toDo`;
+- organizzazione singola o multipla dei nuovi file;
 - ricerca e selezione di uno o più personaggi;
 - tag personalizzati e tag automatico `AI`;
 - gestione di `.AI`, `!Multiple` e `!Crossovers`;
@@ -16,7 +17,65 @@ Il programma lavora esclusivamente sul computer dell'utente tramite `127.0.0.1`.
 - miniature WebP e anteprime animate per GIF e video;
 - classifica dei personaggi con punteggi `+1` e `-1`;
 - backup, ripristino ed esportazione JSON;
-- codici delle serie generati automaticamente.
+- codici delle serie generati automaticamente;
+- pulizia automatica delle cartelle vuote.
+
+## Struttura obbligatoria e portabile
+
+`.Script` deve trovarsi direttamente nella radice della galleria. H-Gallery usa sempre la cartella padre di `.Script`, quindi non salva più un percorso assoluto.
+
+```text
+H-Gallery/
+├── .Script/             # codice, repository Git, ambiente Python e cache
+│   ├── backend/
+│   ├── frontend/
+│   ├── cache/           # miniature ricostruibili
+│   ├── config.json
+│   └── Start.bat
+├── .user/
+│   ├── data/            # database, tag, associazioni e punteggi
+│   └── backups/         # backup ed esportazioni
+├── .toDo/
+├── .trash/
+├── !Crossovers/
+└── cartelle delle serie/
+```
+
+La cartella principale può essere rinominata, spostata o trasferita su un'altra unità senza cambiare `config.json`, purché `.Script` resti direttamente al suo interno.
+
+## Installazione rapida
+
+1. Crea o scegli la cartella principale della galleria.
+2. Estrai o clona il repository dentro una sottocartella chiamata `.Script`.
+3. Avvia `.Script/Install.bat`.
+4. Avvia `.Script/Start.bat`.
+
+`Install.bat` rileva automaticamente la cartella padre, crea `.user`, `.toDo`, `.trash` e la configurazione locale.
+
+Per gli avvii successivi è sufficiente usare `Start.bat`.
+
+## Trasferimento su un altro computer
+
+Conserva:
+
+- `.user`;
+- `.toDo` e `.trash`;
+- tutte le cartelle delle serie e i file multimediali.
+
+`.Script` può essere riscaricata dal repository. La cache in `.Script/cache` è facoltativa e può essere rigenerata.
+
+Dopo aver scaricato nuovamente il repository dentro `.Script`, esegui `Install.bat` e poi `Start.bat`.
+
+## Migrazione dalle versioni precedenti
+
+Al primo avvio vengono spostati automaticamente:
+
+```text
+.Script/data      → .user/data
+.Script/backups   → .user/backups
+```
+
+La cache resta in `.Script/cache`. `gallery_root`, se presente nel vecchio `config.json`, viene rimosso automaticamente senza alterare le altre impostazioni.
 
 ## Codici automatici delle serie
 
@@ -36,13 +95,7 @@ Pokémon  → PKMN
 Metroid  → MTRD
 ```
 
-Se un codice è già occupato, viene aggiunto il primo suffisso disponibile:
-
-```text
-SM
-SM01
-SM02
-```
+Se un codice è già occupato, viene aggiunto il primo suffisso disponibile: `SM`, `SM01`, `SM02`.
 
 I codici già presenti nel database non vengono modificati automaticamente.
 
@@ -52,70 +105,29 @@ I codici già presenti nel database non vengono modificati automaticamente.
 - Python 3.10 o successivo;
 - FFmpeg facoltativo, necessario solo per le anteprime animate dei video.
 
-## Installazione rapida
-
-1. Scarica il repository o una Release e decomprimilo.
-2. Avvia `Install.bat`.
-3. Inserisci il percorso della tua galleria quando richiesto.
-4. Avvia `Start.bat`.
-
-Per gli avvii successivi è sufficiente usare `Start.bat`.
-
-## Struttura consigliata della galleria
-
-Il programma può trovarsi in una cartella diversa dall'archivio multimediale.
-
-```text
-C:\Applicazioni\H-Gallery\
-    backend\
-    frontend\
-    Start.bat
-    ...
-
-E:\ArchivioPersonaggi\
-    .toDo\
-    .trash\
-    !Crossovers\
-    Fire Emblem\
-        !Multiple\
-        Charlotte\
-        Lucina\
-    Pokémon\
-        !Multiple\
-        Misty\
-```
-
-Il percorso effettivo viene salvato localmente in `config.json` e può essere diverso per ogni utente.
-
-## Riconfigurare il percorso
-
-Avvia `Reconfigure.bat` e conferma la sostituzione della configurazione.
-
-Dopo aver cambiato archivio, usa nell'applicazione:
-
-1. **Rileggi cartelle**;
-2. **Sincronizza archivio**.
-
 ## File locali non pubblicati su GitHub
 
-Questi elementi vengono creati sul computer dell'utente e sono esclusi da Git tramite `.gitignore`:
+Questi elementi sono locali:
 
 ```text
 config.json
-.venv\
-data\
-cache\
-backups\
+.venv/
+cache/
 ```
 
-- `config.json`: percorso e nomi delle cartelle speciali;
-- `data/gallery.db`: tag, associazioni, punteggi e metadati;
-- `cache/`: miniature rigenerabili;
-- `backups/`: copie di sicurezza locali.
+`data` e `backups` non si trovano nel repository: sono conservati nella cartella sorella `.user`.
 
-`config.example.json` è soltanto il modello pubblico usato per creare `config.json`.
+`config.example.json` è il modello pubblico usato per creare o aggiornare `config.json`.
+
+## Configurazione
+
+`config.json` contiene solo i nomi delle cartelle speciali e altre preferenze. Non contiene il percorso della galleria.
+
+`Reconfigure.bat` aggiorna la configurazione usando i valori disponibili senza chiedere una directory.
 
 ## Avvio manuale per lo sviluppo
+
+Da `.Script`:
 
 ```powershell
 python -m venv .venv
@@ -125,17 +137,11 @@ python configure.py
 fastapi dev main.py
 ```
 
-Poi apri:
-
-```text
-http://127.0.0.1:8000
-```
+Poi apri `http://127.0.0.1:8000`.
 
 ## FFmpeg
 
 FFmpeg è facoltativo. Senza FFmpeg la galleria funziona normalmente, ma i video non mostrano l'anteprima animata al passaggio del mouse.
-
-Per verificare l'installazione:
 
 ```powershell
 ffmpeg -version
@@ -143,11 +149,10 @@ ffmpeg -version
 
 ## Sicurezza
 
-Prima di usare il programma su un archivio importante:
-
 - conserva una copia esterna delle immagini e dei video;
 - crea periodicamente backup dall'applicazione;
-- non pubblicare `config.json`, `gallery.db` o la cartella `backups`.
+- durante un trasferimento non dimenticare `.user/data/gallery.db`;
+- non pubblicare `config.json`, `.user`, `.venv` o la cache.
 
 ## Licenza
 

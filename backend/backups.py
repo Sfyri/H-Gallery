@@ -9,11 +9,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from backend.database import DATABASE_PATH, DATA_ROOT, get_connection, init_database
+from backend.database import DATABASE_PATH, get_connection, init_database
+from backend.paths import (
+    BACKUPS_ROOT,
+    CONFIG_PATH,
+    DATA_ROOT,
+    SCRIPT_ROOT,
+    migrate_legacy_user_storage,
+)
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-CONFIG_PATH = PROJECT_ROOT / "config.json"
-BACKUPS_ROOT = PROJECT_ROOT / "backups"
+
+migrate_legacy_user_storage()
 EXPORTS_ROOT = BACKUPS_ROOT / "exports"
 MAX_AUTOMATIC_BACKUPS = 10
 
@@ -76,7 +82,7 @@ def _database_backup(destination: Path) -> None:
 
 
 def _read_version() -> str:
-    version_path = PROJECT_ROOT / "VERSION.txt"
+    version_path = SCRIPT_ROOT / "VERSION.txt"
     try:
         return version_path.read_text(encoding="utf-8").strip() or "sconosciuta"
     except OSError:
@@ -252,8 +258,8 @@ def _validate_config(path: Path) -> None:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise ValueError("Il config.json del backup non è valido.") from error
-    if not isinstance(data, dict) or not data.get("gallery_root"):
-        raise ValueError("Il config.json del backup non contiene gallery_root.")
+    if not isinstance(data, dict):
+        raise ValueError("Il config.json del backup non contiene un oggetto JSON valido.")
 
 
 def restore_backup(backup_id: str, confirmation: str) -> dict[str, Any]:
@@ -271,7 +277,7 @@ def restore_backup(backup_id: str, confirmation: str) -> dict[str, Any]:
 
     DATA_ROOT.mkdir(parents=True, exist_ok=True)
     restore_database = DATA_ROOT / f".restore_{_timestamp()}.db"
-    restore_config = PROJECT_ROOT / f".restore_{_timestamp()}.json"
+    restore_config = SCRIPT_ROOT / f".restore_{_timestamp()}.json"
     shutil.copy2(source_database, restore_database)
     if source_config.exists():
         shutil.copy2(source_config, restore_config)

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.database import get_connection
-from backend.scanner import get_media_type, load_config
+from backend.scanner import cleanup_empty_entities, get_media_type, load_config
 
 
 def normalize_filename_component(value: str) -> str:
@@ -306,6 +306,8 @@ def organize_file(
         shutil.move(str(destination_file), str(source))
         raise
 
+    cleanup_empty_entities()
+
     return {
         "status": "organized",
         "category": category,
@@ -322,6 +324,86 @@ def organize_file(
         "tags": normalized_tags,
         "ai_generated": ai_generated,
         "sha256": sha256,
+    }
+
+
+def organize_files_batch(
+    relative_paths: list[str],
+    character_ids: list[int],
+    tags: list[str],
+    ai_generated: bool,
+    allow_duplicates: bool = False,
+) -> dict[str, Any]:
+    """Organizza più file di New applicando gli stessi metadati a tutti.
+
+    Ogni file viene elaborato separatamente: un errore o un duplicato non
+    annulla gli spostamenti già completati. I file non elaborati restano in
+    New e vengono restituiti nel riepilogo.
+    """
+
+    unique_paths = list(dict.fromkeys(path.strip() for path in relative_paths if path.strip()))
+    if not unique_paths:
+        raise ValueError("Seleziona almeno un file da organizzare.")
+    if len(unique_paths) > 500:
+        raise ValueError("Puoi organizzare al massimo 500 file per operazione.")
+
+    organized: list[dict[str, Any]] = []
+    duplicates: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+
+    for relative_path in unique_paths:
+        try:
+            result = organize_file(
+                relative_path=relative_path,
+                character_ids=character_ids,
+                tags=tags,
+                ai_generated=ai_generated,
+                allow_duplicate=allow_duplicates,
+            )
+
+            if result.get("status") == "duplicate":
+                duplicates.append(
+                    {
+                        "relative_path": relative_path,
+                        "duplicate": result.get("duplicate"),
+                        "sha256": result.get("sha256"),
+                    }
+                )
+            else:
+                organized.append(
+                    {
+                        "source_relative_path": relative_path,
+                        "relative_path": str(result["relative_path"]),
+                        "filename": str(result["filename"]),
+                    }
+                )
+        except (
+            FileNotFoundError,
+            PermissionError,
+            NotADirectoryError,
+            ValueError,
+            FileExistsError,
+            OSError,
+        ) as error:
+            errors.append(
+                {
+                    "relative_path": relative_path,
+                    "message": str(error),
+                }
+            )
+
+    cleanup_empty_entities()
+
+    return {
+        "status": "completed",
+        "requested": len(unique_paths),
+        "organized_count": len(organized),
+        "duplicate_count": len(duplicates),
+        "error_count": len(errors),
+        "organized": organized,
+        "duplicates": duplicates,
+        "errors": errors,
+        "allow_duplicates": allow_duplicates,
     }
 
 
