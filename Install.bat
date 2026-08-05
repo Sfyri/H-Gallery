@@ -1,26 +1,26 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title Installazione Galleria HDD
+title Installazione H-Gallery
 
 echo ========================================
-echo       INSTALLAZIONE GALLERIA HDD
+echo       INSTALLAZIONE H-Gallery
 echo ========================================
 echo.
 
-where py >nul 2>nul
+where python >nul 2>nul
 if %errorlevel%==0 (
-    set "PYTHON=py -3"
+    set "PYTHON=python"
 ) else (
-    where python >nul 2>nul
+    where py >nul 2>nul
     if errorlevel 1 (
-        echo Python non e' installato oppure non e' disponibile nel PATH.
+        echo Python non e' installato oppure non e' nel PATH.
         echo Installa Python 3.10 o successivo e riprova.
         echo.
         pause
         exit /b 1
     )
-    set "PYTHON=python"
+    set "PYTHON=py -3"
 )
 
 %PYTHON% -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"

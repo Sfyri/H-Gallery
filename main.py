@@ -130,7 +130,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(
-    title="Galleria HDD",
+    title="H-Gallery",
     description="Galleria locale per immagini e video",
     version="0.9.0",
     lifespan=lifespan,

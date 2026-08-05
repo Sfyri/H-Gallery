@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title Galleria HDD
+title H-Gallery
 
 if not exist ".venv\Scripts\python.exe" (
     echo Installazione locale non trovata. Avvio Install.bat...

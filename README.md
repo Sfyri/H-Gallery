@@ -1,4 +1,4 @@
-# Galleria HDD
+# H-Gallery
 
 Galleria locale per organizzare, cercare e visualizzare raccolte di immagini e video suddivise per serie e personaggi.
 
@@ -66,7 +66,7 @@ Per gli avvii successivi è sufficiente usare `Start.bat`.
 Il programma può trovarsi in una cartella diversa dall'archivio multimediale.
 
 ```text
-C:\Applicazioni\GalleriaHDD\
+C:\Applicazioni\H-Gallery\
     backend\
     frontend\
     Start.bat
