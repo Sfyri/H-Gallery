@@ -57,6 +57,20 @@ La cartella principale può essere rinominata, spostata o trasferita su un'altra
 
 Per gli avvii successivi è sufficiente usare `Start.bat`.
 
+## Primo utilizzo
+
+H-Gallery non importa automaticamente i file trascinati nella finestra del browser. Per aggiungere contenuti:
+
+1. copia o sposta immagini e video nella cartella `.toDo`, situata accanto a `.Script`;
+2. avvia H-Gallery e apri la sezione **New**;
+3. seleziona uno o più file;
+4. usa **Organizza** o **Organizza insieme**;
+5. assegna almeno un personaggio, quindi conferma **Rinomina e sposta**.
+
+Il programma creerà o userà le cartelle di serie e personaggi appropriate, rinominerà i file e li mostrerà nella galleria. Non è necessario creare manualmente una cartella di serie prima dell'organizzazione: serie e personaggi possono essere creati direttamente dall'interfaccia.
+
+Quando la galleria non contiene ancora file organizzati, la schermata principale mostra queste istruzioni e un pulsante per aprire **New**.
+
 ## Trasferimento su un altro computer
 
 Conserva:

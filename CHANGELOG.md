@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.7.1
+
+- Aggiunta una guida iniziale mostrata solo quando la galleria non contiene file organizzati.
+- La guida indica il flusso `.toDo` → New → Organizza e permette di aprire direttamente New.
+- README aggiornato con una sezione dedicata al primo utilizzo.
+
 ## 1.7.0
 
 - Modifica avanzata delle storie con aggiunta, rimozione e riordino delle pagine.

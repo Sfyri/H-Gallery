@@ -31,6 +31,9 @@ const dom = {
     globalSearchResults: byId("global-search-results"),
     overviewPanel: byId("overview-panel"),
     overviewSummary: byId("overview-summary"),
+    emptyGalleryGuide: byId("empty-gallery-guide"),
+    emptyGalleryGuideText: byId("empty-gallery-guide-text"),
+    emptyGalleryOpenNew: byId("empty-gallery-open-new"),
     franchiseGrid: byId("franchise-grid"),
     franchisePanel: byId("franchise-panel"),
     franchiseTitle: byId("franchise-title"),
@@ -769,6 +772,15 @@ function renderOverview() {
         return card;
     }));
 
+    const galleryIsEmpty = Number(summary.total_files || 0) === 0;
+    dom.emptyGalleryGuide.hidden = !galleryIsEmpty;
+    if (galleryIsEmpty) {
+        const todoCount = Number(state.overview.todo_count || 0);
+        dom.emptyGalleryGuideText.textContent = todoCount > 0
+            ? `${todoCount} ${todoCount === 1 ? "file è già pronto" : "file sono già pronti"} nella sezione New. Apri New, seleziona i file, assegna almeno un personaggio e organizzali.`
+            : "Per iniziare, copia immagini o video nella cartella .toDo. Poi apri New, seleziona i file, assegna almeno un personaggio e organizzali.";
+    }
+
     dom.franchiseGrid.replaceChildren();
     const fragment = document.createDocumentFragment();
     state.overview.franchises.forEach(franchise => {
@@ -781,10 +793,10 @@ function renderOverview() {
         }));
     });
 
-    if (!fragment.childNodes.length) {
+    if (!fragment.childNodes.length && !galleryIsEmpty) {
         const empty = document.createElement("p");
         empty.className = "empty-message";
-        empty.textContent = "La galleria non contiene ancora file organizzati.";
+        empty.textContent = "Non sono presenti serie da mostrare.";
         fragment.appendChild(empty);
     }
     dom.franchiseGrid.appendChild(fragment);
@@ -3367,6 +3379,7 @@ function closeStoryReader() {
 // Navigazione principale.
 dom.navButtons.forEach(button => button.addEventListener("click", () => showView(button.dataset.view)));
 dom.backToOverview.addEventListener("click", renderOverview);
+dom.emptyGalleryOpenNew.addEventListener("click", () => showView("todo"));
 
 dom.globalSearch.addEventListener("input", () => debounce("global-search", runGlobalSearch));
 document.addEventListener("click", event => {
