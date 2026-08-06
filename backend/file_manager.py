@@ -7,7 +7,7 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
-from backend.database import get_connection
+from backend.database import ensure_tag, get_connection, normalize_tag_name
 from backend.scanner import cleanup_empty_entities, get_media_type, load_config
 
 
@@ -178,6 +178,7 @@ def organize_file(
     relative_path: str,
     character_ids: list[int],
     tags: list[str],
+    artists: list[str],
     ai_generated: bool,
     allow_duplicate: bool = False,
 ) -> dict[str, Any]:
@@ -224,19 +225,25 @@ def organize_file(
 
     shutil.move(str(source), str(destination_file))
 
-    normalized_tags = []
-    seen_tags: set[str] = set()
-    for tag in tags:
-        cleaned = tag.strip()
-        if not cleaned:
-            continue
-        folded = cleaned.casefold()
-        if folded not in seen_tags:
-            normalized_tags.append(cleaned)
-            seen_tags.add(folded)
+    normalized_tags: list[str] = []
+    normalized_artists: list[str] = []
+    seen_names: set[str] = set()
 
-    if ai_generated and "ai" not in seen_tags:
-        normalized_tags.append("AI")
+    for tag in tags:
+        cleaned = normalize_tag_name(tag)
+        folded = cleaned.casefold()
+        if not cleaned or folded == "ai" or folded in seen_names:
+            continue
+        normalized_tags.append(cleaned)
+        seen_names.add(folded)
+
+    for artist in artists:
+        cleaned = normalize_tag_name(artist)
+        folded = cleaned.casefold()
+        if not cleaned or folded == "ai" or folded in seen_names:
+            continue
+        normalized_artists.append(cleaned)
+        seen_names.add(folded)
 
     try:
         with get_connection() as connection:
@@ -278,19 +285,30 @@ def organize_file(
                 [(file_id, int(character["id"])) for character in characters],
             )
 
-            for tag_name in normalized_tags:
-                connection.execute(
-                    "INSERT INTO tags(name) VALUES (?) ON CONFLICT(name) DO NOTHING",
-                    (tag_name,),
+            canonical_tags: list[dict[str, str]] = []
+            canonical_seen: set[str] = set()
+
+            typed_tags = [
+                *((name, "general") for name in normalized_tags),
+                *((name, "artist") for name in normalized_artists),
+            ]
+            if ai_generated:
+                typed_tags.append(("AI", "system"))
+
+            for tag_name, tag_type in typed_tags:
+                tag_id, canonical_name, canonical_type = ensure_tag(
+                    connection, tag_name, tag_type
                 )
-                tag_row = connection.execute(
-                    "SELECT id FROM tags WHERE name = ? COLLATE NOCASE",
-                    (tag_name,),
-                ).fetchone()
                 connection.execute(
                     "INSERT OR IGNORE INTO file_tags(file_id, tag_id) VALUES (?, ?)",
-                    (file_id, int(tag_row["id"])),
+                    (file_id, tag_id),
                 )
+                folded = canonical_name.casefold()
+                if folded not in canonical_seen:
+                    canonical_tags.append(
+                        {"name": canonical_name, "type": canonical_type}
+                    )
+                    canonical_seen.add(folded)
 
             connection.execute(
                 """
@@ -321,7 +339,8 @@ def organize_file(
             }
             for character in characters
         ],
-        "tags": normalized_tags,
+        "tags": canonical_tags,
+        "artists": [tag["name"] for tag in canonical_tags if tag["type"] == "artist"],
         "ai_generated": ai_generated,
         "sha256": sha256,
     }
@@ -331,6 +350,7 @@ def organize_files_batch(
     relative_paths: list[str],
     character_ids: list[int],
     tags: list[str],
+    artists: list[str],
     ai_generated: bool,
     allow_duplicates: bool = False,
 ) -> dict[str, Any]:
@@ -357,6 +377,7 @@ def organize_files_batch(
                 relative_path=relative_path,
                 character_ids=character_ids,
                 tags=tags,
+                artists=artists,
                 ai_generated=ai_generated,
                 allow_duplicate=allow_duplicates,
             )

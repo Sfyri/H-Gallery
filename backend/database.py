@@ -11,6 +11,60 @@ migrate_legacy_user_storage()
 DATABASE_PATH = DATA_ROOT / "gallery.db"
 
 
+def normalize_tag_name(value: str) -> str:
+    """Normalizza gli spazi senza alterare la grafia scelta dall’utente."""
+
+    return " ".join(str(value).split())
+
+
+def ensure_tag(
+    connection: sqlite3.Connection,
+    name: str,
+    tag_type: str = "general",
+) -> tuple[int, str, str]:
+    """Restituisce un tag esistente ignorando maiuscole/minuscole o lo crea.
+
+    I tipi ammessi sono ``general``, ``artist`` e ``system``. Un tag già
+    classificato come artista o di sistema non viene retrocesso a generale.
+    Se un tag generale viene inserito nel campo Artista, viene promosso ad
+    artista mantenendo lo stesso ID e tutte le associazioni esistenti.
+    """
+
+    cleaned = normalize_tag_name(name)
+    if not cleaned:
+        raise ValueError("Il nome del tag non può essere vuoto.")
+
+    normalized_type = str(tag_type or "general").strip().casefold()
+    if normalized_type not in {"general", "artist", "system"}:
+        raise ValueError("Tipo di tag non valido.")
+
+    if cleaned.casefold() == "ai":
+        normalized_type = "system"
+
+    row = connection.execute(
+        "SELECT id, name, type FROM tags WHERE name = ? COLLATE NOCASE",
+        (cleaned,),
+    ).fetchone()
+
+    if row is None:
+        cursor = connection.execute(
+            "INSERT INTO tags(name, type) VALUES (?, ?)",
+            (cleaned, normalized_type),
+        )
+        return int(cursor.lastrowid), cleaned, normalized_type
+
+    current_type = str(row["type"] or "general")
+    final_type = current_type
+    if current_type == "general" and normalized_type in {"artist", "system"}:
+        final_type = normalized_type
+        connection.execute(
+            "UPDATE tags SET type = ? WHERE id = ?",
+            (final_type, int(row["id"])),
+        )
+
+    return int(row["id"]), str(row["name"]), final_type
+
+
 @contextmanager
 def get_connection() -> Iterator[sqlite3.Connection]:
     DATA_ROOT.mkdir(parents=True, exist_ok=True)
@@ -92,8 +146,21 @@ def init_database() -> None:
 
             CREATE TABLE IF NOT EXISTS tags (
                 id INTEGER PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE COLLATE NOCASE
+                name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                type TEXT NOT NULL DEFAULT 'general'
+                    CHECK(type IN ('general', 'artist', 'system'))
             );
+
+            CREATE TABLE IF NOT EXISTS character_aliases (
+                id INTEGER PRIMARY KEY,
+                character_id INTEGER NOT NULL,
+                alias TEXT NOT NULL COLLATE NOCASE,
+                FOREIGN KEY(character_id) REFERENCES characters(id) ON DELETE CASCADE,
+                UNIQUE(character_id, alias)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_character_aliases_alias
+            ON character_aliases(alias);
 
             CREATE TABLE IF NOT EXISTS file_characters (
                 file_id INTEGER NOT NULL,
@@ -159,4 +226,17 @@ def init_database() -> None:
 
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_files_modified ON files(modified_at DESC)"
+        )
+
+        tag_columns = _column_names(connection, "tags")
+        if "type" not in tag_columns:
+            connection.execute(
+                "ALTER TABLE tags ADD COLUMN type TEXT NOT NULL DEFAULT 'general'"
+            )
+
+        connection.execute(
+            "UPDATE tags SET type = 'system' WHERE name = 'AI' COLLATE NOCASE"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tags_type ON tags(type, name)"
         )

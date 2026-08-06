@@ -62,11 +62,13 @@ from backend.scanner import (
     create_franchise,
     get_media_type,
     list_franchises,
+    get_character_aliases,
     list_todo_files,
     load_config,
     scan_gallery,
     search_characters,
     sync_characters,
+    update_character_aliases,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -77,6 +79,7 @@ class OrganizeRequest(BaseModel):
     relative_path: str
     character_ids: list[int] = Field(min_length=1)
     tags: list[str] = Field(default_factory=list)
+    artists: list[str] = Field(default_factory=list)
     ai_generated: bool = False
     allow_duplicate: bool = False
 
@@ -91,6 +94,7 @@ class BatchOrganizeRequest(BaseModel):
     relative_paths: list[str] = Field(min_length=1, max_length=500)
     character_ids: list[int] = Field(min_length=1)
     tags: list[str] = Field(default_factory=list)
+    artists: list[str] = Field(default_factory=list)
     ai_generated: bool = False
     allow_duplicates: bool = False
 
@@ -107,11 +111,17 @@ class FranchiseCreateRequest(BaseModel):
 class CharacterCreateRequest(BaseModel):
     franchise_id: int
     name: str = Field(min_length=1, max_length=120)
+    aliases: list[str] = Field(default_factory=list)
+
+
+class CharacterAliasesRequest(BaseModel):
+    aliases: list[str] = Field(default_factory=list)
 
 
 class FileMetadataRequest(BaseModel):
     character_ids: list[int] = Field(min_length=1)
     tags: list[str] = Field(default_factory=list)
+    artists: list[str] = Field(default_factory=list)
     ai_generated: bool = False
 
 
@@ -141,7 +151,7 @@ async def lifespan(_: FastAPI):
 app = FastAPI(
     title="H-Gallery",
     description="Galleria locale per immagini e video",
-    version="1.2.0",
+    version="1.4.0",
     lifespan=lifespan,
 )
 
@@ -206,7 +216,7 @@ def add_franchise(request: FranchiseCreateRequest):
 @app.post("/api/characters", status_code=201)
 def add_character(request: CharacterCreateRequest):
     try:
-        return create_character(request.franchise_id, request.name)
+        return create_character(request.franchise_id, request.name, request.aliases)
     except (FileNotFoundError, NotADirectoryError, ValueError, PermissionError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -217,6 +227,22 @@ def character_search(
     limit: int = Query(default=20, ge=1, le=100),
 ):
     return {"results": search_characters(q, limit)}
+
+
+@app.get("/api/characters/{character_id}/aliases")
+def character_aliases(character_id: int):
+    try:
+        return get_character_aliases(character_id)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@app.put("/api/characters/{character_id}/aliases")
+def save_character_aliases(character_id: int, request: CharacterAliasesRequest):
+    try:
+        return update_character_aliases(character_id, request.aliases)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
 
 
 @app.get("/api/todo/files")
@@ -248,6 +274,7 @@ def organize(request: OrganizeRequest):
             relative_path=request.relative_path,
             character_ids=request.character_ids,
             tags=request.tags,
+            artists=request.artists,
             ai_generated=request.ai_generated,
             allow_duplicate=request.allow_duplicate,
         )
@@ -272,6 +299,7 @@ def organize_batch(request: BatchOrganizeRequest):
             relative_paths=request.relative_paths,
             character_ids=request.character_ids,
             tags=request.tags,
+            artists=request.artists,
             ai_generated=request.ai_generated,
             allow_duplicates=request.allow_duplicates,
         )
@@ -344,6 +372,7 @@ def edit_gallery_file(file_id: int, request: FileMetadataRequest):
             file_id,
             character_ids=request.character_ids,
             tags=request.tags,
+            artists=request.artists,
             ai_generated=request.ai_generated,
         )
     except FileNotFoundError as error:
@@ -368,8 +397,9 @@ def reveal_gallery_file(file_id: int):
 def gallery_tags(
     q: str | None = Query(default=None, max_length=100),
     limit: int = Query(default=100, ge=1, le=500),
+    type: str | None = Query(default=None, pattern="^(general|artist|system)$"),
 ):
-    return {"results": list_tags(q, limit)}
+    return {"results": list_tags(q, limit, type)}
 
 
 @app.get("/api/gallery/search")

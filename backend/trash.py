@@ -238,11 +238,15 @@ def _hydrate_trash_items(connection, rows) -> list[dict[str, Any]]:
         ).fetchall()
         tag_rows = connection.execute(
             f"""
-            SELECT ft.file_id, t.id, t.name
+            SELECT ft.file_id, t.id, t.name, t.type
             FROM file_tags ft
             JOIN tags t ON t.id = ft.tag_id
             WHERE ft.file_id IN ({placeholders})
-            ORDER BY t.name COLLATE NOCASE
+            ORDER BY CASE t.type
+                WHEN 'system' THEN 0
+                WHEN 'artist' THEN 1
+                ELSE 2
+            END, t.name COLLATE NOCASE
             """,
             file_ids,
         ).fetchall()
@@ -258,7 +262,7 @@ def _hydrate_trash_items(connection, rows) -> list[dict[str, Any]]:
             )
         for row in tag_rows:
             tags[int(row["file_id"])].append(
-                {"id": int(row["id"]), "name": str(row["name"])}
+                {"id": int(row["id"]), "name": str(row["name"]), "type": str(row["type"] or "general")}
             )
 
     result: list[dict[str, Any]] = []

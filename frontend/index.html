@@ -68,10 +68,13 @@
                         <h2 id="media-title"></h2>
                         <p id="media-subtitle"></p>
                     </div>
-                    <div id="character-score-box" class="score-box" hidden>
-                        <button id="character-score-minus" type="button" aria-label="Diminuisci punteggio">−</button>
-                        <strong id="character-score-value">0</strong>
-                        <button id="character-score-plus" type="button" aria-label="Aumenta punteggio">+</button>
+                    <div id="character-heading-actions" class="character-heading-actions" hidden>
+                        <div id="character-score-box" class="score-box">
+                            <button id="character-score-minus" type="button" aria-label="Diminuisci punteggio">−</button>
+                            <strong id="character-score-value">0</strong>
+                            <button id="character-score-plus" type="button" aria-label="Aumenta punteggio">+</button>
+                        </div>
+                        <button id="manage-character-aliases" class="secondary-button" type="button">Alias</button>
                     </div>
                 </div>
 
@@ -87,7 +90,10 @@
                         <option value="true">Solo IA</option>
                         <option value="false">Escludi IA</option>
                     </select>
-                    <input id="media-tag-filter" type="text" placeholder="Tag separati da virgola">
+                    <div class="tag-autocomplete">
+                        <input id="media-tag-filter" type="text" autocomplete="off" placeholder="Tag separati da virgola">
+                        <div id="media-tag-suggestions" class="tag-suggestions" role="listbox"></div>
+                    </div>
                     <select id="media-sort" aria-label="Ordinamento">
                         <option value="newest">Più recenti</option>
                         <option value="oldest">Meno recenti</option>
@@ -255,8 +261,18 @@
                     <div id="organize-selected-characters" class="selected-characters"></div>
 
                     <label for="organize-tags-input">Tag</label>
-                    <input id="organize-tags-input" type="text" placeholder="armor, smile, wallpaper">
-                    <small>Separali con una virgola.</small>
+                    <div class="tag-autocomplete">
+                        <input id="organize-tags-input" type="text" autocomplete="off" placeholder="armor, smile, wallpaper">
+                        <div id="organize-tag-suggestions" class="tag-suggestions" role="listbox"></div>
+                    </div>
+                    <small>Separali con una virgola. I tag già usati vengono suggeriti automaticamente.</small>
+
+                    <label for="organize-artists-input">Artista</label>
+                    <div class="tag-autocomplete">
+                        <input id="organize-artists-input" type="text" autocomplete="off" placeholder="Nome dell’artista (facoltativo)">
+                        <div id="organize-artist-suggestions" class="tag-suggestions" role="listbox"></div>
+                    </div>
+                    <small>Può rimanere vuoto. Più artisti possono essere separati da una virgola.</small>
 
                     <label class="checkbox-row">
                         <input id="organize-ai-checkbox" type="checkbox">
@@ -295,6 +311,10 @@
             <div class="small-dialog-body">
                 <label for="new-character-name">Nome personaggio</label>
                 <input id="new-character-name" type="text" maxlength="120" required>
+
+                <label for="new-character-aliases">Alias</label>
+                <input id="new-character-aliases" type="text" maxlength="500" placeholder="Shirona, シロナ (facoltativo)">
+                <small>Gli alias servono solo per la ricerca e non modificano cartella o nome dei file.</small>
 
                 <label for="franchise-select">Serie</label>
                 <select id="franchise-select" required></select>
@@ -338,7 +358,16 @@
                     <div id="edit-selected-characters" class="selected-characters"></div>
 
                     <label for="edit-tags-input">Tag</label>
-                    <input id="edit-tags-input" type="text" placeholder="Tag separati da virgola">
+                    <div class="tag-autocomplete">
+                        <input id="edit-tags-input" type="text" autocomplete="off" placeholder="Tag separati da virgola">
+                        <div id="edit-tag-suggestions" class="tag-suggestions" role="listbox"></div>
+                    </div>
+
+                    <label for="edit-artists-input">Artista</label>
+                    <div class="tag-autocomplete">
+                        <input id="edit-artists-input" type="text" autocomplete="off" placeholder="Nome dell’artista (facoltativo)">
+                        <div id="edit-artist-suggestions" class="tag-suggestions" role="listbox"></div>
+                    </div>
 
                     <label class="checkbox-row">
                         <input id="edit-ai-checkbox" type="checkbox">
@@ -357,6 +386,28 @@
                             <button id="save-file-edit" type="submit">Salva modifiche</button>
                         </div>
                     </div>
+                </div>
+            </div>
+        </form>
+    </dialog>
+
+    <dialog id="character-alias-dialog" class="small-dialog">
+        <form id="character-alias-form">
+            <div class="dialog-header">
+                <div>
+                    <h2 id="character-alias-title">Alias personaggio</h2>
+                    <p>Gli alias vengono usati nella ricerca senza rinominare cartelle o file.</p>
+                </div>
+                <button id="close-character-alias-dialog" class="icon-button" type="button" aria-label="Chiudi">×</button>
+            </div>
+            <div class="small-dialog-body">
+                <label for="character-alias-input">Alias</label>
+                <input id="character-alias-input" type="text" maxlength="1000" placeholder="Shirona, シロナ">
+                <small>Separali con una virgola. Il nome principale non deve essere ripetuto.</small>
+                <p id="character-alias-status" class="status-message"></p>
+                <div class="dialog-actions">
+                    <button id="cancel-character-alias" type="button" class="secondary-button">Annulla</button>
+                    <button id="save-character-alias" type="submit">Salva alias</button>
                 </div>
             </div>
         </form>

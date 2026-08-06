@@ -22,7 +22,7 @@ def _set_ai_state(connection, file_id: int, ai_generated: bool) -> None:
 
     if ai_generated:
         connection.execute(
-            "INSERT INTO tags(name) VALUES ('AI') ON CONFLICT(name) DO NOTHING"
+            "INSERT INTO tags(name, type) VALUES ('AI', 'system') ON CONFLICT(name) DO UPDATE SET type = 'system'"
         )
         tag_row = connection.execute(
             "SELECT id FROM tags WHERE name = 'AI' COLLATE NOCASE"

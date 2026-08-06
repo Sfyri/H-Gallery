@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.4.0
+
+- Aggiunti tre tipi di tag con colori distinti: generali arancioni, artisti viola e AI verde.
+- Aggiunto il campo Artista facoltativo nell'organizzazione singola e multipla e nella modifica dei file.
+- I nomi degli artisti già salvati vengono suggeriti automaticamente.
+- Un tag generale inserito come artista viene convertito senza perdere le associazioni esistenti.
+- Aggiunti alias multipli ai personaggi, ricercabili senza modificare cartelle o nomi dei file.
+- Gli alias possono essere inseriti durante la creazione e modificati dalla pagina del personaggio.
+- Backup ed esportazione JSON includono gli alias.
+- Migrazione automatica e non distruttiva del database esistente.
+
+## 1.3.0
+
+- suggerimenti automatici per i tag già esistenti;
+- selezione dei suggerimenti con clic, frecce e Invio;
+- autocomplete disponibile in New, organizzazione multipla, modifica file e filtro della galleria;
+- ordinamento dei suggerimenti per corrispondenza e frequenza di utilizzo;
+- normalizzazione degli spazi e riutilizzo della grafia già presente nel database;
+- prevenzione di tag duplicati dovuti a maiuscole, minuscole o spazi multipli.
+
 ## 1.2.0
 
 - Radice della galleria rilevata automaticamente come cartella padre di `.Script`.

@@ -1190,3 +1190,130 @@ main {
         grid-auto-rows: 190px;
     }
 }
+
+/* v1.3 — suggerimenti automatici dei tag */
+.tag-autocomplete {
+    position: relative;
+    min-width: 0;
+}
+
+.tag-autocomplete > input {
+    width: 100%;
+}
+
+.tag-suggestions {
+    position: absolute;
+    z-index: 70;
+    top: calc(100% + 5px);
+    right: 0;
+    left: 0;
+    max-height: 230px;
+    overflow-y: auto;
+    border: 1px solid var(--border-light);
+    border-radius: 8px;
+    background: var(--panel);
+    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.48);
+}
+
+.tag-suggestions:empty {
+    display: none;
+}
+
+.tag-suggestion {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 10px 12px;
+    border: 0;
+    border-bottom: 1px solid var(--border);
+    border-radius: 0;
+    text-align: left;
+    background: var(--panel);
+}
+
+.tag-suggestion:last-child {
+    border-bottom: 0;
+}
+
+.tag-suggestion:hover,
+.tag-suggestion.active {
+    background: #303744;
+}
+
+.tag-suggestion small {
+    flex: 0 0 auto;
+    color: var(--muted);
+}
+
+.filter-bar .tag-autocomplete {
+    align-self: stretch;
+}
+
+/* v1.4 — tipi di tag, artisti e alias dei personaggi */
+.character-heading-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.character-heading-actions[hidden] {
+    display: none;
+}
+
+.search-result-aliases {
+    color: #b9a5d5 !important;
+}
+
+.tag-chip.tag-general,
+.card-tags .tag-general {
+    border-color: #a9682c;
+    color: #ffd8ad;
+    background: #56351d;
+}
+
+.tag-chip.tag-artist,
+.card-tags .tag-artist {
+    border-color: #8c5ab3;
+    color: #ead2ff;
+    background: #43285a;
+}
+
+.tag-chip.tag-system,
+.card-tags .tag-system {
+    border-color: #43845c;
+    color: #c9f4d6;
+    background: #234b34;
+}
+
+.tag-suggestion.tag-general,
+.floating-result.tag-general {
+    border-left: 4px solid #c77c32;
+}
+
+.tag-suggestion.tag-artist,
+.floating-result.tag-artist {
+    border-left: 4px solid #a56bd0;
+}
+
+.tag-suggestion.tag-system,
+.floating-result.tag-system {
+    border-left: 4px solid #55a873;
+}
+
+.tag-suggestion.tag-general:hover,
+.tag-suggestion.tag-general.active {
+    background: #56351d;
+}
+
+.tag-suggestion.tag-artist:hover,
+.tag-suggestion.tag-artist.active {
+    background: #43285a;
+}
+
+.tag-suggestion.tag-system:hover,
+.tag-suggestion.tag-system.active {
+    background: #234b34;
+}

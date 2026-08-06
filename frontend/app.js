@@ -40,15 +40,18 @@ const dom = {
     mediaPanel: byId("media-panel"),
     mediaTitle: byId("media-title"),
     mediaSubtitle: byId("media-subtitle"),
+    characterHeadingActions: byId("character-heading-actions"),
     characterScoreBox: byId("character-score-box"),
     characterScoreMinus: byId("character-score-minus"),
     characterScorePlus: byId("character-score-plus"),
     characterScoreValue: byId("character-score-value"),
+    manageCharacterAliases: byId("manage-character-aliases"),
     mediaFilterForm: byId("media-filter-form"),
     mediaSearch: byId("media-search"),
     mediaTypeFilter: byId("media-type-filter"),
     mediaAiFilter: byId("media-ai-filter"),
     mediaTagFilter: byId("media-tag-filter"),
+    mediaTagSuggestions: byId("media-tag-suggestions"),
     mediaSort: byId("media-sort"),
     clearMediaFilters: byId("clear-media-filters"),
     mediaResultSummary: byId("media-result-summary"),
@@ -99,6 +102,9 @@ const dom = {
     organizeSearchResults: byId("organize-search-results"),
     organizeSelectedCharacters: byId("organize-selected-characters"),
     organizeTagsInput: byId("organize-tags-input"),
+    organizeTagSuggestions: byId("organize-tag-suggestions"),
+    organizeArtistsInput: byId("organize-artists-input"),
+    organizeArtistSuggestions: byId("organize-artist-suggestions"),
     organizeAiCheckbox: byId("organize-ai-checkbox"),
     organizeKeepDuplicatesRow: byId("organize-keep-duplicates-row"),
     organizeKeepDuplicatesCheckbox: byId("organize-keep-duplicates-checkbox"),
@@ -111,6 +117,7 @@ const dom = {
     cancelCreateCharacter: byId("cancel-create-character"),
     submitCreateCharacter: byId("submit-create-character"),
     newCharacterName: byId("new-character-name"),
+    newCharacterAliases: byId("new-character-aliases"),
     franchiseSelect: byId("franchise-select"),
     newFranchiseFields: byId("new-franchise-fields"),
     newFranchiseName: byId("new-franchise-name"),
@@ -127,13 +134,25 @@ const dom = {
     editSearchResults: byId("edit-search-results"),
     editSelectedCharacters: byId("edit-selected-characters"),
     editTagsInput: byId("edit-tags-input"),
+    editTagSuggestions: byId("edit-tag-suggestions"),
+    editArtistsInput: byId("edit-artists-input"),
+    editArtistSuggestions: byId("edit-artist-suggestions"),
     editAiCheckbox: byId("edit-ai-checkbox"),
     fileDialogStatus: byId("file-dialog-status"),
     closeFileDialog: byId("close-file-dialog"),
     cancelFileEdit: byId("cancel-file-edit"),
     saveFileEdit: byId("save-file-edit"),
     revealFileButton: byId("reveal-file-button"),
-    trashFileButton: byId("trash-file-button")
+    trashFileButton: byId("trash-file-button"),
+
+    characterAliasDialog: byId("character-alias-dialog"),
+    characterAliasForm: byId("character-alias-form"),
+    characterAliasTitle: byId("character-alias-title"),
+    characterAliasInput: byId("character-alias-input"),
+    characterAliasStatus: byId("character-alias-status"),
+    closeCharacterAliasDialog: byId("close-character-alias-dialog"),
+    cancelCharacterAlias: byId("cancel-character-alias"),
+    saveCharacterAlias: byId("save-character-alias")
 };
 
 const NEW_FRANCHISE_VALUE = "__new__";
@@ -156,6 +175,7 @@ const state = {
     creationTarget: "organize",
     franchiseList: [],
     codeEditedManually: false,
+    aliasCharacter: null,
     timers: {}
 };
 
@@ -232,11 +252,15 @@ function deriveFranchiseCode(name) {
     return words.map(word => word[0]).join("").slice(0, 10).toUpperCase();
 }
 
+function normalizeTagText(value) {
+    return String(value || "").trim().replace(/\s+/g, " ");
+}
+
 function parseTags(value) {
     const result = [];
     const seen = new Set();
     for (const raw of value.split(",")) {
-        const tag = raw.trim();
+        const tag = normalizeTagText(raw);
         const key = tag.toLocaleLowerCase("it-IT");
         if (tag && !seen.has(key)) {
             result.push(tag);
@@ -244,6 +268,169 @@ function parseTags(value) {
         }
     }
     return result;
+}
+
+function tagTypeClass(type) {
+    const normalized = String(type || "general").toLocaleLowerCase("it-IT");
+    if (normalized === "artist") return "tag-artist";
+    if (normalized === "system") return "tag-system";
+    return "tag-general";
+}
+
+function createTagChip(tag, { prefix = "" } = {}) {
+    const chip = document.createElement("span");
+    chip.className = `tag-chip ${tagTypeClass(tag.type)}`;
+    chip.textContent = `${prefix}${tag.name}`;
+    chip.title = tag.type === "artist"
+        ? "Artista"
+        : tag.type === "system" ? "Tag di sistema" : "Tag";
+    return chip;
+}
+
+function getActiveTagToken(input) {
+    const cursor = input.selectionStart ?? input.value.length;
+    const parts = input.value.split(",");
+    const index = input.value.slice(0, cursor).split(",").length - 1;
+    return {
+        parts,
+        index: Math.min(Math.max(index, 0), Math.max(parts.length - 1, 0)),
+        query: normalizeTagText(parts[index] || "")
+    };
+}
+
+function replaceActiveTag(input, tagName) {
+    const token = getActiveTagToken(input);
+    token.parts[token.index] = normalizeTagText(tagName);
+
+    const unique = [];
+    const seen = new Set();
+    for (const part of token.parts) {
+        const cleaned = normalizeTagText(part);
+        const key = cleaned.toLocaleLowerCase("it-IT");
+        if (cleaned && !seen.has(key)) {
+            unique.push(cleaned);
+            seen.add(key);
+        }
+    }
+
+    input.value = unique.length ? `${unique.join(", ")}, ` : "";
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+}
+
+function setupTagAutocomplete(input, resultsContainer, { excludeAi = false, tagType = null } = {}) {
+    if (!input || !resultsContainer) return;
+
+    let suggestions = [];
+    let activeIndex = -1;
+    let requestSerial = 0;
+
+    const closeSuggestions = () => {
+        suggestions = [];
+        activeIndex = -1;
+        resultsContainer.replaceChildren();
+        input.setAttribute("aria-expanded", "false");
+    };
+
+    const setActiveIndex = index => {
+        if (!suggestions.length) {
+            activeIndex = -1;
+            return;
+        }
+        activeIndex = (index + suggestions.length) % suggestions.length;
+        [...resultsContainer.querySelectorAll(".tag-suggestion")].forEach((button, buttonIndex) => {
+            const active = buttonIndex === activeIndex;
+            button.classList.toggle("active", active);
+            button.setAttribute("aria-selected", String(active));
+            if (active) button.scrollIntoView({ block: "nearest" });
+        });
+    };
+
+    const selectSuggestion = suggestion => {
+        replaceActiveTag(input, suggestion.name);
+        closeSuggestions();
+    };
+
+    const renderSuggestions = items => {
+        resultsContainer.replaceChildren();
+        suggestions = items;
+        activeIndex = -1;
+        input.setAttribute("aria-expanded", String(items.length > 0));
+
+        for (const suggestion of items) {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = `tag-suggestion ${tagTypeClass(suggestion.type)}`;
+            button.setAttribute("role", "option");
+            button.setAttribute("aria-selected", "false");
+
+            const name = document.createElement("strong");
+            name.textContent = suggestion.name;
+            const count = document.createElement("small");
+            count.textContent = `${suggestion.file_count} file`;
+            button.append(name, count);
+
+            button.addEventListener("mousedown", event => event.preventDefault());
+            button.addEventListener("click", () => selectSuggestion(suggestion));
+            resultsContainer.appendChild(button);
+        }
+    };
+
+    const loadSuggestions = async () => {
+        const token = getActiveTagToken(input);
+        const selectedKeys = new Set(
+            token.parts
+                .filter((_part, index) => index !== token.index)
+                .map(part => normalizeTagText(part).toLocaleLowerCase("it-IT"))
+                .filter(Boolean)
+        );
+
+        const params = new URLSearchParams({ limit: "10" });
+        if (token.query) params.set("q", token.query);
+        if (tagType) params.set("type", tagType);
+        const currentRequest = ++requestSerial;
+
+        try {
+            const data = await readJson(await fetch(`/api/gallery/tags?${params.toString()}`));
+            if (currentRequest !== requestSerial) return;
+            const filtered = data.results.filter(tag => {
+                const key = tag.name.toLocaleLowerCase("it-IT");
+                return !selectedKeys.has(key) && !(excludeAi && key === "ai");
+            });
+            renderSuggestions(filtered);
+        } catch (error) {
+            if (currentRequest === requestSerial) closeSuggestions();
+            console.error(error);
+        }
+    };
+
+    input.setAttribute("aria-autocomplete", "list");
+    input.setAttribute("aria-controls", resultsContainer.id);
+    input.setAttribute("aria-expanded", "false");
+    input.addEventListener("focus", loadSuggestions);
+    input.addEventListener("input", () => {
+        debounce(`tag-suggestions-${input.id}`, loadSuggestions, 120);
+    });
+    input.addEventListener("keydown", event => {
+        if (event.key === "ArrowDown" && suggestions.length) {
+            event.preventDefault();
+            setActiveIndex(activeIndex + 1);
+        } else if (event.key === "ArrowUp" && suggestions.length) {
+            event.preventDefault();
+            setActiveIndex(activeIndex <= 0 ? suggestions.length - 1 : activeIndex - 1);
+        } else if (event.key === "Enter" && activeIndex >= 0) {
+            event.preventDefault();
+            selectSuggestion(suggestions[activeIndex]);
+        } else if (event.key === "Escape") {
+            closeSuggestions();
+        }
+    });
+    input.addEventListener("blur", () => {
+        window.setTimeout(() => {
+            input.value = parseTags(input.value).join(", ");
+            closeSuggestions();
+        }, 120);
+    });
 }
 
 function createMediaElement(file, controls = false) {
@@ -550,7 +737,9 @@ function renderCharacterGrid(data) {
     data.characters.forEach(character => {
         fragment.appendChild(createCollectionCard({
             title: character.name,
-            subtitle: `${character.total_files} file associati`,
+            subtitle: character.aliases?.length
+                ? `${character.total_files} file associati · Alias: ${character.aliases.join(", ")}`
+                : `${character.total_files} file associati`,
             coverUrl: character.cover_url,
             badges: [`${character.images} immagini`, `${character.videos} video`, `${character.ai_files} IA`],
             scoreControls: { character },
@@ -595,8 +784,11 @@ function openMediaContext(context) {
     dom.mediaTitle.textContent = context.title;
 
     if (context.kind === "character") {
-        dom.mediaSubtitle.textContent = `${context.franchise.name} · tutti i file associati, inclusi !Multiple e crossover`;
-        dom.characterScoreBox.hidden = false;
+        const aliasSuffix = context.character.aliases?.length
+            ? ` · Alias: ${context.character.aliases.join(", ")}`
+            : "";
+        dom.mediaSubtitle.textContent = `${context.franchise.name} · tutti i file associati, inclusi !Multiple e crossover${aliasSuffix}`;
+        dom.characterHeadingActions.hidden = false;
         dom.characterScoreValue.textContent = context.character.score;
         renderBreadcrumb([
             { label: "Galleria", action: renderOverview },
@@ -605,7 +797,7 @@ function openMediaContext(context) {
         ]);
     } else if (context.kind === "multiple") {
         dom.mediaSubtitle.textContent = "File conservati fisicamente nella cartella !Multiple";
-        dom.characterScoreBox.hidden = true;
+        dom.characterHeadingActions.hidden = true;
         renderBreadcrumb([
             { label: "Galleria", action: renderOverview },
             { label: context.franchise.name, action: () => openFranchise(context.franchise.id) },
@@ -613,14 +805,14 @@ function openMediaContext(context) {
         ]);
     } else if (context.kind === "crossovers") {
         dom.mediaSubtitle.textContent = "File con personaggi appartenenti a serie differenti";
-        dom.characterScoreBox.hidden = true;
+        dom.characterHeadingActions.hidden = true;
         renderBreadcrumb([
             { label: "Galleria", action: renderOverview },
             { label: "!Crossovers" }
         ]);
     } else if (context.kind === "tag") {
         dom.mediaSubtitle.textContent = `Ricerca per il tag “${context.tag}”`;
-        dom.characterScoreBox.hidden = true;
+        dom.characterHeadingActions.hidden = true;
         dom.mediaTagFilter.value = context.tag;
         renderBreadcrumb([
             { label: "Galleria", action: renderOverview },
@@ -698,9 +890,7 @@ function createGalleryMediaCard(file) {
     const tags = document.createElement("div");
     tags.className = "card-tags";
     file.tags.slice(0, 4).forEach(tag => {
-        const chip = document.createElement("span");
-        chip.textContent = tag.name;
-        tags.appendChild(chip);
+        tags.appendChild(createTagChip(tag));
     });
 
     const characters = document.createElement("p");
@@ -771,7 +961,10 @@ async function runGlobalSearch() {
             const button = document.createElement("button");
             button.type = "button";
             button.className = "floating-result";
-            button.innerHTML = `<strong>${escapeHtml(character.name)}</strong><small>${escapeHtml(character.franchise_name)}</small>`;
+            const aliasText = character.aliases?.length
+                ? `<small>Alias: ${escapeHtml(character.aliases.join(", "))}</small>`
+                : "";
+            button.innerHTML = `<strong>${escapeHtml(character.name)}</strong><small>${escapeHtml(character.franchise_name)}</small>${aliasText}`;
             button.addEventListener("click", async () => {
                 dom.globalSearchResults.replaceChildren();
                 const franchiseData = await readJson(await fetch(`/api/gallery/franchises/${character.franchise_id}/characters`));
@@ -789,8 +982,9 @@ async function runGlobalSearch() {
         data.tags.forEach(tag => {
             const button = document.createElement("button");
             button.type = "button";
-            button.className = "floating-result";
-            button.innerHTML = `<strong>#${escapeHtml(tag.name)}</strong><small>${tag.file_count} file</small>`;
+            button.className = `floating-result ${tagTypeClass(tag.type)}`;
+            const tagLabel = tag.type === "artist" ? "Artista" : tag.type === "system" ? "Sistema" : "Tag";
+            button.innerHTML = `<strong>#${escapeHtml(tag.name)}</strong><small>${tagLabel} · ${tag.file_count} file</small>`;
             button.addEventListener("click", () => {
                 dom.globalSearchResults.replaceChildren();
                 resetMediaFilters();
@@ -1099,9 +1293,7 @@ function createTrashCard(item) {
     const tags = document.createElement("div");
     tags.className = "card-tags";
     item.tags.slice(0, 4).forEach(tag => {
-        const chip = document.createElement("span");
-        chip.textContent = tag.name;
-        tags.appendChild(chip);
+        tags.appendChild(createTagChip(tag));
     });
 
     const actions = document.createElement("div");
@@ -1260,6 +1452,12 @@ async function searchCharacterNames(query, resultsContainer, selected, addCallba
             const franchise = document.createElement("small");
             franchise.textContent = character.franchise_name;
             button.append(name, franchise);
+            if (character.aliases?.length) {
+                const aliases = document.createElement("small");
+                aliases.className = "search-result-aliases";
+                aliases.textContent = `Alias: ${character.aliases.join(", ")}`;
+                button.appendChild(aliases);
+            }
             button.addEventListener("click", () => addCallback(character));
             resultsContainer.appendChild(button);
         });
@@ -1326,6 +1524,9 @@ function openOrganizer(fileOrFiles) {
     dom.organizeCharacterSearch.value = "";
     dom.organizeSearchResults.replaceChildren();
     dom.organizeTagsInput.value = "";
+    dom.organizeTagSuggestions.replaceChildren();
+    dom.organizeArtistsInput.value = "";
+    dom.organizeArtistSuggestions.replaceChildren();
     dom.organizeAiCheckbox.checked = false;
     dom.organizeKeepDuplicatesRow.hidden = !isBatch;
     dom.organizeKeepDuplicatesCheckbox.checked = false;
@@ -1398,6 +1599,7 @@ function buildBatchResultMessage(result) {
 async function submitBatchOrganization() {
     const files = state.activeTodoFiles;
     const tags = parseTags(dom.organizeTagsInput.value);
+    const artists = parseTags(dom.organizeArtistsInput.value);
     const aiGenerated = dom.organizeAiCheckbox.checked;
     const allowDuplicates = dom.organizeKeepDuplicatesCheckbox.checked;
 
@@ -1405,6 +1607,7 @@ async function submitBatchOrganization() {
         `Stai per organizzare ${files.length} file.`,
         `Personaggi: ${state.organizeCharacters.map(character => `${character.franchise_name} / ${character.name}`).join(", ")}`,
         `Tag comuni: ${tags.length ? tags.join(", ") : "nessuno"}`,
+        `Artista: ${artists.length ? artists.join(", ") : "nessuno"}`,
         `IA: ${aiGenerated ? "sì" : "no"}`,
         `Duplicati identici: ${allowDuplicates ? "conserva" : "ignora"}`
     ];
@@ -1417,6 +1620,7 @@ async function submitBatchOrganization() {
             relative_paths: files.map(file => file.relative_path),
             character_ids: state.organizeCharacters.map(character => character.id),
             tags,
+            artists,
             ai_generated: aiGenerated,
             allow_duplicates: allowDuplicates
         })
@@ -1463,6 +1667,7 @@ async function submitOrganization(allowDuplicate = false) {
                 relative_path: state.activeTodoFile.relative_path,
                 character_ids: state.organizeCharacters.map(character => character.id),
                 tags: parseTags(dom.organizeTagsInput.value),
+                artists: parseTags(dom.organizeArtistsInput.value),
                 ai_generated: dom.organizeAiCheckbox.checked,
                 allow_duplicate: allowDuplicate
             })
@@ -1567,7 +1772,8 @@ async function createCharacterFromForm() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 franchise_id: franchiseId,
-                name: dom.newCharacterName.value.trim()
+                name: dom.newCharacterName.value.trim(),
+                aliases: parseTags(dom.newCharacterAliases.value)
             })
         }));
 
@@ -1580,6 +1786,68 @@ async function createCharacterFromForm() {
         setStatus(dom.createCharacterStatus, error.message);
     } finally {
         dom.submitCreateCharacter.disabled = false;
+    }
+}
+
+async function openCharacterAliasDialog() {
+    const character = state.mediaContext?.kind === "character"
+        ? state.mediaContext.character
+        : null;
+    if (!character) return;
+
+    state.aliasCharacter = character;
+    dom.characterAliasTitle.textContent = `Alias di ${character.name}`;
+    dom.characterAliasInput.value = "";
+    setStatus(dom.characterAliasStatus, "Caricamento...");
+    dom.characterAliasDialog.showModal();
+
+    try {
+        const data = await readJson(await fetch(`/api/characters/${character.id}/aliases`));
+        dom.characterAliasInput.value = data.aliases.join(", ");
+        setStatus(dom.characterAliasStatus, "");
+        dom.characterAliasInput.focus();
+    } catch (error) {
+        setStatus(dom.characterAliasStatus, error.message);
+    }
+}
+
+function closeCharacterAliasDialog() {
+    dom.characterAliasDialog.close();
+    state.aliasCharacter = null;
+}
+
+async function saveCharacterAliases() {
+    if (!state.aliasCharacter) return;
+    dom.saveCharacterAlias.disabled = true;
+    setStatus(dom.characterAliasStatus, "Salvataggio...");
+    try {
+        const data = await readJson(await fetch(
+            `/api/characters/${state.aliasCharacter.id}/aliases`,
+            {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ aliases: parseTags(dom.characterAliasInput.value) })
+            }
+        ));
+        state.aliasCharacter.aliases = data.aliases;
+        if (state.mediaContext?.character?.id === data.id) {
+            state.mediaContext.character.aliases = data.aliases;
+            const aliasSuffix = data.aliases.length
+                ? ` · Alias: ${data.aliases.join(", ")}`
+                : "";
+            dom.mediaSubtitle.textContent = `${state.mediaContext.franchise.name} · tutti i file associati, inclusi !Multiple e crossover${aliasSuffix}`;
+        }
+        if (state.currentFranchise) {
+            const current = state.currentFranchise.characters.find(item => item.id === data.id);
+            if (current) current.aliases = data.aliases;
+        }
+        setStatus(dom.globalStatus, "Alias aggiornati.", true);
+        closeCharacterAliasDialog();
+        if (state.currentFranchise) renderCharacterGrid(state.currentFranchise);
+    } catch (error) {
+        setStatus(dom.characterAliasStatus, error.message);
+    } finally {
+        dom.saveCharacterAlias.disabled = false;
     }
 }
 
@@ -1596,9 +1864,15 @@ async function openFileDialog(fileId) {
         dom.editCharacterSearch.value = "";
         dom.editSearchResults.replaceChildren();
         dom.editTagsInput.value = file.tags
-            .filter(tag => tag.name.toLocaleLowerCase("it-IT") !== "ai")
+            .filter(tag => (tag.type || "general") === "general")
             .map(tag => tag.name)
             .join(", ");
+        dom.editTagSuggestions.replaceChildren();
+        dom.editArtistsInput.value = file.tags
+            .filter(tag => tag.type === "artist")
+            .map(tag => tag.name)
+            .join(", ");
+        dom.editArtistSuggestions.replaceChildren();
         dom.editAiCheckbox.checked = file.ai_generated;
         renderSelectedCharacters(dom.editSelectedCharacters, state.editCharacters, removeEditCharacter);
         renderFileProperties(file);
@@ -1660,6 +1934,7 @@ async function saveFileMetadata() {
             body: JSON.stringify({
                 character_ids: state.editCharacters.map(character => character.id),
                 tags: parseTags(dom.editTagsInput.value),
+                artists: parseTags(dom.editArtistsInput.value),
                 ai_generated: dom.editAiCheckbox.checked
             })
         }));
@@ -2116,6 +2391,7 @@ dom.characterScorePlus.addEventListener("click", async () => {
     state.mediaContext.character.score = result.score;
     dom.characterScoreValue.textContent = result.score;
 });
+dom.manageCharacterAliases.addEventListener("click", openCharacterAliasDialog);
 
 // New e organizzazione.
 dom.refreshTodoButton.addEventListener("click", loadTodoFiles);
@@ -2180,6 +2456,14 @@ dom.fileEditForm.addEventListener("submit", event => {
     saveFileMetadata();
 });
 
+// Alias dei personaggi.
+dom.closeCharacterAliasDialog.addEventListener("click", closeCharacterAliasDialog);
+dom.cancelCharacterAlias.addEventListener("click", closeCharacterAliasDialog);
+dom.characterAliasForm.addEventListener("submit", event => {
+    event.preventDefault();
+    saveCharacterAliases();
+});
+
 // Classifica e sincronizzazione.
 dom.rankingFilter.addEventListener("change", loadRanking);
 dom.archiveSyncButton.addEventListener("click", synchronizeArchive);
@@ -2192,5 +2476,11 @@ dom.refreshCacheStatsButton.addEventListener("click", loadCacheStats);
 dom.cleanCacheButton.addEventListener("click", cleanThumbnailCache);
 dom.regenerateThumbnailsButton.addEventListener("click", regenerateThumbnails);
 dom.clearCacheButton.addEventListener("click", clearThumbnailCache);
+
+setupTagAutocomplete(dom.mediaTagFilter, dom.mediaTagSuggestions);
+setupTagAutocomplete(dom.organizeTagsInput, dom.organizeTagSuggestions, { excludeAi: true, tagType: "general" });
+setupTagAutocomplete(dom.organizeArtistsInput, dom.organizeArtistSuggestions, { excludeAi: true, tagType: "artist" });
+setupTagAutocomplete(dom.editTagsInput, dom.editTagSuggestions, { excludeAi: true, tagType: "general" });
+setupTagAutocomplete(dom.editArtistsInput, dom.editArtistSuggestions, { excludeAi: true, tagType: "artist" });
 
 loadOverview(true);

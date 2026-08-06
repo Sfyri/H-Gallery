@@ -88,6 +88,82 @@ def normalize_search_text(value: str) -> str:
     return without_accents.casefold().strip()
 
 
+def normalize_alias(value: str) -> str:
+    """Normalizza gli spazi di un alias senza modificarne la grafia."""
+
+    return " ".join(str(value).split())
+
+
+def normalize_aliases(aliases: list[str] | None, character_name: str = "") -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    character_key = normalize_search_text(character_name)
+
+    for alias in aliases or []:
+        cleaned = normalize_alias(alias)
+        key = normalize_search_text(cleaned)
+        if not cleaned or not key or key == character_key or key in seen:
+            continue
+        normalized.append(cleaned)
+        seen.add(key)
+
+    return normalized
+
+
+def get_character_aliases(character_id: int) -> dict[str, Any]:
+    with get_connection() as connection:
+        character = connection.execute(
+            """
+            SELECT c.id, c.name, fr.name AS franchise_name
+            FROM characters c
+            JOIN franchises fr ON fr.id = c.franchise_id
+            WHERE c.id = ?
+            """,
+            (character_id,),
+        ).fetchone()
+        if character is None:
+            raise ValueError("Personaggio non trovato.")
+
+        rows = connection.execute(
+            """
+            SELECT alias
+            FROM character_aliases
+            WHERE character_id = ?
+            ORDER BY alias COLLATE NOCASE
+            """,
+            (character_id,),
+        ).fetchall()
+
+    return {
+        "id": int(character["id"]),
+        "name": str(character["name"]),
+        "franchise_name": str(character["franchise_name"]),
+        "aliases": [str(row["alias"]) for row in rows],
+    }
+
+
+def update_character_aliases(character_id: int, aliases: list[str]) -> dict[str, Any]:
+    with get_connection() as connection:
+        character = connection.execute(
+            "SELECT id, name FROM characters WHERE id = ?",
+            (character_id,),
+        ).fetchone()
+        if character is None:
+            raise ValueError("Personaggio non trovato.")
+
+        normalized = normalize_aliases(aliases, str(character["name"]))
+        connection.execute(
+            "DELETE FROM character_aliases WHERE character_id = ?",
+            (character_id,),
+        )
+        connection.executemany(
+            "INSERT INTO character_aliases(character_id, alias) VALUES (?, ?)",
+            [(character_id, alias) for alias in normalized],
+        )
+
+    return get_character_aliases(character_id)
+
+
 def derive_franchise_code(name: str) -> str:
     """Genera un codice leggibile per una nuova serie.
 
@@ -717,7 +793,11 @@ def create_franchise(name: str, code: str | None = None) -> dict[str, Any]:
     }
 
 
-def create_character(franchise_id: int, name: str) -> dict[str, Any]:
+def create_character(
+    franchise_id: int,
+    name: str,
+    aliases: list[str] | None = None,
+) -> dict[str, Any]:
     config = load_config()
     gallery_root = Path(config["gallery_root"]).resolve()
     character_name = validate_folder_name(name, kind="personaggio")
@@ -772,6 +852,11 @@ def create_character(franchise_id: int, name: str) -> dict[str, Any]:
             (franchise_id, character_name, relative_path),
         )
         character_id = int(cursor.lastrowid)
+        normalized_aliases = normalize_aliases(aliases, character_name)
+        connection.executemany(
+            "INSERT INTO character_aliases(character_id, alias) VALUES (?, ?)",
+            [(character_id, alias) for alias in normalized_aliases],
+        )
 
     return {
         "id": character_id,
@@ -780,6 +865,7 @@ def create_character(franchise_id: int, name: str) -> dict[str, Any]:
         "franchise_code": str(franchise["code"]),
         "relative_path": relative_path,
         "score": 0,
+        "aliases": normalized_aliases,
         "label": f"{franchise['name']} / {character_name}",
     }
 
@@ -797,6 +883,7 @@ def search_characters(query: str, limit: int = 20) -> list[dict[str, Any]]:
                 characters.name,
                 characters.relative_path,
                 characters.score,
+                franchises.id AS franchise_id,
                 franchises.name AS franchise_name,
                 franchises.code AS franchise_code
             FROM characters
@@ -805,38 +892,75 @@ def search_characters(query: str, limit: int = 20) -> list[dict[str, Any]]:
               AND franchises.is_active = 1
             """
         ).fetchall()
+        alias_rows = connection.execute(
+            """
+            SELECT ca.character_id, ca.alias
+            FROM character_aliases ca
+            JOIN characters c ON c.id = ca.character_id
+            JOIN franchises fr ON fr.id = c.franchise_id
+            WHERE c.is_active = 1 AND fr.is_active = 1
+            ORDER BY ca.alias COLLATE NOCASE
+            """
+        ).fetchall()
+
+    aliases_by_character: dict[int, list[str]] = {}
+    for row in alias_rows:
+        aliases_by_character.setdefault(int(row["character_id"]), []).append(
+            str(row["alias"])
+        )
 
     ranked_results: list[tuple[int, str, dict[str, Any]]] = []
 
     for row in rows:
+        character_id = int(row["id"])
         character_name = str(row["name"])
         franchise_name = str(row["franchise_name"])
+        aliases = aliases_by_character.get(character_id, [])
         normalized_name = normalize_search_text(character_name)
-        normalized_label = normalize_search_text(f"{franchise_name} {character_name}")
+        normalized_aliases = [(alias, normalize_search_text(alias)) for alias in aliases]
+        normalized_label = normalize_search_text(
+            f"{franchise_name} {character_name} {' '.join(aliases)}"
+        )
+        matched_alias = next(
+            (alias for alias, normalized_alias in normalized_aliases
+             if normalized_alias == normalized_query),
+            None,
+        )
 
         if normalized_query == normalized_name:
             rank = 0
-        elif normalized_name.startswith(normalized_query):
+        elif matched_alias is not None:
             rank = 1
-        elif normalized_query in normalized_name:
+        elif normalized_name.startswith(normalized_query):
             rank = 2
-        elif all(part in normalized_label for part in normalized_query.split()):
+        elif any(alias.startswith(normalized_query) for _raw, alias in normalized_aliases):
             rank = 3
+        elif normalized_query in normalized_name:
+            rank = 4
+        elif any(normalized_query in alias for _raw, alias in normalized_aliases):
+            rank = 5
+        elif all(part in normalized_label for part in normalized_query.split()):
+            rank = 6
         else:
             continue
 
         result = {
-            "id": int(row["id"]),
+            "id": character_id,
             "name": character_name,
+            "franchise_id": int(row["franchise_id"]),
             "franchise_name": franchise_name,
             "franchise_code": str(row["franchise_code"]),
             "relative_path": str(row["relative_path"]),
             "score": int(row["score"]),
+            "aliases": aliases,
+            "matched_alias": matched_alias,
             "label": f"{franchise_name} / {character_name}",
         }
         ranked_results.append((rank, normalized_name, result))
 
-    ranked_results.sort(key=lambda item: (item[0], item[1], item[2]["franchise_name"].casefold()))
+    ranked_results.sort(
+        key=lambda item: (item[0], item[1], item[2]["franchise_name"].casefold())
+    )
     return [item[2] for item in ranked_results[:limit]]
 
 

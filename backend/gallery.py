@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from backend.database import get_connection
+from backend.database import ensure_tag, get_connection, normalize_tag_name
 from backend.file_manager import (
     determine_destination,
     find_next_filename,
@@ -19,6 +19,7 @@ from backend.scanner import (
     list_todo_files,
     load_config,
     normalize_search_text,
+    search_characters,
 )
 from backend.thumbnails import gallery_preview_url, gallery_thumbnail_url
 
@@ -27,24 +28,25 @@ def _media_url(relative_path: str) -> str:
     return "/media/gallery/" + quote(relative_path, safe="/")
 
 
-def _normalize_tags(tags: list[str], ai_generated: bool) -> list[str]:
-    normalized: list[str] = []
+def _normalize_tag_groups(
+    tags: list[str],
+    artists: list[str],
+    ai_generated: bool,
+) -> list[tuple[str, str]]:
+    normalized: list[tuple[str, str]] = []
     seen: set[str] = set()
 
-    for tag in tags:
-        cleaned = tag.strip()
-        if not cleaned:
-            continue
-        folded = cleaned.casefold()
-        # Il tag AI è controllato esclusivamente dalla relativa casella.
-        if folded == "ai":
-            continue
-        if folded not in seen:
-            normalized.append(cleaned)
+    for values, tag_type in ((tags, "general"), (artists, "artist")):
+        for value in values:
+            cleaned = normalize_tag_name(value)
+            folded = cleaned.casefold()
+            if not cleaned or folded == "ai" or folded in seen:
+                continue
+            normalized.append((cleaned, tag_type))
             seen.add(folded)
 
     if ai_generated:
-        normalized.append("AI")
+        normalized.append(("AI", "system"))
 
     return normalized
 
@@ -335,10 +337,20 @@ def get_franchise_characters(franchise_id: int) -> dict[str, Any]:
                 """,
                 (int(row["id"]),),
             ).fetchone()
+            alias_rows = connection.execute(
+                """
+                SELECT alias
+                FROM character_aliases
+                WHERE character_id = ?
+                ORDER BY alias COLLATE NOCASE
+                """,
+                (int(row["id"]),),
+            ).fetchall()
             characters.append(
                 {
                     "id": int(row["id"]),
                     "name": str(row["name"]),
+                    "aliases": [str(alias_row["alias"]) for alias_row in alias_rows],
                     "relative_path": str(row["relative_path"]),
                     "score": int(row["score"]),
                     "total_files": int(row["total_files"] or 0),
@@ -501,11 +513,15 @@ def _hydrate_files(connection, rows) -> list[dict[str, Any]]:
     ).fetchall()
     tag_rows = connection.execute(
         f"""
-        SELECT ft.file_id, t.id, t.name
+        SELECT ft.file_id, t.id, t.name, t.type
         FROM file_tags ft
         JOIN tags t ON t.id = ft.tag_id
         WHERE ft.file_id IN ({placeholders})
-        ORDER BY t.name COLLATE NOCASE
+        ORDER BY CASE t.type
+                WHEN 'system' THEN 0
+                WHEN 'artist' THEN 1
+                ELSE 2
+            END, t.name COLLATE NOCASE
         """,
         file_ids,
     ).fetchall()
@@ -528,7 +544,11 @@ def _hydrate_files(connection, rows) -> list[dict[str, Any]]:
 
     for row in tag_rows:
         tags[int(row["file_id"])].append(
-            {"id": int(row["id"]), "name": str(row["name"])}
+            {
+                "id": int(row["id"]),
+                "name": str(row["name"]),
+                "type": str(row["type"] or "general"),
+            }
         )
 
     return [
@@ -651,17 +671,42 @@ def get_gallery_file(file_id: int) -> dict[str, Any]:
         return _hydrate_files(connection, rows)[0]
 
 
-def list_tags(query: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
-    params: list[Any] = []
-    where = ""
-    if query and query.strip():
-        where = "WHERE t.name LIKE ? COLLATE NOCASE"
-        params.append(f"%{query.strip()}%")
+def list_tags(
+    query: str | None = None,
+    limit: int = 100,
+    tag_type: str | None = None,
+) -> list[dict[str, Any]]:
+    cleaned_query = normalize_tag_name(query or "")
+    where_params: list[Any] = []
+    rank_params: list[Any] = []
+    conditions: list[str] = []
+    order_rank = "2"
+
+    if cleaned_query:
+        conditions.append("t.name LIKE ? COLLATE NOCASE")
+        where_params.append(f"%{cleaned_query}%")
+        order_rank = """
+            CASE
+                WHEN t.name = ? COLLATE NOCASE THEN 0
+                WHEN t.name LIKE ? COLLATE NOCASE THEN 1
+                ELSE 2
+            END
+        """
+        rank_params.extend([cleaned_query, f"{cleaned_query}%"] )
+
+    if tag_type is not None:
+        normalized_type = str(tag_type).strip().casefold()
+        if normalized_type not in {"general", "artist", "system"}:
+            raise ValueError("Tipo di tag non valido.")
+        conditions.append("t.type = ?")
+        where_params.append(normalized_type)
+
+    where = "WHERE " + " AND ".join(conditions) if conditions else ""
 
     with get_connection() as connection:
         rows = connection.execute(
             f"""
-            SELECT t.id, t.name,
+            SELECT t.id, t.name, t.type,
                    COUNT(DISTINCT CASE WHEN f.is_trashed = 0 THEN ft.file_id END) AS file_count
             FROM tags t
             LEFT JOIN file_tags ft ON ft.tag_id = t.id
@@ -669,16 +714,17 @@ def list_tags(query: str | None = None, limit: int = 100) -> list[dict[str, Any]
             {where}
             GROUP BY t.id
             HAVING file_count > 0
-            ORDER BY file_count DESC, t.name COLLATE NOCASE
+            ORDER BY {order_rank}, file_count DESC, t.name COLLATE NOCASE
             LIMIT ?
             """,
-            [*params, min(max(limit, 1), 500)],
+            [*where_params, *rank_params, min(max(limit, 1), 500)],
         ).fetchall()
 
     return [
         {
             "id": int(row["id"]),
             "name": str(row["name"]),
+            "type": str(row["type"] or "general"),
             "file_count": int(row["file_count"]),
         }
         for row in rows
@@ -690,52 +736,8 @@ def search_gallery(query: str, limit: int = 12) -> dict[str, Any]:
     if not normalized:
         return {"characters": [], "tags": []}
 
-    with get_connection() as connection:
-        character_rows = connection.execute(
-            """
-            SELECT c.id, c.name, c.score, fr.id AS franchise_id,
-                   fr.name AS franchise_name, fr.code AS franchise_code
-            FROM characters c
-            JOIN franchises fr ON fr.id = c.franchise_id
-            WHERE c.is_active = 1 AND fr.is_active = 1
-            """
-        ).fetchall()
-
-    ranked: list[tuple[int, str, dict[str, Any]]] = []
-    for row in character_rows:
-        name = str(row["name"])
-        franchise = str(row["franchise_name"])
-        normalized_name = normalize_search_text(name)
-        normalized_label = normalize_search_text(f"{franchise} {name}")
-        if normalized == normalized_name:
-            rank = 0
-        elif normalized_name.startswith(normalized):
-            rank = 1
-        elif normalized in normalized_name:
-            rank = 2
-        elif all(part in normalized_label for part in normalized.split()):
-            rank = 3
-        else:
-            continue
-        ranked.append(
-            (
-                rank,
-                normalized_name,
-                {
-                    "id": int(row["id"]),
-                    "name": name,
-                    "score": int(row["score"]),
-                    "franchise_id": int(row["franchise_id"]),
-                    "franchise_name": franchise,
-                    "franchise_code": str(row["franchise_code"]),
-                    "label": f"{franchise} / {name}",
-                },
-            )
-        )
-
-    ranked.sort(key=lambda item: (item[0], item[1], item[2]["franchise_name"].casefold()))
     return {
-        "characters": [item[2] for item in ranked[:limit]],
+        "characters": search_characters(query, limit),
         "tags": list_tags(query, limit),
     }
 
@@ -745,6 +747,7 @@ def update_file_metadata(
     *,
     character_ids: list[int],
     tags: list[str],
+    artists: list[str],
     ai_generated: bool,
 ) -> dict[str, Any]:
     config = load_config()
@@ -785,7 +788,7 @@ def update_file_metadata(
             raise FileExistsError(f"Il file di destinazione esiste già: {destination_file}")
         shutil.move(str(current_file), str(destination_file))
 
-    normalized_tags = _normalize_tags(tags, ai_generated)
+    typed_tags = _normalize_tag_groups(tags, artists, ai_generated)
     old_relative = str(row["relative_path"])
     new_relative = destination_file.relative_to(gallery_root).as_posix()
 
@@ -826,18 +829,13 @@ def update_file_metadata(
             )
 
             connection.execute("DELETE FROM file_tags WHERE file_id = ?", (file_id,))
-            for tag_name in normalized_tags:
-                connection.execute(
-                    "INSERT INTO tags(name) VALUES (?) ON CONFLICT(name) DO NOTHING",
-                    (tag_name,),
+            for tag_name, tag_type in typed_tags:
+                tag_id, _canonical_name, _canonical_type = ensure_tag(
+                    connection, tag_name, tag_type
                 )
-                tag_row = connection.execute(
-                    "SELECT id FROM tags WHERE name = ? COLLATE NOCASE",
-                    (tag_name,),
-                ).fetchone()
                 connection.execute(
                     "INSERT INTO file_tags(file_id, tag_id) VALUES (?, ?)",
-                    (file_id, int(tag_row["id"])),
+                    (file_id, tag_id),
                 )
 
             connection.execute(

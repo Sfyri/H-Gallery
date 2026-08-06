@@ -26,6 +26,7 @@ MAX_AUTOMATIC_BACKUPS = 10
 TABLES_TO_EXPORT = (
     "franchises",
     "characters",
+    "character_aliases",
     "files",
     "tags",
     "file_characters",
