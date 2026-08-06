@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
+from PIL import Image, UnidentifiedImageError
+
 from backend.database import ensure_tag, get_connection, normalize_tag_name
 from backend.file_manager import (
     determine_destination,
@@ -16,6 +18,7 @@ from backend.file_manager import (
 )
 from backend.scanner import (
     cleanup_empty_entities,
+    image_has_transparency,
     list_todo_files,
     load_config,
     normalize_search_text,
@@ -27,6 +30,25 @@ from backend.stories import search_stories
 
 def _media_url(relative_path: str) -> str:
     return "/media/gallery/" + quote(relative_path, safe="/")
+
+
+def _image_dimensions(relative_path: str, media_type: str) -> tuple[int | None, int | None]:
+    if media_type != "image":
+        return None, None
+
+    gallery_root = Path(load_config()["gallery_root"]).resolve()
+    source = (gallery_root / relative_path).resolve()
+    try:
+        source.relative_to(gallery_root)
+    except ValueError:
+        return None, None
+
+    try:
+        with Image.open(source) as image:
+            width, height = image.size
+            return int(width), int(height)
+    except (FileNotFoundError, OSError, UnidentifiedImageError):
+        return None, None
 
 
 def _normalize_tag_groups(
@@ -561,6 +583,7 @@ def _hydrate_files(connection, rows) -> list[dict[str, Any]]:
             }
         )
 
+    gallery_root = Path(load_config()["gallery_root"]).resolve()
     return [
         {
             "id": int(row["id"]),
@@ -583,6 +606,9 @@ def _hydrate_files(connection, rows) -> list[dict[str, Any]]:
                 float(row["modified_at"] or 0),
                 str(row["media_type"]),
                 str(row["extension"]),
+            ),
+            "has_transparency": image_has_transparency(
+                gallery_root / str(row["relative_path"])
             ),
             "characters": characters[int(row["id"])],
             "tags": tags[int(row["id"])],
@@ -678,7 +704,14 @@ def get_gallery_file(file_id: int) -> dict[str, Any]:
         ).fetchall()
         if not rows:
             raise ValueError("File non trovato nel database.")
-        return _hydrate_files(connection, rows)[0]
+        result = _hydrate_files(connection, rows)[0]
+
+    width, height = _image_dimensions(
+        str(result["relative_path"]), str(result["media_type"])
+    )
+    result["width"] = width
+    result["height"] = height
+    return result
 
 
 def list_tags(

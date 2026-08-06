@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.6.1
+
+- Anteprime della griglia senza sfondo a scacchi.
+- Ricerca personaggi sovrapposta durante l’organizzazione.
+- Rimossi pannelli dei checkbox e testi informativi superflui.
+
+## 1.6.0
+
+- Migliorati pannello media, navigazione, dettagli e modifica dei personaggi.
+- Aggiunta la trasparenza reale per PNG e GIF, senza sfondo sui file opachi.
+- Rifinite etichette, testi e anteprime dell’interfaccia.
+
 ## 1.5.0
 
 - Aggiunta la creazione di storie e manga da New e dalla galleria.

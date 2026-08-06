@@ -136,7 +136,9 @@ const dom = {
     fileDialog: byId("file-dialog"),
     fileEditForm: byId("file-edit-form"),
     fileDialogTitle: byId("file-dialog-title"),
-    fileDialogPath: byId("file-dialog-path"),
+    filePreviousButton: byId("file-previous-button"),
+    fileNextButton: byId("file-next-button"),
+    fileNavigationIndicator: byId("file-navigation-indicator"),
     fileDialogPreview: byId("file-dialog-preview"),
     fileProperties: byId("file-properties"),
     editCharacterSearch: byId("edit-character-search"),
@@ -157,6 +159,7 @@ const dom = {
     characterAliasDialog: byId("character-alias-dialog"),
     characterAliasForm: byId("character-alias-form"),
     characterAliasTitle: byId("character-alias-title"),
+    characterNameInput: byId("character-name-input"),
     characterAliasInput: byId("character-alias-input"),
     characterAliasStatus: byId("character-alias-status"),
     closeCharacterAliasDialog: byId("close-character-alias-dialog"),
@@ -211,6 +214,9 @@ const state = {
     currentFranchise: null,
     mediaContext: null,
     mediaPage: 1,
+    galleryPages: 1,
+    galleryTotal: 0,
+    galleryLimit: 200,
     trashPage: 1,
     activeTodoFile: null,
     activeTodoFiles: [],
@@ -221,6 +227,7 @@ const state = {
     gallerySelectedIds: new Set(),
     organizeCharacters: [],
     activeGalleryFile: null,
+    activeGalleryFileIndex: -1,
     editCharacters: [],
     creationTarget: "organize",
     franchiseList: [],
@@ -267,12 +274,10 @@ function formatFileSize(bytes) {
     return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
 }
 
-function formatDate(timestamp) {
-    if (!timestamp) return "Data sconosciuta";
-    return new Intl.DateTimeFormat("it-IT", {
-        dateStyle: "medium",
-        timeStyle: "short"
-    }).format(new Date(timestamp * 1000));
+function formatMediaFormat(file) {
+    const extension = String(file?.extension || "").replace(/^\./, "").trim();
+    if (extension) return extension.toUpperCase();
+    return file?.media_type === "video" ? "VIDEO" : "IMMAGINE";
 }
 
 function formatIsoDate(value) {
@@ -342,6 +347,19 @@ function createTagChip(tag, { prefix = "" } = {}) {
         ? "Artista"
         : tag.type === "system" ? "Tag di sistema" : "Tag";
     return chip;
+}
+
+function renderTagSummary(container, tags, limit = 5) {
+    container.replaceChildren();
+    const visibleTags = (tags || []).slice(0, limit);
+    visibleTags.forEach(tag => container.appendChild(createTagChip(tag)));
+    if ((tags || []).length > limit) {
+        const overflow = document.createElement("span");
+        overflow.className = "tag-chip tag-overflow";
+        overflow.textContent = "…";
+        overflow.title = `${tags.length - limit} tag aggiuntivi`;
+        container.appendChild(overflow);
+    }
 }
 
 function getActiveTagToken(input) {
@@ -497,6 +515,7 @@ function createMediaElement(file, controls = false) {
             image.src = file.media_url;
             image.alt = file.filename || file.name;
             image.loading = "eager";
+            image.classList.toggle("transparent-media", Boolean(file.has_transparency));
             return image;
         }
 
@@ -715,11 +734,11 @@ function renderOverview() {
 
     const summary = state.overview.summary;
     const stats = [
-        [summary.franchises, "serie"],
-        [summary.total_files, "file"],
-        [summary.images, "immagini"],
-        [summary.videos, "video"],
-        [summary.stories || 0, "storie"],
+        [summary.franchises, "Serie"],
+        [summary.total_files, "File"],
+        [summary.images, "Immagini"],
+        [summary.videos, "Video"],
+        [summary.stories || 0, "Storie"],
         [summary.ai_files, "IA"]
     ];
     dom.overviewSummary.replaceChildren(...stats.map(([value, label]) => {
@@ -738,23 +757,12 @@ function renderOverview() {
     state.overview.franchises.forEach(franchise => {
         fragment.appendChild(createCollectionCard({
             title: franchise.name,
-            subtitle: `${franchise.character_count} personaggi · ${franchise.total_files} file`,
+            subtitle: `${franchise.character_count} personaggi · ${franchise.total_files} File`,
             coverUrl: franchise.cover_url,
-            badges: [`${franchise.images} immagini`, `${franchise.videos} video`, `${franchise.ai_files} IA`],
+            badges: [`${franchise.images} Immagini`, `${franchise.videos} Video`, `${franchise.ai_files} IA`],
             onClick: () => openFranchise(franchise.id)
         }));
     });
-
-    const crossovers = state.overview.crossovers;
-    if (crossovers.total_files > 0) {
-        fragment.appendChild(createCollectionCard({
-            title: crossovers.name,
-            subtitle: `${crossovers.total_files} file con serie differenti`,
-            coverUrl: crossovers.cover_url,
-            badges: [`${crossovers.images} immagini`, `${crossovers.videos} video`, `${crossovers.ai_files} IA`],
-            onClick: () => openMediaContext({ kind: "crossovers", title: crossovers.name })
-        }));
-    }
 
     if (!fragment.childNodes.length) {
         const empty = document.createElement("p");
@@ -796,10 +804,10 @@ function renderCharacterGrid(data) {
         fragment.appendChild(createCollectionCard({
             title: character.name,
             subtitle: character.aliases?.length
-                ? `${character.total_files} file associati · Alias: ${character.aliases.join(", ")}`
-                : `${character.total_files} file associati`,
+                ? `${character.total_files} File associati · Alias: ${character.aliases.join(", ")}`
+                : `${character.total_files} File associati`,
             coverUrl: character.cover_url,
-            badges: [`${character.images} immagini`, `${character.videos} video`, `${character.ai_files} IA`],
+            badges: [`${character.images} Immagini`, `${character.videos} Video`, `${character.ai_files} IA`],
             scoreControls: { character },
             onClick: () => openMediaContext({
                 kind: "character",
@@ -809,20 +817,6 @@ function renderCharacterGrid(data) {
             })
         }));
     });
-
-    if (data.multiple.total_files > 0) {
-        fragment.appendChild(createCollectionCard({
-            title: data.multiple.name,
-            subtitle: `${data.multiple.total_files} file con più personaggi`,
-            coverUrl: data.multiple.cover_url,
-            badges: [`${data.multiple.images} immagini`, `${data.multiple.videos} video`, `${data.multiple.ai_files} IA`],
-            onClick: () => openMediaContext({
-                kind: "multiple",
-                title: `${data.franchise.name} / ${data.multiple.name}`,
-                franchise: data.franchise
-            })
-        }));
-    }
 
     if (!fragment.childNodes.length) {
         const empty = document.createElement("p");
@@ -846,7 +840,7 @@ function openMediaContext(context) {
         const aliasSuffix = context.character.aliases?.length
             ? ` · Alias: ${context.character.aliases.join(", ")}`
             : "";
-        dom.mediaSubtitle.textContent = `${context.franchise.name} · tutti i file associati, inclusi !Multiple e crossover${aliasSuffix}`;
+        dom.mediaSubtitle.textContent = `${context.franchise.name}${aliasSuffix}`;
         dom.characterHeadingActions.hidden = false;
         dom.characterScoreValue.textContent = context.character.score;
         renderBreadcrumb([
@@ -925,7 +919,7 @@ function buildStoryQuery() {
 }
 
 async function loadGalleryFiles() {
-    if (!state.mediaContext) return;
+    if (!state.mediaContext) return null;
     dom.galleryMediaGrid.replaceChildren();
     dom.pagination.replaceChildren();
     dom.storyGrid.replaceChildren();
@@ -937,25 +931,31 @@ async function loadGalleryFiles() {
             readJson(await fetch(`/api/stories?${buildStoryQuery()}`))
         ]);
         state.galleryFiles = data.files;
+        state.mediaPage = data.page;
+        state.galleryPages = data.pages;
+        state.galleryTotal = data.total;
+        state.galleryLimit = data.limit;
         state.gallerySelectedIds = new Set(
             [...state.gallerySelectedIds].filter(id => data.files.some(file => file.id === id))
         );
-        dom.mediaResultSummary.textContent = `${data.total} file singoli · pagina ${data.page} di ${data.pages}`;
+        dom.mediaResultSummary.textContent = `${data.total} File singoli · Pagina ${data.page} di ${data.pages}`;
         renderStoryCards(dom.mediaTypeFilter.value === "video" ? [] : storyData.stories);
         renderGalleryMediaCards(data.files);
         renderPagination(data.page, data.pages);
         updateGallerySelectionUi();
+        return data;
     } catch (error) {
         console.error(error);
         dom.mediaResultSummary.textContent = "Errore";
         setStatus(dom.globalStatus, error.message);
+        return null;
     }
 }
 
 function renderStoryCards(stories) {
     dom.storyGrid.replaceChildren();
     dom.storySection.hidden = stories.length === 0;
-    dom.storyResultSummary.textContent = `${stories.length} ${stories.length === 1 ? "storia" : "storie"}`;
+    dom.storyResultSummary.textContent = `${stories.length} ${stories.length === 1 ? "Storia" : "Storie"}`;
     if (!stories.length) return;
 
     const fragment = document.createDocumentFragment();
@@ -993,7 +993,7 @@ function renderStoryCards(stories) {
         characters.textContent = story.characters.map(character => character.name).join(", ");
         const tags = document.createElement("div");
         tags.className = "card-tags";
-        story.tags.slice(0, 5).forEach(tag => tags.appendChild(createTagChip(tag)));
+        renderTagSummary(tags, story.tags, 5);
         info.append(title, details, characters, tags);
 
         const actions = document.createElement("div");
@@ -1024,7 +1024,7 @@ function updateGallerySelectionUi() {
     const selected = state.gallerySelectedIds.size;
     const available = availableIds.size;
     dom.gallerySelectionToolbar.hidden = available === 0;
-    dom.gallerySelectionCount.textContent = `${selected} ${selected === 1 ? "immagine selezionata" : "immagini selezionate"}`;
+    dom.gallerySelectionCount.textContent = `${selected} ${selected === 1 ? "Immagine selezionata" : "Immagini selezionate"}`;
     dom.selectAllGalleryButton.disabled = available === 0 || selected === available;
     dom.clearGallerySelectionButton.disabled = selected === 0;
     dom.createStoryFromGalleryButton.disabled = selected < 2;
@@ -1077,13 +1077,11 @@ function createGalleryMediaCard(file) {
 
     const details = document.createElement("p");
     details.className = "media-details";
-    details.innerHTML = `<span>${file.media_type === "image" ? "Immagine" : "Video"}</span><span>${formatFileSize(file.size)}</span>`;
+    details.innerHTML = `<span>${formatMediaFormat(file)}</span><span>${formatFileSize(file.size)}</span>`;
 
     const tags = document.createElement("div");
     tags.className = "card-tags";
-    file.tags.slice(0, 4).forEach(tag => {
-        tags.appendChild(createTagChip(tag));
-    });
+    renderTagSummary(tags, file.tags, 5);
 
     const characters = document.createElement("p");
     characters.className = "card-characters";
@@ -1293,7 +1291,7 @@ async function loadTodoFiles() {
     try {
         const data = await readJson(await fetch("/api/todo/files"));
         state.todoFiles = data.files;
-        dom.todoFileCount.textContent = `${data.total_files} file da sistemare`;
+        dom.todoFileCount.textContent = `${data.total_files} File da sistemare`;
         dom.todoFolderPath.textContent = "File in attesa di organizzazione";
         dom.todoBadge.textContent = data.total_files;
 
@@ -1344,7 +1342,7 @@ async function loadTodoFiles() {
             name.title = file.relative_path;
             const details = document.createElement("p");
             details.className = "media-details";
-            details.innerHTML = `<span>${file.media_type === "image" ? "Immagine" : "Video"}</span><span>${formatFileSize(file.size)}</span>`;
+            details.innerHTML = `<span>${formatMediaFormat(file)}</span><span>${formatFileSize(file.size)}</span>`;
             const actions = document.createElement("div");
             actions.className = "card-actions";
             const button = document.createElement("button");
@@ -1374,8 +1372,6 @@ async function loadTodoFiles() {
 }
 
 async function trashTodoFile(file) {
-    const confirmed = window.confirm(`Spostare "${file.name}" nel cestino?`);
-    if (!confirmed) return;
     try {
         await readJson(await fetch("/api/todo/trash", {
             method: "POST",
@@ -1392,11 +1388,6 @@ async function trashTodoFile(file) {
 async function trashSelectedTodoFiles() {
     const files = getSelectedTodoFiles();
     if (!files.length) return;
-
-    const confirmed = window.confirm(
-        `Spostare ${files.length} file selezionati nel cestino?`
-    );
-    if (!confirmed) return;
 
     dom.trashSelectedTodoButton.disabled = true;
     const failedPaths = new Set();
@@ -1436,7 +1427,7 @@ async function loadTrashItems(page = state.trashPage) {
         const data = await readJson(await fetch(`/api/trash?page=${state.trashPage}&limit=60`));
         state.trashPage = data.page;
         dom.trashBadge.textContent = data.total;
-        dom.trashSummary.textContent = `${data.total} file · ${formatFileSize(data.total_size)}`;
+        dom.trashSummary.textContent = `${data.total} File · ${formatFileSize(data.total_size)}`;
         dom.emptyTrashButton.disabled = data.total === 0;
 
         if (!data.items.length && data.total > 0 && state.trashPage > data.pages) {
@@ -1479,7 +1470,7 @@ function createTrashCard(item) {
 
     const details = document.createElement("p");
     details.className = "media-details";
-    details.innerHTML = `<span>${item.media_type === "image" ? "Immagine" : "Video"}</span><span>${formatFileSize(item.size)}</span>`;
+    details.innerHTML = `<span>${formatMediaFormat(item)}</span><span>${formatFileSize(item.size)}</span>`;
 
     const source = document.createElement("p");
     source.className = "trash-source";
@@ -1500,9 +1491,7 @@ function createTrashCard(item) {
 
     const tags = document.createElement("div");
     tags.className = "card-tags";
-    item.tags.slice(0, 4).forEach(tag => {
-        tags.appendChild(createTagChip(tag));
-    });
+    renderTagSummary(tags, item.tags, 5);
 
     const actions = document.createElement("div");
     actions.className = "card-actions";
@@ -2005,16 +1994,19 @@ async function openCharacterAliasDialog() {
     if (!character) return;
 
     state.aliasCharacter = character;
-    dom.characterAliasTitle.textContent = `Alias di ${character.name}`;
+    dom.characterAliasTitle.textContent = `Modifica ${character.name}`;
+    dom.characterNameInput.value = character.name;
     dom.characterAliasInput.value = "";
     setStatus(dom.characterAliasStatus, "Caricamento...");
     dom.characterAliasDialog.showModal();
 
     try {
         const data = await readJson(await fetch(`/api/characters/${character.id}/aliases`));
+        dom.characterNameInput.value = data.name;
         dom.characterAliasInput.value = data.aliases.join(", ");
         setStatus(dom.characterAliasStatus, "");
-        dom.characterAliasInput.focus();
+        dom.characterNameInput.focus();
+        dom.characterNameInput.select();
     } catch (error) {
         setStatus(dom.characterAliasStatus, error.message);
     }
@@ -2027,32 +2019,55 @@ function closeCharacterAliasDialog() {
 
 async function saveCharacterAliases() {
     if (!state.aliasCharacter) return;
+    const name = dom.characterNameInput.value.trim();
+    if (!name) {
+        setStatus(dom.characterAliasStatus, "Inserisci il nome del personaggio.");
+        return;
+    }
+
     dom.saveCharacterAlias.disabled = true;
-    setStatus(dom.characterAliasStatus, "Salvataggio...");
+    setStatus(dom.characterAliasStatus, "Salvataggio e rinomina dei file...");
     try {
         const data = await readJson(await fetch(
-            `/api/characters/${state.aliasCharacter.id}/aliases`,
+            `/api/characters/${state.aliasCharacter.id}`,
             {
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ aliases: parseTags(dom.characterAliasInput.value) })
+                body: JSON.stringify({
+                    name,
+                    aliases: parseTags(dom.characterAliasInput.value)
+                })
             }
         ));
-        state.aliasCharacter.aliases = data.aliases;
+
+        Object.assign(state.aliasCharacter, data);
         if (state.mediaContext?.character?.id === data.id) {
-            state.mediaContext.character.aliases = data.aliases;
+            Object.assign(state.mediaContext.character, data);
+            state.mediaContext.title = data.name;
+            dom.mediaTitle.textContent = data.name;
             const aliasSuffix = data.aliases.length
                 ? ` · Alias: ${data.aliases.join(", ")}`
                 : "";
-            dom.mediaSubtitle.textContent = `${state.mediaContext.franchise.name} · tutti i file associati, inclusi !Multiple e crossover${aliasSuffix}`;
+            dom.mediaSubtitle.textContent = `${state.mediaContext.franchise.name}${aliasSuffix}`;
+            renderBreadcrumb([
+                { label: "Galleria", action: renderOverview },
+                { label: state.mediaContext.franchise.name, action: () => openFranchise(state.mediaContext.franchise.id) },
+                { label: data.name }
+            ]);
         }
         if (state.currentFranchise) {
             const current = state.currentFranchise.characters.find(item => item.id === data.id);
-            if (current) current.aliases = data.aliases;
+            if (current) Object.assign(current, data);
         }
-        setStatus(dom.globalStatus, "Alias aggiornati.", true);
+
         closeCharacterAliasDialog();
+        await Promise.all([loadOverview(true, false), loadGalleryFiles()]);
         if (state.currentFranchise) renderCharacterGrid(state.currentFranchise);
+        setStatus(
+            dom.globalStatus,
+            data.renamed ? `Personaggio rinominato in ${data.name}.` : "Personaggio aggiornato.",
+            true
+        );
     } catch (error) {
         setStatus(dom.characterAliasStatus, error.message);
     } finally {
@@ -2060,44 +2075,94 @@ async function saveCharacterAliases() {
     }
 }
 
+function updateFileNavigation() {
+    const index = state.galleryFiles.findIndex(file => file.id === state.activeGalleryFile?.id);
+    state.activeGalleryFileIndex = index;
+    const pageTotal = state.galleryFiles.length;
+    dom.filePreviousButton.disabled = index < 0 || (index === 0 && state.mediaPage <= 1);
+    dom.fileNextButton.disabled = index < 0 || (index >= pageTotal - 1 && state.mediaPage >= state.galleryPages);
+    const globalIndex = index >= 0
+        ? (state.mediaPage - 1) * state.galleryLimit + index + 1
+        : 0;
+    dom.fileNavigationIndicator.textContent = index >= 0
+        ? `${globalIndex} / ${state.galleryTotal}`
+        : "—";
+}
+
+function renderFileDialog(file) {
+    state.activeGalleryFile = file;
+    state.editCharacters = [...file.characters];
+    dom.fileDialogTitle.textContent = "Dettagli file";
+    dom.fileDialogPreview.replaceChildren(createMediaElement(file, true));
+    dom.editCharacterSearch.value = "";
+    dom.editSearchResults.replaceChildren();
+    dom.editTagsInput.value = file.tags
+        .filter(tag => (tag.type || "general") === "general")
+        .map(tag => tag.name)
+        .join(", ");
+    dom.editTagSuggestions.replaceChildren();
+    dom.editArtistsInput.value = file.tags
+        .filter(tag => tag.type === "artist")
+        .map(tag => tag.name)
+        .join(", ");
+    dom.editArtistSuggestions.replaceChildren();
+    dom.editAiCheckbox.checked = file.ai_generated;
+    renderSelectedCharacters(dom.editSelectedCharacters, state.editCharacters, removeEditCharacter);
+    renderFileProperties(file);
+    updateFileNavigation();
+}
+
 async function openFileDialog(fileId) {
-    setStatus(dom.fileDialogStatus, "Caricamento...");
-    dom.fileDialog.showModal();
+    const isFirstOpen = !dom.fileDialog.open;
+    setStatus(dom.fileDialogStatus, isFirstOpen ? "Caricamento..." : "");
+    if (isFirstOpen) dom.fileDialog.showModal();
     try {
         const file = await readJson(await fetch(`/api/gallery/files/${fileId}`));
-        state.activeGalleryFile = file;
-        state.editCharacters = [...file.characters];
-        dom.fileDialogTitle.textContent = file.filename;
-        dom.fileDialogPath.textContent = file.relative_path;
-        dom.fileDialogPreview.replaceChildren(createMediaElement(file, true));
-        dom.editCharacterSearch.value = "";
-        dom.editSearchResults.replaceChildren();
-        dom.editTagsInput.value = file.tags
-            .filter(tag => (tag.type || "general") === "general")
-            .map(tag => tag.name)
-            .join(", ");
-        dom.editTagSuggestions.replaceChildren();
-        dom.editArtistsInput.value = file.tags
-            .filter(tag => tag.type === "artist")
-            .map(tag => tag.name)
-            .join(", ");
-        dom.editArtistSuggestions.replaceChildren();
-        dom.editAiCheckbox.checked = file.ai_generated;
-        renderSelectedCharacters(dom.editSelectedCharacters, state.editCharacters, removeEditCharacter);
-        renderFileProperties(file);
+        renderFileDialog(file);
         setStatus(dom.fileDialogStatus, file.characters.length ? "" : "Questo file non ha personaggi associati.");
     } catch (error) {
         setStatus(dom.fileDialogStatus, error.message);
     }
 }
 
+async function navigateFileDialog(offset) {
+    if (!state.activeGalleryFile) return;
+    const index = state.galleryFiles.findIndex(file => file.id === state.activeGalleryFile.id);
+    const next = state.galleryFiles[index + offset];
+    if (next) {
+        await openFileDialog(next.id);
+        return;
+    }
+
+    if (offset > 0 && state.mediaPage < state.galleryPages) {
+        state.mediaPage += 1;
+        const data = await loadGalleryFiles();
+        const first = data?.files?.[0];
+        if (first) await openFileDialog(first.id);
+    } else if (offset < 0 && state.mediaPage > 1) {
+        state.mediaPage -= 1;
+        const data = await loadGalleryFiles();
+        const last = data?.files?.at(-1);
+        if (last) await openFileDialog(last.id);
+    }
+}
+
 function renderFileProperties(file) {
+    const pathParts = String(file.relative_path || "").split("/");
+    const directory = pathParts.length > 1 ? pathParts.slice(0, -1).join("/") : "—";
     const properties = [
-        ["Tipo", file.media_type === "image" ? "Immagine" : "Video"],
-        ["Dimensione", formatFileSize(file.size)],
-        ["Modificato", formatDate(file.modified_at)],
-        ["Hash", file.sha256.slice(0, 16) + "…"]
+        ["Nome file", file.filename],
+        ["Directory", directory],
+        ["Formato", formatMediaFormat(file)]
     ];
+    if (file.media_type === "image") {
+        const resolution = file.width && file.height
+            ? `${file.width} × ${file.height} px`
+            : "Non disponibile";
+        properties.push(["Risoluzione", resolution]);
+    }
+    properties.push(["Dimensione file", formatFileSize(file.size)]);
+
     dom.fileProperties.replaceChildren();
     properties.forEach(([term, value]) => {
         const dt = document.createElement("dt");
@@ -2111,7 +2176,9 @@ function renderFileProperties(file) {
 function closeFileDialog() {
     dom.fileDialog.close();
     state.activeGalleryFile = null;
+    state.activeGalleryFileIndex = -1;
     state.editCharacters = [];
+    dom.fileNavigationIndicator.textContent = "—";
 }
 
 function addEditCharacter(character) {
@@ -2147,11 +2214,10 @@ async function saveFileMetadata() {
                 ai_generated: dom.editAiCheckbox.checked
             })
         }));
-        state.activeGalleryFile = result;
-        dom.fileDialogTitle.textContent = result.filename;
-        dom.fileDialogPath.textContent = result.relative_path;
+        renderFileDialog(result);
         setStatus(dom.fileDialogStatus, result.moved ? "Salvato e file spostato." : "Modifiche salvate.", true);
         await Promise.all([loadGalleryFiles(), loadOverview(true, false)]);
+        updateFileNavigation();
     } catch (error) {
         setStatus(dom.fileDialogStatus, error.message);
     } finally {
@@ -2172,8 +2238,6 @@ async function revealActiveFile() {
 async function trashActiveGalleryFile() {
     if (!state.activeGalleryFile) return;
     const file = state.activeGalleryFile;
-    const confirmed = window.confirm(`Spostare "${file.filename}" nel cestino?`);
-    if (!confirmed) return;
     dom.trashFileButton.disabled = true;
     try {
         await readJson(await fetch(`/api/gallery/files/${file.id}/trash`, { method: "POST" }));
@@ -2596,6 +2660,7 @@ function storyItemFromTodo(file) {
         thumbnail_url: file.thumbnail_url,
         media_url: file.media_url,
         media_type: file.media_type,
+        has_transparency: Boolean(file.has_transparency),
         ai_generated: false,
         characters: []
     };
@@ -2609,6 +2674,7 @@ function storyItemFromGallery(file) {
         thumbnail_url: file.thumbnail_url,
         media_url: file.media_url,
         media_type: file.media_type,
+        has_transparency: Boolean(file.has_transparency),
         ai_generated: file.ai_generated,
         characters: file.characters || []
     };
@@ -2622,6 +2688,7 @@ function storyItemFromPage(page) {
         thumbnail_url: page.thumbnail_url,
         media_url: page.media_url,
         media_type: "image",
+        has_transparency: Boolean(page.has_transparency),
         ai_generated: page.ai_generated,
         characters: []
     };
@@ -2670,6 +2737,7 @@ function renderStoryPages() {
         image.src = item.thumbnail_url || item.media_url;
         image.alt = item.name;
         image.loading = "lazy";
+        image.classList.toggle("transparent-media", Boolean(item.has_transparency));
 
         const controls = document.createElement("div");
         controls.className = "story-page-controls";
@@ -3002,6 +3070,7 @@ function renderStoryReader() {
             image.src = page.media_url;
             image.alt = `${story.title} — pagina ${page.page_number}`;
             image.loading = "lazy";
+            image.classList.toggle("transparent-media", Boolean(page.has_transparency));
             container.appendChild(image);
         });
         dom.storyReaderContent.appendChild(container);
@@ -3015,6 +3084,7 @@ function renderStoryReader() {
     const image = document.createElement("img");
     image.src = page.media_url;
     image.alt = `${story.title} — pagina ${state.readerPageIndex + 1}`;
+    image.classList.toggle("transparent-media", Boolean(page.has_transparency));
     container.appendChild(image);
     dom.storyReaderContent.appendChild(container);
     dom.storyReaderIndicator.textContent = `${state.readerPageIndex + 1} / ${story.pages.length}`;
@@ -3084,15 +3154,28 @@ dom.emptyTrashButton.addEventListener("click", emptyTrashFromUi);
 dom.closeOrganizeDialog.addEventListener("click", closeOrganizer);
 dom.cancelOrganize.addEventListener("click", closeOrganizer);
 dom.organizeAiCheckbox.addEventListener("change", updateDestinationPreview);
-dom.organizeCharacterSearch.addEventListener("input", () => debounce("organize-search", () => {
-    searchCharacterNames(
-        dom.organizeCharacterSearch.value,
-        dom.organizeSearchResults,
-        state.organizeCharacters,
-        addOrganizeCharacter,
-        name => openCreateCharacterDialog(name, "organize")
-    );
-}));
+const loadOrganizerCharacterSuggestions = () => searchCharacterNames(
+    dom.organizeCharacterSearch.value,
+    dom.organizeSearchResults,
+    state.organizeCharacters,
+    addOrganizeCharacter,
+    name => openCreateCharacterDialog(name, "organize")
+);
+
+dom.organizeCharacterSearch.setAttribute("aria-autocomplete", "list");
+dom.organizeCharacterSearch.setAttribute("aria-controls", dom.organizeSearchResults.id);
+dom.organizeCharacterSearch.addEventListener("focus", () => {
+    if (dom.organizeCharacterSearch.value.trim()) loadOrganizerCharacterSuggestions();
+});
+dom.organizeCharacterSearch.addEventListener("input", () => {
+    debounce("organize-search", loadOrganizerCharacterSuggestions, 120);
+});
+dom.organizeCharacterSearch.addEventListener("keydown", event => {
+    if (event.key === "Escape") dom.organizeSearchResults.replaceChildren();
+});
+dom.organizeCharacterSearch.addEventListener("blur", () => {
+    window.setTimeout(() => dom.organizeSearchResults.replaceChildren(), 120);
+});
 dom.openCreateCharacter.addEventListener("click", () => openCreateCharacterDialog(dom.organizeCharacterSearch.value, "organize"));
 dom.organizeForm.addEventListener("submit", event => {
     event.preventDefault();
@@ -3120,6 +3203,8 @@ dom.createCharacterForm.addEventListener("submit", event => {
 // Finestra dei metadati.
 dom.closeFileDialog.addEventListener("click", closeFileDialog);
 dom.cancelFileEdit.addEventListener("click", closeFileDialog);
+dom.filePreviousButton.addEventListener("click", () => navigateFileDialog(-1));
+dom.fileNextButton.addEventListener("click", () => navigateFileDialog(1));
 dom.revealFileButton.addEventListener("click", revealActiveFile);
 dom.trashFileButton.addEventListener("click", trashActiveGalleryFile);
 dom.editCharacterSearch.addEventListener("input", () => debounce("edit-search", () => {
@@ -3136,7 +3221,7 @@ dom.fileEditForm.addEventListener("submit", event => {
     saveFileMetadata();
 });
 
-// Alias dei personaggi.
+// Modifica dei personaggi.
 dom.closeCharacterAliasDialog.addEventListener("click", closeCharacterAliasDialog);
 dom.cancelCharacterAlias.addEventListener("click", closeCharacterAliasDialog);
 dom.characterAliasForm.addEventListener("submit", event => {
@@ -3175,6 +3260,18 @@ dom.editActiveStory.addEventListener("click", () => {
     const storyId = state.readerStory?.id;
     closeStoryReader();
     if (storyId) openStoryEditor(storyId);
+});
+document.addEventListener("keydown", event => {
+    if (!dom.fileDialog.open || !state.activeGalleryFile) return;
+    const activeElement = document.activeElement;
+    if (activeElement?.matches("input, textarea, select, [contenteditable='true']")) return;
+    if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        navigateFileDialog(-1);
+    } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        navigateFileDialog(1);
+    }
 });
 document.addEventListener("keydown", event => {
     if (!dom.storyReaderDialog.open || dom.storyReaderMode.value !== "single" || !state.readerStory) return;

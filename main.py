@@ -77,6 +77,7 @@ from backend.scanner import (
     scan_gallery,
     search_characters,
     sync_characters,
+    update_character,
     update_character_aliases,
 )
 
@@ -165,6 +166,11 @@ class CharacterCreateRequest(BaseModel):
 
 
 class CharacterAliasesRequest(BaseModel):
+    aliases: list[str] = Field(default_factory=list)
+
+
+class CharacterUpdateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
     aliases: list[str] = Field(default_factory=list)
 
 
@@ -293,6 +299,21 @@ def save_character_aliases(character_id: int, request: CharacterAliasesRequest):
         return update_character_aliases(character_id, request.aliases)
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@app.put("/api/characters/{character_id}")
+def edit_character(character_id: int, request: CharacterUpdateRequest):
+    try:
+        backup = create_automatic_backup("prima_della_rinomina_personaggio")
+        result = update_character(character_id, request.name, request.aliases)
+        result["automatic_backup"] = backup["id"]
+        return result
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+    except (ValueError, FileExistsError, OSError) as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 @app.get("/api/todo/files")

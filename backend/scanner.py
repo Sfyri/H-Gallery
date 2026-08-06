@@ -3,10 +3,14 @@ from __future__ import annotations
 import json
 import shutil
 import re
+from functools import lru_cache
 import unicodedata
+import uuid
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
+
+from PIL import Image, ImageSequence, UnidentifiedImageError
 
 from backend.database import get_connection
 from backend.paths import CONFIG_PATH, GALLERY_ROOT, ensure_user_layout, migrate_legacy_user_storage
@@ -79,6 +83,46 @@ def get_media_type(file_path: Path) -> str | None:
     return None
 
 
+@lru_cache(maxsize=4096)
+def _cached_image_has_transparency(
+    absolute_path: str,
+    file_size: int,
+    modified_ns: int,
+) -> bool:
+    del file_size, modified_ns  # Fanno parte della chiave e invalidano la cache.
+    try:
+        with Image.open(absolute_path) as image:
+            for frame in ImageSequence.Iterator(image):
+                if "A" in frame.getbands():
+                    minimum_alpha, _maximum_alpha = frame.getchannel("A").getextrema()
+                    if minimum_alpha < 255:
+                        return True
+                elif "transparency" in frame.info:
+                    alpha = frame.convert("RGBA").getchannel("A")
+                    minimum_alpha, _maximum_alpha = alpha.getextrema()
+                    if minimum_alpha < 255:
+                        return True
+    except (FileNotFoundError, OSError, UnidentifiedImageError):
+        return False
+    return False
+
+
+def image_has_transparency(file_path: Path) -> bool:
+    """Restituisce True solo se un PNG/GIF usa davvero pixel trasparenti."""
+
+    if file_path.suffix.lower() not in {".png", ".gif"}:
+        return False
+    try:
+        info = file_path.stat()
+    except OSError:
+        return False
+    return _cached_image_has_transparency(
+        str(file_path.resolve()),
+        int(info.st_size),
+        int(info.st_mtime_ns),
+    )
+
+
 def normalize_search_text(value: str) -> str:
     normalized = unicodedata.normalize("NFKD", value)
     without_accents = "".join(
@@ -110,11 +154,43 @@ def normalize_aliases(aliases: list[str] | None, character_name: str = "") -> li
     return normalized
 
 
+def _normalize_filename_component(value: str) -> str:
+    """Replica la normalizzazione usata per i nomi dei file organizzati.
+
+    La funzione resta locale a questo modulo per evitare una dipendenza
+    circolare con ``backend.file_manager``, che importa già ``scanner``.
+    """
+
+    normalized = unicodedata.normalize("NFKD", value)
+    ascii_value = normalized.encode("ascii", "ignore").decode("ascii")
+    cleaned = re.sub(r"[^A-Za-z0-9]+", "", ascii_value)
+    return cleaned or "Unknown"
+
+
+def _replace_path_prefix(relative_path: str, old_prefix: str, new_prefix: str) -> str:
+    path = Path(relative_path)
+    old_path = Path(old_prefix)
+    try:
+        suffix = path.relative_to(old_path)
+    except ValueError:
+        return relative_path
+    return (Path(new_prefix) / suffix).as_posix()
+
+
+def _replace_filename_prefix(filename: str, old_prefix: str, new_prefix: str) -> str:
+    marker = f"{old_prefix}_"
+    if filename.casefold().startswith(marker.casefold()):
+        return f"{new_prefix}{filename[len(old_prefix):]}"
+    return filename
+
+
 def get_character_aliases(character_id: int) -> dict[str, Any]:
     with get_connection() as connection:
         character = connection.execute(
             """
-            SELECT c.id, c.name, fr.name AS franchise_name
+            SELECT c.id, c.name, c.relative_path, c.score,
+                   fr.id AS franchise_id, fr.name AS franchise_name,
+                   fr.code AS franchise_code
             FROM characters c
             JOIN franchises fr ON fr.id = c.franchise_id
             WHERE c.id = ?
@@ -137,8 +213,13 @@ def get_character_aliases(character_id: int) -> dict[str, Any]:
     return {
         "id": int(character["id"]),
         "name": str(character["name"]),
+        "relative_path": str(character["relative_path"]),
+        "score": int(character["score"]),
+        "franchise_id": int(character["franchise_id"]),
         "franchise_name": str(character["franchise_name"]),
+        "franchise_code": str(character["franchise_code"]),
         "aliases": [str(row["alias"]) for row in rows],
+        "label": f"{character['franchise_name']} / {character['name']}",
     }
 
 
@@ -162,6 +243,284 @@ def update_character_aliases(character_id: int, aliases: list[str]) -> dict[str,
         )
 
     return get_character_aliases(character_id)
+
+
+def update_character(
+    character_id: int,
+    name: str,
+    aliases: list[str] | None = None,
+) -> dict[str, Any]:
+    """Aggiorna nome e alias rinominando in sicurezza cartella e file.
+
+    Il nome viene sostituito soltanto nei file che seguono il prefisso creato
+    da H-Gallery. I file in ``!Multiple`` e ``!Crossovers`` restano invariati:
+    l'associazione al personaggio usa l'ID e riflette automaticamente il nuovo
+    nome nell'interfaccia.
+    """
+
+    config = load_config()
+    gallery_root = Path(config["gallery_root"]).resolve()
+    character_name = validate_folder_name(name, kind="personaggio")
+    special_names = {
+        str(config.get("multiple_folder", "!Multiple")).casefold(),
+        str(config.get("ai_folder", ".AI")).casefold(),
+        str(config.get("stories_folder", "!Stories")).casefold(),
+    }
+    if character_name.casefold() in special_names:
+        raise ValueError("Questo nome è riservato dal programma.")
+
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT c.id, c.name, c.relative_path, c.franchise_id,
+                   fr.name AS franchise_name, fr.code AS franchise_code,
+                   fr.relative_path AS franchise_relative_path
+            FROM characters c
+            JOIN franchises fr ON fr.id = c.franchise_id
+            WHERE c.id = ? AND c.is_active = 1 AND fr.is_active = 1
+            """,
+            (character_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("Personaggio non trovato.")
+
+        duplicate = connection.execute(
+            """
+            SELECT id
+            FROM characters
+            WHERE franchise_id = ? AND id <> ? AND name = ? COLLATE NOCASE
+            LIMIT 1
+            """,
+            (int(row["franchise_id"]), character_id, character_name),
+        ).fetchone()
+        if duplicate is not None:
+            raise ValueError("Questo personaggio esiste già nella serie selezionata.")
+
+    old_name = str(row["name"])
+    old_relative = str(row["relative_path"])
+    normalized_aliases = normalize_aliases(aliases, character_name)
+
+    if old_name == character_name:
+        with get_connection() as connection:
+            connection.execute(
+                "DELETE FROM character_aliases WHERE character_id = ?",
+                (character_id,),
+            )
+            connection.executemany(
+                "INSERT INTO character_aliases(character_id, alias) VALUES (?, ?)",
+                [(character_id, alias) for alias in normalized_aliases],
+            )
+        result = get_character_aliases(character_id)
+        result["renamed"] = False
+        result["old_name"] = old_name
+        result["old_relative_path"] = old_relative
+        return result
+
+    franchise_path = (gallery_root / str(row["franchise_relative_path"])).resolve()
+    old_directory = (gallery_root / old_relative).resolve()
+    new_directory = (franchise_path / character_name).resolve()
+    try:
+        old_directory.relative_to(franchise_path)
+        new_directory.relative_to(franchise_path)
+    except ValueError as error:
+        raise PermissionError("Il percorso del personaggio non appartiene alla serie.") from error
+
+    if not old_directory.exists() or not old_directory.is_dir():
+        raise FileNotFoundError(
+            "La cartella del personaggio non esiste più. Esegui Rileggi cartelle."
+        )
+
+    # Windows non distingue maiuscole/minuscole: controlla anche i fratelli
+    # con confronto case-insensitive prima di iniziare qualsiasi spostamento.
+    for sibling in franchise_path.iterdir():
+        if sibling == old_directory:
+            continue
+        if sibling.name.casefold() == character_name.casefold():
+            raise ValueError("Esiste già una cartella con il nome scelto.")
+    if new_directory.exists() and new_directory != old_directory:
+        raise ValueError("Esiste già una cartella con il nome scelto.")
+
+    old_file_prefix = str(row["franchise_code"]) + _normalize_filename_component(old_name)
+    new_file_prefix = str(row["franchise_code"]) + _normalize_filename_component(character_name)
+
+    file_renames: list[tuple[Path, str]] = []
+    target_keys: set[str] = set()
+    for file_path in sorted(old_directory.rglob("*"), key=lambda path: str(path).casefold()):
+        if not file_path.is_file():
+            continue
+        new_filename = _replace_filename_prefix(
+            file_path.name, old_file_prefix, new_file_prefix
+        )
+        if new_filename == file_path.name:
+            continue
+        target = file_path.with_name(new_filename)
+        target_key = str(target).casefold()
+        if target_key in target_keys:
+            raise FileExistsError(f"Più file produrrebbero lo stesso nome: {new_filename}")
+        target_keys.add(target_key)
+        if target.exists() and target != file_path:
+            raise FileExistsError(f"Esiste già un file con il nome: {new_filename}")
+        file_renames.append((file_path.relative_to(old_directory), new_filename))
+
+    new_relative = new_directory.relative_to(gallery_root).as_posix()
+    staging_directory = franchise_path / f".hgallery-character-rename-{uuid.uuid4().hex}"
+    completed_file_renames: list[tuple[Path, Path]] = []
+    directory_moved = False
+
+    try:
+        # Il passaggio intermedio rende affidabili anche le rinomine che
+        # cambiano soltanto maiuscole/minuscole su Windows.
+        old_directory.rename(staging_directory)
+        staging_directory.rename(new_directory)
+        directory_moved = True
+
+        for relative_path, new_filename in file_renames:
+            source = new_directory / relative_path
+            target = source.with_name(new_filename)
+            temporary = source.with_name(
+                f".hgallery-file-rename-{uuid.uuid4().hex}{source.suffix}"
+            )
+            source.rename(temporary)
+            temporary.rename(target)
+            completed_file_renames.append((source, target))
+
+        renamed_by_internal_path = {
+            relative_path.as_posix(): (relative_path.parent / new_filename).as_posix()
+            for relative_path, new_filename in file_renames
+        }
+
+        with get_connection() as connection:
+            file_rows = connection.execute(
+                """
+                SELECT id, filename, relative_path
+                FROM files
+                WHERE is_trashed = 0
+                  AND (
+                      relative_path = ?
+                      OR substr(relative_path, 1, length(?) + 1) = ? || '/'
+                  )
+                """,
+                (old_relative, old_relative, old_relative),
+            ).fetchall()
+            for file_row in file_rows:
+                old_file_relative = str(file_row["relative_path"])
+                internal = Path(old_file_relative).relative_to(Path(old_relative)).as_posix()
+                new_internal = renamed_by_internal_path.get(internal, internal)
+                new_file_relative = (Path(new_relative) / new_internal).as_posix()
+                connection.execute(
+                    """
+                    UPDATE files
+                    SET filename = ?, relative_path = ?
+                    WHERE id = ?
+                    """,
+                    (Path(new_internal).name, new_file_relative, int(file_row["id"])),
+                )
+
+            story_rows = connection.execute(
+                """
+                SELECT id, relative_path
+                FROM stories
+                WHERE relative_path = ?
+                   OR substr(relative_path, 1, length(?) + 1) = ? || '/'
+                """,
+                (old_relative, old_relative, old_relative),
+            ).fetchall()
+            for story_row in story_rows:
+                connection.execute(
+                    "UPDATE stories SET relative_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (
+                        _replace_path_prefix(
+                            str(story_row["relative_path"]), old_relative, new_relative
+                        ),
+                        int(story_row["id"]),
+                    ),
+                )
+
+            trash_rows = connection.execute(
+                """
+                SELECT id, original_relative_path, original_filename
+                FROM trash_items
+                WHERE source_kind = 'gallery'
+                  AND (
+                      original_relative_path = ?
+                      OR substr(original_relative_path, 1, length(?) + 1) = ? || '/'
+                  )
+                """,
+                (old_relative, old_relative, old_relative),
+            ).fetchall()
+            for trash_row in trash_rows:
+                old_original = str(trash_row["original_relative_path"])
+                new_original = _replace_path_prefix(
+                    old_original, old_relative, new_relative
+                )
+                original_path = Path(new_original)
+                renamed_original = _replace_filename_prefix(
+                    original_path.name, old_file_prefix, new_file_prefix
+                )
+                if renamed_original != original_path.name:
+                    new_original = original_path.with_name(renamed_original).as_posix()
+                connection.execute(
+                    """
+                    UPDATE trash_items
+                    SET original_relative_path = ?, original_filename = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        new_original,
+                        _replace_filename_prefix(
+                            str(trash_row["original_filename"]),
+                            old_file_prefix,
+                            new_file_prefix,
+                        ),
+                        int(trash_row["id"]),
+                    ),
+                )
+
+            connection.execute(
+                """
+                UPDATE characters
+                SET name = ?, relative_path = ?
+                WHERE id = ?
+                """,
+                (character_name, new_relative, character_id),
+            )
+            connection.execute(
+                "DELETE FROM character_aliases WHERE character_id = ?",
+                (character_id,),
+            )
+            connection.executemany(
+                "INSERT INTO character_aliases(character_id, alias) VALUES (?, ?)",
+                [(character_id, alias) for alias in normalized_aliases],
+            )
+            connection.execute(
+                """
+                INSERT INTO operations(
+                    operation_type, source_relative_path, destination_relative_path
+                ) VALUES ('character_rename', ?, ?)
+                """,
+                (old_relative, new_relative),
+            )
+    except Exception:
+        for source, target in reversed(completed_file_renames):
+            if target.exists():
+                rollback_temp = target.with_name(
+                    f".hgallery-file-rollback-{uuid.uuid4().hex}{target.suffix}"
+                )
+                target.rename(rollback_temp)
+                rollback_temp.rename(source)
+        if directory_moved and new_directory.exists():
+            rollback_directory = franchise_path / f".hgallery-character-rollback-{uuid.uuid4().hex}"
+            new_directory.rename(rollback_directory)
+            rollback_directory.rename(old_directory)
+        elif staging_directory.exists():
+            staging_directory.rename(old_directory)
+        raise
+
+    result = get_character_aliases(character_id)
+    result["renamed"] = old_name != character_name
+    result["old_name"] = old_name
+    result["old_relative_path"] = old_relative
+    return result
 
 
 def derive_franchise_code(name: str) -> str:
@@ -1049,6 +1408,7 @@ def list_todo_files() -> dict[str, Any]:
                     or file_path.suffix.lower() == ".gif"
                     else None
                 ),
+                "has_transparency": image_has_transparency(file_path),
             }
         )
 

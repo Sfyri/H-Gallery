@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 from backend.database import get_connection
 from backend.file_manager import calculate_sha256
-from backend.scanner import cleanup_empty_entities, get_media_type, load_config
+from backend.scanner import cleanup_empty_entities, get_media_type, image_has_transparency, load_config
 from backend.thumbnails import trash_preview_url, trash_thumbnail_url
 
 
@@ -278,6 +278,7 @@ def _hydrate_trash_items(connection, rows) -> list[dict[str, Any]]:
                 {"id": int(row["id"]), "name": str(row["name"]), "type": str(row["type"] or "general")}
             )
 
+    gallery_root = _trash_root()[0]
     result: list[dict[str, Any]] = []
     for row in rows:
         file_id = int(row["file_id"]) if row["file_id"] is not None else None
@@ -301,6 +302,9 @@ def _hydrate_trash_items(connection, rows) -> list[dict[str, Any]]:
                     int(row["size"]),
                     str(row["media_type"]),
                     str(row["extension"]),
+                ),
+                "has_transparency": image_has_transparency(
+                    gallery_root / str(row["trash_relative_path"])
                 ),
                 "characters": characters.get(file_id, []) if file_id is not None else [],
                 "tags": tags.get(file_id, []) if file_id is not None else [],

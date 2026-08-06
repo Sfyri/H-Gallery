@@ -74,7 +74,7 @@
                             <strong id="character-score-value">0</strong>
                             <button id="character-score-plus" type="button" aria-label="Aumenta punteggio">+</button>
                         </div>
-                        <button id="manage-character-aliases" class="secondary-button" type="button">Alias</button>
+                        <button id="manage-character-aliases" class="secondary-button" type="button">Modifica personaggio</button>
                     </div>
                 </div>
 
@@ -274,25 +274,25 @@
                         <label for="organize-character-search">Cerca personaggio</label>
                         <button id="open-create-character" type="button" class="text-button">+ Crea personaggio</button>
                     </div>
-                    <input id="organize-character-search" type="search" autocomplete="off" placeholder="Esempio: char">
-                    <div id="organize-search-results" class="search-results"></div>
+                    <div class="character-autocomplete">
+                        <input id="organize-character-search" type="search" autocomplete="off" placeholder="Esempio: char">
+                        <div id="organize-search-results" class="search-results character-suggestions"></div>
+                    </div>
 
                     <p class="field-label">Personaggi selezionati</p>
                     <div id="organize-selected-characters" class="selected-characters"></div>
 
                     <label for="organize-tags-input">Tag</label>
                     <div class="tag-autocomplete">
-                        <input id="organize-tags-input" type="text" autocomplete="off" placeholder="armor, smile, wallpaper">
+                        <input id="organize-tags-input" type="text" autocomplete="off" placeholder="Purple Hair, Smile, Armor">
                         <div id="organize-tag-suggestions" class="tag-suggestions" role="listbox"></div>
                     </div>
-                    <small>Separali con una virgola. I tag già usati vengono suggeriti automaticamente.</small>
 
                     <label for="organize-artists-input">Artista</label>
                     <div class="tag-autocomplete">
                         <input id="organize-artists-input" type="text" autocomplete="off" placeholder="Nome dell’artista (facoltativo)">
                         <div id="organize-artist-suggestions" class="tag-suggestions" role="listbox"></div>
                     </div>
-                    <small>Può rimanere vuoto. Più artisti possono essere separati da una virgola.</small>
 
                     <label class="checkbox-row">
                         <input id="organize-ai-checkbox" type="checkbox">
@@ -360,9 +360,13 @@
     <dialog id="file-dialog" class="large-dialog">
         <form id="file-edit-form">
             <div class="dialog-header">
-                <div>
+                <div class="file-dialog-heading">
                     <h2 id="file-dialog-title">Dettagli file</h2>
-                    <p id="file-dialog-path"></p>
+                    <div class="file-navigation" aria-label="Navigazione tra i file visualizzati">
+                        <button id="file-previous-button" type="button" class="secondary-button">← Precedente</button>
+                        <span id="file-navigation-indicator">—</span>
+                        <button id="file-next-button" type="button" class="secondary-button">Successivo →</button>
+                    </div>
                 </div>
                 <button id="close-file-dialog" class="icon-button" type="button" aria-label="Chiudi">×</button>
             </div>
@@ -525,19 +529,22 @@
         <form id="character-alias-form">
             <div class="dialog-header">
                 <div>
-                    <h2 id="character-alias-title">Alias personaggio</h2>
-                    <p>Gli alias vengono usati nella ricerca senza rinominare cartelle o file.</p>
+                    <h2 id="character-alias-title">Modifica personaggio</h2>
+                    <p>Il nuovo nome viene applicato alla cartella e ai file organizzati del personaggio.</p>
                 </div>
                 <button id="close-character-alias-dialog" class="icon-button" type="button" aria-label="Chiudi">×</button>
             </div>
             <div class="small-dialog-body">
+                <label for="character-name-input">Nome personaggio</label>
+                <input id="character-name-input" type="text" maxlength="120" required>
+
                 <label for="character-alias-input">Alias</label>
                 <input id="character-alias-input" type="text" maxlength="1000" placeholder="Shirona, シロナ">
-                <small>Separali con una virgola. Il nome principale non deve essere ripetuto.</small>
+                <small>Separali con una virgola. I file in !Multiple e !Crossovers mantengono il loro nome generico.</small>
                 <p id="character-alias-status" class="status-message"></p>
                 <div class="dialog-actions">
                     <button id="cancel-character-alias" type="button" class="secondary-button">Annulla</button>
-                    <button id="save-character-alias" type="submit">Salva alias</button>
+                    <button id="save-character-alias" type="submit">Salva modifiche</button>
                 </div>
             </div>
         </form>

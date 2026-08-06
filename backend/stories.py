@@ -19,6 +19,7 @@ from backend.paths import CACHE_ROOT
 from backend.scanner import (
     cleanup_empty_entities,
     get_media_type,
+    image_has_transparency,
     load_config,
     validate_folder_name,
 )
@@ -734,6 +735,7 @@ def _hydrate_story_pages(connection, story_id: int) -> list[dict[str, Any]]:
         """,
         (story_id,),
     ).fetchall()
+    gallery_root = Path(load_config()["gallery_root"]).resolve()
     pages: list[dict[str, Any]] = []
     for row in rows:
         pages.append(
@@ -754,6 +756,9 @@ def _hydrate_story_pages(connection, story_id: int) -> list[dict[str, Any]]:
                 "animated_preview_url": gallery_preview_url(
                     int(row["id"]), int(row["size"]), float(row["modified_at"] or 0),
                     str(row["media_type"]), str(row["extension"]),
+                ),
+                "has_transparency": image_has_transparency(
+                    gallery_root / str(row["relative_path"])
                 ),
             }
         )
