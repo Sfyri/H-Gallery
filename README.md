@@ -89,3 +89,5 @@ ffmpeg -version
 ```
 
 Senza FFmpeg il programma funziona comunque; mancano soltanto le anteprime animate dei video.
+
+La IA è stata utilizzata per la realizzazione di questo Programma.
