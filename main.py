@@ -38,6 +38,15 @@ from backend.gallery import (
     update_file_metadata,
 )
 from backend.indexer import synchronize_archive
+from backend.stories import (
+    create_story_from_gallery,
+    create_story_from_new,
+    dissolve_story,
+    get_story,
+    list_stories,
+    preview_story,
+    update_story,
+)
 from backend.trash import (
     empty_trash,
     list_trash_items,
@@ -99,6 +108,47 @@ class BatchOrganizeRequest(BaseModel):
     allow_duplicates: bool = False
 
 
+class StoryPreviewRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+    character_ids: list[int] = Field(min_length=1)
+    ai_generated: bool = False
+    page_count: int = Field(ge=2, le=500)
+
+
+class StoryCreateFromNewRequest(BaseModel):
+    relative_paths: list[str] = Field(min_length=2, max_length=500)
+    title: str = Field(min_length=1, max_length=120)
+    character_ids: list[int] = Field(min_length=1)
+    tags: list[str] = Field(default_factory=list)
+    artists: list[str] = Field(default_factory=list)
+    ai_generated: bool = False
+    reading_direction: str = "rtl"
+    cover_index: int = Field(default=0, ge=0)
+    allow_duplicates: bool = False
+
+
+class StoryCreateFromGalleryRequest(BaseModel):
+    file_ids: list[int] = Field(min_length=2, max_length=500)
+    title: str = Field(min_length=1, max_length=120)
+    character_ids: list[int] = Field(min_length=1)
+    tags: list[str] = Field(default_factory=list)
+    artists: list[str] = Field(default_factory=list)
+    ai_generated: bool = False
+    reading_direction: str = "rtl"
+    cover_index: int = Field(default=0, ge=0)
+
+
+class StoryUpdateRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+    character_ids: list[int] = Field(min_length=1)
+    tags: list[str] = Field(default_factory=list)
+    artists: list[str] = Field(default_factory=list)
+    ai_generated: bool = False
+    reading_direction: str = "rtl"
+    ordered_file_ids: list[int] = Field(min_length=2, max_length=500)
+    cover_file_id: int | None = None
+
+
 class ScoreRequest(BaseModel):
     delta: int
 
@@ -151,7 +201,7 @@ async def lifespan(_: FastAPI):
 app = FastAPI(
     title="H-Gallery",
     description="Galleria locale per immagini e video",
-    version="1.4.0",
+    version="1.5.0",
     lifespan=lifespan,
 )
 
@@ -308,6 +358,144 @@ def organize_batch(request: BatchOrganizeRequest):
     except PermissionError as error:
         raise HTTPException(status_code=403, detail=str(error)) from error
     except (FileNotFoundError, NotADirectoryError, ValueError, FileExistsError) as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.post("/api/stories/preview")
+def story_preview(request: StoryPreviewRequest):
+    try:
+        return preview_story(
+            request.title,
+            request.character_ids,
+            request.ai_generated,
+            request.page_count,
+        )
+    except (FileNotFoundError, NotADirectoryError, ValueError, PermissionError) as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.post("/api/stories/from-new", status_code=201)
+def create_new_story(request: StoryCreateFromNewRequest):
+    try:
+        backup = create_automatic_backup("prima_della_creazione_storia")
+        result = create_story_from_new(
+            relative_paths=request.relative_paths,
+            title=request.title,
+            character_ids=request.character_ids,
+            tags=request.tags,
+            artists=request.artists,
+            ai_generated=request.ai_generated,
+            reading_direction=request.reading_direction,
+            cover_index=request.cover_index,
+            allow_duplicates=request.allow_duplicates,
+        )
+        if result.get("status") == "duplicate":
+            raise HTTPException(status_code=409, detail=result)
+        result["automatic_backup"] = backup["id"]
+        return result
+    except HTTPException:
+        raise
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+    except (NotADirectoryError, ValueError, FileExistsError, OSError) as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.post("/api/stories/from-gallery", status_code=201)
+def create_gallery_story(request: StoryCreateFromGalleryRequest):
+    try:
+        backup = create_automatic_backup("prima_della_creazione_storia")
+        result = create_story_from_gallery(
+            file_ids=request.file_ids,
+            title=request.title,
+            character_ids=request.character_ids,
+            tags=request.tags,
+            artists=request.artists,
+            ai_generated=request.ai_generated,
+            reading_direction=request.reading_direction,
+            cover_index=request.cover_index,
+        )
+        result["automatic_backup"] = backup["id"]
+        return result
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+    except (NotADirectoryError, ValueError, FileExistsError, OSError) as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.get("/api/stories")
+def stories(
+    character_id: int | None = Query(default=None, ge=1),
+    franchise_id: int | None = Query(default=None, ge=1),
+    collection: str | None = Query(default=None),
+    ai_generated: bool | None = Query(default=None),
+    tags: list[str] = Query(default=[]),
+    q: str | None = Query(default=None, max_length=200),
+    limit: int = Query(default=200, ge=1, le=500),
+):
+    try:
+        return list_stories(
+            character_id=character_id,
+            franchise_id=franchise_id,
+            collection=collection,
+            ai_generated=ai_generated,
+            tags=tags,
+            query=q,
+            limit=limit,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.get("/api/stories/{story_id}")
+def story_details(story_id: int):
+    try:
+        return get_story(story_id)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@app.put("/api/stories/{story_id}")
+def edit_story(story_id: int, request: StoryUpdateRequest):
+    try:
+        backup = create_automatic_backup("prima_della_modifica_storia")
+        result = update_story(
+            story_id,
+            title=request.title,
+            character_ids=request.character_ids,
+            tags=request.tags,
+            artists=request.artists,
+            ai_generated=request.ai_generated,
+            reading_direction=request.reading_direction,
+            ordered_file_ids=request.ordered_file_ids,
+            cover_file_id=request.cover_file_id,
+        )
+        result["automatic_backup"] = backup["id"]
+        return result
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+    except (ValueError, FileExistsError, OSError) as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.delete("/api/stories/{story_id}/dissolve")
+def dissolve_existing_story(story_id: int):
+    try:
+        backup = create_automatic_backup("prima_dello_scioglimento_storia")
+        result = dissolve_story(story_id)
+        result["automatic_backup"] = backup["id"]
+        return result
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+    except (ValueError, FileExistsError, OSError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
 

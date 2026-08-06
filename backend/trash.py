@@ -54,6 +54,9 @@ def _remove_unused_tags(connection) -> None:
         WHERE NOT EXISTS (
             SELECT 1 FROM file_tags WHERE file_tags.tag_id = tags.id
         )
+          AND NOT EXISTS (
+            SELECT 1 FROM story_tags WHERE story_tags.tag_id = tags.id
+        )
         """
     )
 
@@ -74,6 +77,16 @@ def trash_gallery_file(file_id: int) -> dict[str, Any]:
 
     if row is None:
         raise ValueError("File non trovato nel database.")
+
+    with get_connection() as connection:
+        story_row = connection.execute(
+            "SELECT story_id FROM story_pages WHERE file_id = ?",
+            (file_id,),
+        ).fetchone()
+    if story_row is not None:
+        raise ValueError(
+            "Questa immagine appartiene a una storia. Sciogli prima la storia per spostare singole pagine nel cestino."
+        )
     if bool(row["is_trashed"]):
         raise ValueError("Il file si trova già nel cestino.")
 

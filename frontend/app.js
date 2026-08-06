@@ -57,6 +57,14 @@ const dom = {
     mediaResultSummary: byId("media-result-summary"),
     galleryMediaGrid: byId("gallery-media-grid"),
     pagination: byId("pagination"),
+    storySection: byId("story-section"),
+    storyResultSummary: byId("story-result-summary"),
+    storyGrid: byId("story-grid"),
+    gallerySelectionToolbar: byId("gallery-selection-toolbar"),
+    gallerySelectionCount: byId("gallery-selection-count"),
+    selectAllGalleryButton: byId("select-all-gallery"),
+    clearGallerySelectionButton: byId("clear-gallery-selection"),
+    createStoryFromGalleryButton: byId("create-story-from-gallery"),
 
     todoFolderPath: byId("todo-folder-path"),
     todoFileCount: byId("todo-file-count"),
@@ -67,6 +75,7 @@ const dom = {
     selectAllTodoButton: byId("select-all-todo"),
     clearTodoSelectionButton: byId("clear-todo-selection"),
     organizeSelectedTodoButton: byId("organize-selected-todo"),
+    createStoryFromNewButton: byId("create-story-from-new"),
     trashSelectedTodoButton: byId("trash-selected-todo"),
 
     trashSummary: byId("trash-summary"),
@@ -152,7 +161,46 @@ const dom = {
     characterAliasStatus: byId("character-alias-status"),
     closeCharacterAliasDialog: byId("close-character-alias-dialog"),
     cancelCharacterAlias: byId("cancel-character-alias"),
-    saveCharacterAlias: byId("save-character-alias")
+    saveCharacterAlias: byId("save-character-alias"),
+
+    storyDialog: byId("story-dialog"),
+    storyForm: byId("story-form"),
+    storyDialogTitle: byId("story-dialog-title"),
+    storyDialogSubtitle: byId("story-dialog-subtitle"),
+    closeStoryDialog: byId("close-story-dialog"),
+    cancelStory: byId("cancel-story"),
+    submitStory: byId("submit-story"),
+    dissolveStory: byId("dissolve-story"),
+    storyTitleInput: byId("story-title-input"),
+    storyCharacterSearch: byId("story-character-search"),
+    storyCharacterResults: byId("story-character-results"),
+    storySelectedCharacters: byId("story-selected-characters"),
+    storyCreateCharacter: byId("story-create-character"),
+    storyTagsInput: byId("story-tags-input"),
+    storyTagSuggestions: byId("story-tag-suggestions"),
+    storyArtistsInput: byId("story-artists-input"),
+    storyArtistSuggestions: byId("story-artist-suggestions"),
+    storyReadingDirection: byId("story-reading-direction"),
+    storyAiCheckbox: byId("story-ai-checkbox"),
+    storyDuplicatesRow: byId("story-duplicates-row"),
+    storyAllowDuplicates: byId("story-allow-duplicates"),
+    storyDestinationPreview: byId("story-destination-preview"),
+    storyStatus: byId("story-status"),
+    storyPagesList: byId("story-pages-list"),
+    sortStoryPages: byId("sort-story-pages"),
+    reverseStoryPages: byId("reverse-story-pages"),
+
+    storyReaderDialog: byId("story-reader-dialog"),
+    storyReaderTitle: byId("story-reader-title"),
+    storyReaderMeta: byId("story-reader-meta"),
+    storyReaderMode: byId("story-reader-mode"),
+    storyReaderContent: byId("story-reader-content"),
+    storyReaderNavigation: byId("story-reader-navigation"),
+    storyReaderPrevious: byId("story-reader-previous"),
+    storyReaderNext: byId("story-reader-next"),
+    storyReaderIndicator: byId("story-reader-indicator"),
+    closeStoryReader: byId("close-story-reader"),
+    editActiveStory: byId("edit-active-story")
 };
 
 const NEW_FRANCHISE_VALUE = "__new__";
@@ -169,6 +217,8 @@ const state = {
     todoFiles: [],
     todoSelectedPaths: new Set(),
     lastTodoSelectionIndex: null,
+    galleryFiles: [],
+    gallerySelectedIds: new Set(),
     organizeCharacters: [],
     activeGalleryFile: null,
     editCharacters: [],
@@ -176,6 +226,13 @@ const state = {
     franchiseList: [],
     codeEditedManually: false,
     aliasCharacter: null,
+    storyMode: null,
+    storySourceItems: [],
+    storyCharacters: [],
+    activeStory: null,
+    readerStory: null,
+    readerPageIndex: 0,
+    draggedStoryPageKey: null,
     timers: {}
 };
 
@@ -367,7 +424,7 @@ function setupTagAutocomplete(input, resultsContainer, { excludeAi = false, tagT
             const name = document.createElement("strong");
             name.textContent = suggestion.name;
             const count = document.createElement("small");
-            count.textContent = `${suggestion.file_count} file`;
+            count.textContent = `${suggestion.usage_count ?? suggestion.file_count} utilizzi`;
             button.append(name, count);
 
             button.addEventListener("mousedown", event => event.preventDefault());
@@ -662,6 +719,7 @@ function renderOverview() {
         [summary.total_files, "file"],
         [summary.images, "immagini"],
         [summary.videos, "video"],
+        [summary.stories || 0, "storie"],
         [summary.ai_files, "IA"]
     ];
     dom.overviewSummary.replaceChildren(...stats.map(([value, label]) => {
@@ -777,6 +835,7 @@ function renderCharacterGrid(data) {
 
 function openMediaContext(context) {
     state.mediaContext = context;
+    state.gallerySelectedIds.clear();
     resetMediaFilters();
     dom.overviewPanel.hidden = true;
     dom.franchisePanel.hidden = true;
@@ -847,16 +906,45 @@ function buildGalleryFileQuery() {
     return params;
 }
 
+function buildStoryQuery() {
+    const params = new URLSearchParams();
+    const context = state.mediaContext;
+    if (context.kind === "character") params.set("character_id", context.character.id);
+    if (context.kind === "multiple") {
+        params.set("franchise_id", context.franchise.id);
+        params.set("collection", "multiple");
+    }
+    if (context.kind === "crossovers") params.set("collection", "crossovers");
+    if (context.kind === "tag") params.append("tags", context.tag);
+
+    if (dom.mediaAiFilter.value) params.set("ai_generated", dom.mediaAiFilter.value);
+    if (dom.mediaSearch.value.trim()) params.set("q", dom.mediaSearch.value.trim());
+    parseTags(dom.mediaTagFilter.value).forEach(tag => params.append("tags", tag));
+    params.set("limit", "200");
+    return params;
+}
+
 async function loadGalleryFiles() {
     if (!state.mediaContext) return;
     dom.galleryMediaGrid.replaceChildren();
     dom.pagination.replaceChildren();
+    dom.storyGrid.replaceChildren();
+    dom.storySection.hidden = true;
     dom.mediaResultSummary.textContent = "Caricamento...";
     try {
-        const data = await readJson(await fetch(`/api/gallery/files?${buildGalleryFileQuery()}`));
-        dom.mediaResultSummary.textContent = `${data.total} file · pagina ${data.page} di ${data.pages}`;
+        const [data, storyData] = await Promise.all([
+            readJson(await fetch(`/api/gallery/files?${buildGalleryFileQuery()}`)),
+            readJson(await fetch(`/api/stories?${buildStoryQuery()}`))
+        ]);
+        state.galleryFiles = data.files;
+        state.gallerySelectedIds = new Set(
+            [...state.gallerySelectedIds].filter(id => data.files.some(file => file.id === id))
+        );
+        dom.mediaResultSummary.textContent = `${data.total} file singoli · pagina ${data.page} di ${data.pages}`;
+        renderStoryCards(dom.mediaTypeFilter.value === "video" ? [] : storyData.stories);
         renderGalleryMediaCards(data.files);
         renderPagination(data.page, data.pages);
+        updateGallerySelectionUi();
     } catch (error) {
         console.error(error);
         dom.mediaResultSummary.textContent = "Errore";
@@ -864,9 +952,113 @@ async function loadGalleryFiles() {
     }
 }
 
+function renderStoryCards(stories) {
+    dom.storyGrid.replaceChildren();
+    dom.storySection.hidden = stories.length === 0;
+    dom.storyResultSummary.textContent = `${stories.length} ${stories.length === 1 ? "storia" : "storie"}`;
+    if (!stories.length) return;
+
+    const fragment = document.createDocumentFragment();
+    stories.forEach(story => {
+        const card = document.createElement("article");
+        card.className = "story-card";
+
+        const preview = document.createElement("button");
+        preview.type = "button";
+        preview.className = "preview-container preview-button";
+        if (story.cover_url) {
+            const image = document.createElement("img");
+            image.src = story.cover_url;
+            image.alt = `Copertina di ${story.title}`;
+            image.loading = "lazy";
+            preview.appendChild(image);
+        } else {
+            const placeholder = document.createElement("span");
+            placeholder.className = "empty-message";
+            placeholder.textContent = "Nessuna copertina";
+            preview.appendChild(placeholder);
+        }
+        preview.addEventListener("click", () => openStoryReader(story.id));
+
+        const info = document.createElement("div");
+        info.className = "media-info";
+        const title = document.createElement("p");
+        title.className = "media-name";
+        title.textContent = story.title;
+        const details = document.createElement("p");
+        details.className = "media-details";
+        details.innerHTML = `<span>${story.page_count} pagine</span><span>${story.reading_direction === "rtl" ? "← Manga" : "Fumetto →"}</span>`;
+        const characters = document.createElement("p");
+        characters.className = "card-characters";
+        characters.textContent = story.characters.map(character => character.name).join(", ");
+        const tags = document.createElement("div");
+        tags.className = "card-tags";
+        story.tags.slice(0, 5).forEach(tag => tags.appendChild(createTagChip(tag)));
+        info.append(title, details, characters, tags);
+
+        const actions = document.createElement("div");
+        actions.className = "story-card-actions";
+        const readButton = document.createElement("button");
+        readButton.type = "button";
+        readButton.textContent = "Leggi";
+        readButton.addEventListener("click", () => openStoryReader(story.id));
+        const editButton = document.createElement("button");
+        editButton.type = "button";
+        editButton.className = "secondary-button";
+        editButton.textContent = "Modifica";
+        editButton.addEventListener("click", () => openStoryEditor(story.id));
+        actions.append(readButton, editButton);
+        card.append(preview, info, actions);
+        fragment.appendChild(card);
+    });
+    dom.storyGrid.appendChild(fragment);
+}
+
+function updateGallerySelectionUi() {
+    const availableIds = new Set(
+        state.galleryFiles.filter(file => file.media_type === "image").map(file => file.id)
+    );
+    state.gallerySelectedIds = new Set(
+        [...state.gallerySelectedIds].filter(id => availableIds.has(id))
+    );
+    const selected = state.gallerySelectedIds.size;
+    const available = availableIds.size;
+    dom.gallerySelectionToolbar.hidden = available === 0;
+    dom.gallerySelectionCount.textContent = `${selected} ${selected === 1 ? "immagine selezionata" : "immagini selezionate"}`;
+    dom.selectAllGalleryButton.disabled = available === 0 || selected === available;
+    dom.clearGallerySelectionButton.disabled = selected === 0;
+    dom.createStoryFromGalleryButton.disabled = selected < 2;
+
+    document.querySelectorAll(".gallery-select-checkbox").forEach(checkbox => {
+        const fileId = Number(checkbox.dataset.fileId);
+        const checked = state.gallerySelectedIds.has(fileId);
+        checkbox.checked = checked;
+        checkbox.closest(".media-card")?.classList.toggle("selected-card", checked);
+    });
+}
+
 function createGalleryMediaCard(file) {
     const card = document.createElement("article");
     card.className = "media-card gallery-file-card";
+
+    if (file.media_type === "image") {
+        const selectionLabel = document.createElement("label");
+        selectionLabel.className = "gallery-selection-toggle";
+        selectionLabel.title = `Seleziona ${file.filename}`;
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.className = "gallery-select-checkbox";
+        checkbox.dataset.fileId = file.id;
+        checkbox.checked = state.gallerySelectedIds.has(file.id);
+        checkbox.addEventListener("click", event => {
+            event.stopPropagation();
+            if (checkbox.checked) state.gallerySelectedIds.add(file.id);
+            else state.gallerySelectedIds.delete(file.id);
+            updateGallerySelectionUi();
+        });
+        selectionLabel.appendChild(checkbox);
+        card.appendChild(selectionLabel);
+    }
 
     const previewButton = document.createElement("button");
     previewButton.type = "button";
@@ -909,7 +1101,7 @@ function renderGalleryMediaCards(files) {
     if (files.length === 0) {
         const empty = document.createElement("p");
         empty.className = "empty-message";
-        empty.textContent = "Nessun file corrisponde ai filtri selezionati.";
+        empty.textContent = "Nessun file singolo corrisponde ai filtri selezionati.";
         dom.galleryMediaGrid.appendChild(empty);
         return;
     }
@@ -979,12 +1171,24 @@ async function runGlobalSearch() {
             fragment.appendChild(button);
         });
 
+        (data.stories || []).forEach(story => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "floating-result";
+            button.innerHTML = `<strong>${escapeHtml(story.title)}</strong><small>Storia · ${story.page_count} pagine</small>`;
+            button.addEventListener("click", () => {
+                dom.globalSearchResults.replaceChildren();
+                openStoryReader(story.id);
+            });
+            fragment.appendChild(button);
+        });
+
         data.tags.forEach(tag => {
             const button = document.createElement("button");
             button.type = "button";
             button.className = `floating-result ${tagTypeClass(tag.type)}`;
             const tagLabel = tag.type === "artist" ? "Artista" : tag.type === "system" ? "Sistema" : "Tag";
-            button.innerHTML = `<strong>#${escapeHtml(tag.name)}</strong><small>${tagLabel} · ${tag.file_count} file</small>`;
+            button.innerHTML = `<strong>#${escapeHtml(tag.name)}</strong><small>${tagLabel} · ${tag.usage_count ?? tag.file_count} utilizzi</small>`;
             button.addEventListener("click", () => {
                 dom.globalSearchResults.replaceChildren();
                 resetMediaFilters();
@@ -1036,6 +1240,10 @@ function updateTodoSelectionUi() {
     dom.selectAllTodoButton.disabled = totalCount === 0 || selectedCount === totalCount;
     dom.clearTodoSelectionButton.disabled = selectedCount === 0;
     dom.organizeSelectedTodoButton.disabled = selectedCount === 0;
+    const selectedImages = state.todoFiles.filter(
+        file => state.todoSelectedPaths.has(file.relative_path) && file.media_type === "image"
+    ).length;
+    dom.createStoryFromNewButton.disabled = selectedCount < 2 || selectedImages !== selectedCount;
     dom.trashSelectedTodoButton.disabled = selectedCount === 0;
 
     document.querySelectorAll(".todo-select-checkbox").forEach(checkbox => {
@@ -1779,6 +1987,7 @@ async function createCharacterFromForm() {
 
         dom.createCharacterDialog.close();
         if (state.creationTarget === "edit") addEditCharacter(character);
+        else if (state.creationTarget === "story") addStoryCharacter(character);
         else addOrganizeCharacter(character);
         await loadOverview(true, false);
         setStatus(dom.globalStatus, `Creato: ${character.label}`, true);
@@ -2358,6 +2567,473 @@ async function syncFolders() {
     }
 }
 
+
+function getSelectedGalleryFiles() {
+    return state.galleryFiles.filter(file => state.gallerySelectedIds.has(file.id));
+}
+
+function selectAllGalleryImages() {
+    state.galleryFiles
+        .filter(file => file.media_type === "image")
+        .forEach(file => state.gallerySelectedIds.add(file.id));
+    updateGallerySelectionUi();
+}
+
+function clearGallerySelection() {
+    state.gallerySelectedIds.clear();
+    updateGallerySelectionUi();
+}
+
+function storyItemKey(item) {
+    return String(item.id ?? item.relative_path);
+}
+
+function storyItemFromTodo(file) {
+    return {
+        key: file.relative_path,
+        relative_path: file.relative_path,
+        name: file.name,
+        thumbnail_url: file.thumbnail_url,
+        media_url: file.media_url,
+        media_type: file.media_type,
+        ai_generated: false,
+        characters: []
+    };
+}
+
+function storyItemFromGallery(file) {
+    return {
+        key: String(file.id),
+        id: file.id,
+        name: file.filename,
+        thumbnail_url: file.thumbnail_url,
+        media_url: file.media_url,
+        media_type: file.media_type,
+        ai_generated: file.ai_generated,
+        characters: file.characters || []
+    };
+}
+
+function storyItemFromPage(page) {
+    return {
+        key: String(page.id),
+        id: page.id,
+        name: page.filename,
+        thumbnail_url: page.thumbnail_url,
+        media_url: page.media_url,
+        media_type: "image",
+        ai_generated: page.ai_generated,
+        characters: []
+    };
+}
+
+function inferStoryCharacters(items) {
+    const byId = new Map();
+    items.forEach(item => (item.characters || []).forEach(character => byId.set(character.id, character)));
+    return [...byId.values()];
+}
+
+function renderStorySelectedCharacters() {
+    renderSelectedCharacters(
+        dom.storySelectedCharacters,
+        state.storyCharacters,
+        removeStoryCharacter
+    );
+}
+
+function addStoryCharacter(character) {
+    if (!state.storyCharacters.some(item => item.id === character.id)) {
+        state.storyCharacters.push(character);
+    }
+    dom.storyCharacterSearch.value = "";
+    dom.storyCharacterResults.replaceChildren();
+    renderStorySelectedCharacters();
+    updateStoryDestinationPreview();
+}
+
+function removeStoryCharacter(characterId) {
+    state.storyCharacters = state.storyCharacters.filter(item => item.id !== characterId);
+    renderStorySelectedCharacters();
+    updateStoryDestinationPreview();
+}
+
+function renderStoryPages() {
+    dom.storyPagesList.replaceChildren();
+    const fragment = document.createDocumentFragment();
+    state.storySourceItems.forEach((item, index) => {
+        const page = document.createElement("article");
+        page.className = "story-page-item";
+        page.draggable = true;
+        page.dataset.key = storyItemKey(item);
+
+        const image = document.createElement("img");
+        image.src = item.thumbnail_url || item.media_url;
+        image.alt = item.name;
+        image.loading = "lazy";
+
+        const controls = document.createElement("div");
+        controls.className = "story-page-controls";
+        const numberLabel = document.createElement("label");
+        numberLabel.textContent = "Pagina";
+        const number = document.createElement("input");
+        number.type = "number";
+        number.min = "1";
+        number.max = String(state.storySourceItems.length);
+        number.value = String(index + 1);
+        number.dataset.storyPageNumber = storyItemKey(item);
+        numberLabel.appendChild(number);
+
+        const coverLabel = document.createElement("label");
+        coverLabel.className = "story-page-cover";
+        const cover = document.createElement("input");
+        cover.type = "radio";
+        cover.name = "story-cover";
+        cover.value = storyItemKey(item);
+        cover.checked = String(state.storyCoverKey) === storyItemKey(item);
+        cover.addEventListener("change", () => {
+            if (cover.checked) state.storyCoverKey = storyItemKey(item);
+        });
+        coverLabel.append(cover, document.createTextNode("Copertina"));
+        controls.append(numberLabel, coverLabel);
+
+        const name = document.createElement("span");
+        name.className = "story-page-name";
+        name.textContent = item.name;
+        name.title = item.name;
+
+        page.addEventListener("dragstart", () => {
+            state.draggedStoryPageKey = storyItemKey(item);
+            page.classList.add("dragging");
+        });
+        page.addEventListener("dragend", () => {
+            state.draggedStoryPageKey = null;
+            page.classList.remove("dragging");
+            document.querySelectorAll(".story-page-item.drag-over").forEach(element => element.classList.remove("drag-over"));
+        });
+        page.addEventListener("dragover", event => {
+            event.preventDefault();
+            if (state.draggedStoryPageKey && state.draggedStoryPageKey !== storyItemKey(item)) {
+                page.classList.add("drag-over");
+            }
+        });
+        page.addEventListener("dragleave", () => page.classList.remove("drag-over"));
+        page.addEventListener("drop", event => {
+            event.preventDefault();
+            page.classList.remove("drag-over");
+            const fromKey = state.draggedStoryPageKey;
+            const toKey = storyItemKey(item);
+            if (!fromKey || fromKey === toKey) return;
+            const fromIndex = state.storySourceItems.findIndex(value => storyItemKey(value) === fromKey);
+            const toIndex = state.storySourceItems.findIndex(value => storyItemKey(value) === toKey);
+            if (fromIndex < 0 || toIndex < 0) return;
+            const [moved] = state.storySourceItems.splice(fromIndex, 1);
+            state.storySourceItems.splice(toIndex, 0, moved);
+            renderStoryPages();
+        });
+
+        page.append(image, controls, name);
+        fragment.appendChild(page);
+    });
+    dom.storyPagesList.appendChild(fragment);
+}
+
+function sortStoryPagesByNumbers() {
+    const values = new Map();
+    dom.storyPagesList.querySelectorAll("input[data-story-page-number]").forEach((input, index) => {
+        values.set(input.dataset.storyPageNumber, {
+            value: Number(input.value) || index + 1,
+            index
+        });
+    });
+    state.storySourceItems.sort((a, b) => {
+        const av = values.get(storyItemKey(a));
+        const bv = values.get(storyItemKey(b));
+        return (av?.value ?? 0) - (bv?.value ?? 0) || (av?.index ?? 0) - (bv?.index ?? 0);
+    });
+    renderStoryPages();
+}
+
+function reverseStoryPages() {
+    state.storySourceItems.reverse();
+    renderStoryPages();
+}
+
+async function updateStoryDestinationPreview() {
+    const title = dom.storyTitleInput.value.trim();
+    if (!title || !state.storyCharacters.length || state.storySourceItems.length < 2) {
+        dom.storyDestinationPreview.textContent = "Inserisci titolo e almeno un personaggio.";
+        return;
+    }
+    try {
+        const result = await readJson(await fetch("/api/stories/preview", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                title,
+                character_ids: state.storyCharacters.map(character => character.id),
+                ai_generated: dom.storyAiCheckbox.checked,
+                page_count: state.storySourceItems.length
+            })
+        }));
+        dom.storyDestinationPreview.textContent = `${result.destination_relative_path}/ · ${result.page_count} pagine · ${result.page_name_example}`;
+    } catch (error) {
+        dom.storyDestinationPreview.textContent = error.message;
+    }
+}
+
+function resetStoryDialog() {
+    state.storySourceItems = [];
+    state.storyCharacters = [];
+    state.activeStory = null;
+    state.storyCoverKey = null;
+    state.storyMode = null;
+    dom.storyPagesList.replaceChildren();
+    dom.storyCharacterResults.replaceChildren();
+    dom.storyTagSuggestions.replaceChildren();
+    dom.storyArtistSuggestions.replaceChildren();
+    setStatus(dom.storyStatus, "");
+}
+
+function openStoryCreator(items, mode) {
+    if (items.length < 2 || items.some(item => item.media_type !== "image")) {
+        setStatus(dom.globalStatus, "Seleziona almeno due immagini. I video non possono essere pagine di una storia.");
+        return;
+    }
+    state.storyMode = mode;
+    state.activeStory = null;
+    state.storySourceItems = mode === "new"
+        ? items.map(storyItemFromTodo)
+        : items.map(storyItemFromGallery);
+    state.storyCharacters = mode === "gallery" ? inferStoryCharacters(state.storySourceItems) : [];
+    state.storyCoverKey = storyItemKey(state.storySourceItems[0]);
+
+    dom.storyDialogTitle.textContent = "Crea storia";
+    dom.storyDialogSubtitle.textContent = `${items.length} immagini selezionate`;
+    dom.storyTitleInput.value = "";
+    dom.storyCharacterSearch.value = "";
+    dom.storyCharacterResults.replaceChildren();
+    dom.storyTagsInput.value = "";
+    dom.storyArtistsInput.value = "";
+    dom.storyReadingDirection.value = "rtl";
+    dom.storyAiCheckbox.checked = mode === "gallery" && items.every(item => item.ai_generated);
+    dom.storyDuplicatesRow.hidden = mode !== "new";
+    dom.storyAllowDuplicates.checked = false;
+    dom.dissolveStory.hidden = true;
+    dom.submitStory.textContent = "Crea storia";
+    setStatus(dom.storyStatus, "");
+    renderStorySelectedCharacters();
+    renderStoryPages();
+    updateStoryDestinationPreview();
+    dom.storyDialog.showModal();
+    dom.storyTitleInput.focus();
+}
+
+async function openStoryEditor(storyId) {
+    try {
+        const story = await readJson(await fetch(`/api/stories/${storyId}`));
+        state.storyMode = "edit";
+        state.activeStory = story;
+        state.storySourceItems = story.pages.map(storyItemFromPage);
+        state.storyCharacters = [...story.characters];
+        state.storyCoverKey = String(story.cover_file_id || story.pages[0]?.id || "");
+
+        dom.storyDialogTitle.textContent = `Modifica: ${story.title}`;
+        dom.storyDialogSubtitle.textContent = `${story.pages.length} pagine`;
+        dom.storyTitleInput.value = story.title;
+        dom.storyCharacterSearch.value = "";
+        dom.storyCharacterResults.replaceChildren();
+        dom.storyTagsInput.value = story.tags.filter(tag => tag.type === "general").map(tag => tag.name).join(", ");
+        dom.storyArtistsInput.value = story.tags.filter(tag => tag.type === "artist").map(tag => tag.name).join(", ");
+        dom.storyReadingDirection.value = story.reading_direction;
+        dom.storyAiCheckbox.checked = story.ai_generated;
+        dom.storyDuplicatesRow.hidden = true;
+        dom.dissolveStory.hidden = false;
+        dom.submitStory.textContent = "Salva storia";
+        setStatus(dom.storyStatus, "");
+        renderStorySelectedCharacters();
+        renderStoryPages();
+        updateStoryDestinationPreview();
+        dom.storyDialog.showModal();
+    } catch (error) {
+        setStatus(dom.globalStatus, error.message);
+    }
+}
+
+function closeStoryDialog() {
+    dom.storyDialog.close();
+    resetStoryDialog();
+}
+
+function storyCoverIndex() {
+    const index = state.storySourceItems.findIndex(item => storyItemKey(item) === String(state.storyCoverKey));
+    return Math.max(0, index);
+}
+
+async function submitStoryForm(allowDuplicates = false) {
+    const title = dom.storyTitleInput.value.trim();
+    if (!title) {
+        setStatus(dom.storyStatus, "Inserisci il titolo della storia.");
+        return;
+    }
+    if (!state.storyCharacters.length) {
+        setStatus(dom.storyStatus, "Seleziona almeno un personaggio.");
+        return;
+    }
+    if (state.storySourceItems.length < 2) {
+        setStatus(dom.storyStatus, "Una storia deve avere almeno due pagine.");
+        return;
+    }
+
+    dom.submitStory.disabled = true;
+    setStatus(dom.storyStatus, "Salvataggio della storia...");
+    const common = {
+        title,
+        character_ids: state.storyCharacters.map(character => character.id),
+        tags: parseTags(dom.storyTagsInput.value),
+        artists: parseTags(dom.storyArtistsInput.value),
+        ai_generated: dom.storyAiCheckbox.checked,
+        reading_direction: dom.storyReadingDirection.value
+    };
+
+    try {
+        let response;
+        if (state.storyMode === "edit") {
+            response = await fetch(`/api/stories/${state.activeStory.id}`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    ...common,
+                    ordered_file_ids: state.storySourceItems.map(item => item.id),
+                    cover_file_id: Number(state.storyCoverKey)
+                })
+            });
+        } else if (state.storyMode === "new") {
+            response = await fetch("/api/stories/from-new", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    ...common,
+                    relative_paths: state.storySourceItems.map(item => item.relative_path),
+                    cover_index: storyCoverIndex(),
+                    allow_duplicates: allowDuplicates || dom.storyAllowDuplicates.checked
+                })
+            });
+        } else {
+            response = await fetch("/api/stories/from-gallery", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    ...common,
+                    file_ids: state.storySourceItems.map(item => item.id),
+                    cover_index: storyCoverIndex()
+                })
+            });
+        }
+
+        if (response.status === 409 && state.storyMode === "new") {
+            const payload = await response.json();
+            const duplicateCount = payload.detail?.duplicates?.length || 1;
+            const keep = window.confirm(`${duplicateCount} duplicati identici trovati. Conservarli comunque nella storia?`);
+            if (keep) await submitStoryForm(true);
+            else setStatus(dom.storyStatus, "Creazione annullata.");
+            return;
+        }
+
+        const result = await readJson(response);
+        closeStoryDialog();
+        state.todoSelectedPaths.clear();
+        state.gallerySelectedIds.clear();
+        await Promise.all([loadTodoFiles(), loadOverview(true, false)]);
+        if (state.mediaContext) await loadGalleryFiles();
+        setStatus(dom.globalStatus, `Storia salvata: ${result.title}`, true);
+    } catch (error) {
+        setStatus(dom.storyStatus, error.message);
+    } finally {
+        dom.submitStory.disabled = false;
+    }
+}
+
+async function dissolveActiveStory() {
+    if (!state.activeStory) return;
+    const confirmed = window.confirm(
+        `Sciogliere la storia “${state.activeStory.title}”?\n\nLe pagine verranno mantenute e riportate nella galleria normale.`
+    );
+    if (!confirmed) return;
+    dom.dissolveStory.disabled = true;
+    try {
+        await readJson(await fetch(`/api/stories/${state.activeStory.id}/dissolve`, { method: "DELETE" }));
+        closeStoryDialog();
+        await Promise.all([loadOverview(true, false), state.mediaContext ? loadGalleryFiles() : Promise.resolve()]);
+        setStatus(dom.globalStatus, "Storia sciolta. Le immagini sono tornate nella galleria normale.", true);
+    } catch (error) {
+        setStatus(dom.storyStatus, error.message);
+    } finally {
+        dom.dissolveStory.disabled = false;
+    }
+}
+
+async function openStoryReader(storyId) {
+    try {
+        const story = await readJson(await fetch(`/api/stories/${storyId}`));
+        state.readerStory = story;
+        state.readerPageIndex = 0;
+        dom.storyReaderTitle.textContent = story.title;
+        dom.storyReaderMeta.textContent = `${story.pages.length} pagine · ${story.characters.map(character => character.name).join(", ")}`;
+        dom.storyReaderMode.value = "single";
+        renderStoryReader();
+        dom.storyReaderDialog.showModal();
+    } catch (error) {
+        setStatus(dom.globalStatus, error.message);
+    }
+}
+
+function renderStoryReader() {
+    const story = state.readerStory;
+    if (!story) return;
+    dom.storyReaderContent.replaceChildren();
+    const vertical = dom.storyReaderMode.value === "vertical";
+    dom.storyReaderNavigation.hidden = vertical;
+
+    if (vertical) {
+        const container = document.createElement("div");
+        container.className = "story-reader-vertical";
+        story.pages.forEach(page => {
+            const image = document.createElement("img");
+            image.src = page.media_url;
+            image.alt = `${story.title} — pagina ${page.page_number}`;
+            image.loading = "lazy";
+            container.appendChild(image);
+        });
+        dom.storyReaderContent.appendChild(container);
+        return;
+    }
+
+    state.readerPageIndex = Math.min(Math.max(state.readerPageIndex, 0), story.pages.length - 1);
+    const page = story.pages[state.readerPageIndex];
+    const container = document.createElement("div");
+    container.className = "story-reader-single";
+    const image = document.createElement("img");
+    image.src = page.media_url;
+    image.alt = `${story.title} — pagina ${state.readerPageIndex + 1}`;
+    container.appendChild(image);
+    dom.storyReaderContent.appendChild(container);
+    dom.storyReaderIndicator.textContent = `${state.readerPageIndex + 1} / ${story.pages.length}`;
+    dom.storyReaderPrevious.disabled = state.readerPageIndex <= 0;
+    dom.storyReaderNext.disabled = state.readerPageIndex >= story.pages.length - 1;
+}
+
+function changeStoryReaderPage(delta) {
+    if (!state.readerStory || dom.storyReaderMode.value !== "single") return;
+    state.readerPageIndex += delta;
+    renderStoryReader();
+}
+
+function closeStoryReader() {
+    dom.storyReaderDialog.close();
+    state.readerStory = null;
+    state.readerPageIndex = 0;
+}
+
 // Navigazione principale.
 dom.navButtons.forEach(button => button.addEventListener("click", () => showView(button.dataset.view)));
 dom.backToOverview.addEventListener("click", renderOverview);
@@ -2378,6 +3054,9 @@ dom.clearMediaFilters.addEventListener("click", () => {
     resetMediaFilters();
     loadGalleryFiles();
 });
+dom.selectAllGalleryButton.addEventListener("click", selectAllGalleryImages);
+dom.clearGallerySelectionButton.addEventListener("click", clearGallerySelection);
+dom.createStoryFromGalleryButton.addEventListener("click", () => openStoryCreator(getSelectedGalleryFiles(), "gallery"));
 
 dom.characterScoreMinus.addEventListener("click", async () => {
     if (!state.mediaContext?.character) return;
@@ -2398,6 +3077,7 @@ dom.refreshTodoButton.addEventListener("click", loadTodoFiles);
 dom.selectAllTodoButton.addEventListener("click", selectAllTodoFiles);
 dom.clearTodoSelectionButton.addEventListener("click", clearTodoSelection);
 dom.organizeSelectedTodoButton.addEventListener("click", () => openOrganizer(getSelectedTodoFiles()));
+dom.createStoryFromNewButton.addEventListener("click", () => openStoryCreator(getSelectedTodoFiles(), "new"));
 dom.trashSelectedTodoButton.addEventListener("click", trashSelectedTodoFiles);
 dom.refreshTrashButton.addEventListener("click", () => loadTrashItems());
 dom.emptyTrashButton.addEventListener("click", emptyTrashFromUi);
@@ -2464,6 +3144,51 @@ dom.characterAliasForm.addEventListener("submit", event => {
     saveCharacterAliases();
 });
 
+// Storie.
+dom.closeStoryDialog.addEventListener("click", closeStoryDialog);
+dom.cancelStory.addEventListener("click", closeStoryDialog);
+dom.storyForm.addEventListener("submit", event => {
+    event.preventDefault();
+    submitStoryForm(false);
+});
+dom.storyTitleInput.addEventListener("input", () => debounce("story-preview", updateStoryDestinationPreview));
+dom.storyAiCheckbox.addEventListener("change", updateStoryDestinationPreview);
+dom.storyCharacterSearch.addEventListener("input", () => debounce("story-character-search", () => {
+    searchCharacterNames(
+        dom.storyCharacterSearch.value,
+        dom.storyCharacterResults,
+        state.storyCharacters,
+        addStoryCharacter,
+        name => openCreateCharacterDialog(name, "story")
+    );
+}));
+dom.storyCreateCharacter.addEventListener("click", () => openCreateCharacterDialog(dom.storyCharacterSearch.value, "story"));
+dom.sortStoryPages.addEventListener("click", sortStoryPagesByNumbers);
+dom.reverseStoryPages.addEventListener("click", reverseStoryPages);
+dom.dissolveStory.addEventListener("click", dissolveActiveStory);
+
+dom.closeStoryReader.addEventListener("click", closeStoryReader);
+dom.storyReaderMode.addEventListener("change", renderStoryReader);
+dom.storyReaderPrevious.addEventListener("click", () => changeStoryReaderPage(-1));
+dom.storyReaderNext.addEventListener("click", () => changeStoryReaderPage(1));
+dom.editActiveStory.addEventListener("click", () => {
+    const storyId = state.readerStory?.id;
+    closeStoryReader();
+    if (storyId) openStoryEditor(storyId);
+});
+document.addEventListener("keydown", event => {
+    if (!dom.storyReaderDialog.open || dom.storyReaderMode.value !== "single" || !state.readerStory) return;
+    if (event.key === "Escape") return;
+    const rtl = state.readerStory.reading_direction === "rtl";
+    if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        changeStoryReaderPage(rtl ? 1 : -1);
+    } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        changeStoryReaderPage(rtl ? -1 : 1);
+    }
+});
+
 // Classifica e sincronizzazione.
 dom.rankingFilter.addEventListener("change", loadRanking);
 dom.archiveSyncButton.addEventListener("click", synchronizeArchive);
@@ -2482,5 +3207,7 @@ setupTagAutocomplete(dom.organizeTagsInput, dom.organizeTagSuggestions, { exclud
 setupTagAutocomplete(dom.organizeArtistsInput, dom.organizeArtistSuggestions, { excludeAi: true, tagType: "artist" });
 setupTagAutocomplete(dom.editTagsInput, dom.editTagSuggestions, { excludeAi: true, tagType: "general" });
 setupTagAutocomplete(dom.editArtistsInput, dom.editArtistSuggestions, { excludeAi: true, tagType: "artist" });
+setupTagAutocomplete(dom.storyTagsInput, dom.storyTagSuggestions, { excludeAi: true, tagType: "general" });
+setupTagAutocomplete(dom.storyArtistsInput, dom.storyArtistSuggestions, { excludeAi: true, tagType: "artist" });
 
 loadOverview(true);

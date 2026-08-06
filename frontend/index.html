@@ -106,6 +106,25 @@
                     <button id="clear-media-filters" class="secondary-button" type="button">Pulisci</button>
                 </form>
 
+                <section id="story-section" class="story-section" hidden>
+                    <div class="story-section-heading">
+                        <div>
+                            <h3>Storie</h3>
+                            <p id="story-result-summary"></p>
+                        </div>
+                    </div>
+                    <div id="story-grid" class="story-grid"></div>
+                </section>
+
+                <div id="gallery-selection-toolbar" class="selection-toolbar" hidden>
+                    <strong id="gallery-selection-count">0 immagini selezionate</strong>
+                    <div class="selection-toolbar-actions">
+                        <button id="select-all-gallery" type="button" class="secondary-button">Seleziona immagini della pagina</button>
+                        <button id="clear-gallery-selection" type="button" class="secondary-button">Deseleziona</button>
+                        <button id="create-story-from-gallery" type="button">Crea storia</button>
+                    </div>
+                </div>
+
                 <p id="media-result-summary" class="result-summary"></p>
                 <div id="gallery-media-grid" class="media-grid"></div>
                 <div id="pagination" class="pagination"></div>
@@ -127,6 +146,7 @@
                     <button id="select-all-todo" type="button" class="secondary-button">Seleziona tutto</button>
                     <button id="clear-todo-selection" type="button" class="secondary-button">Deseleziona</button>
                     <button id="organize-selected-todo" type="button">Organizza insieme</button>
+                    <button id="create-story-from-new" type="button">Crea storia</button>
                     <button id="trash-selected-todo" type="button" class="danger-button">Cestino</button>
                 </div>
             </div>
@@ -389,6 +409,116 @@
                 </div>
             </div>
         </form>
+    </dialog>
+
+    <dialog id="story-dialog" class="story-dialog">
+        <form id="story-form">
+            <div class="dialog-header">
+                <div>
+                    <h2 id="story-dialog-title">Crea storia</h2>
+                    <p id="story-dialog-subtitle">Ordina le pagine e assegna i metadati comuni.</p>
+                </div>
+                <button id="close-story-dialog" class="icon-button" type="button" aria-label="Chiudi">×</button>
+            </div>
+
+            <div class="story-dialog-layout">
+                <section class="story-order-panel">
+                    <div class="field-header">
+                        <div>
+                            <strong>Ordine delle pagine</strong>
+                            <small>Trascina le pagine oppure modifica il numero.</small>
+                        </div>
+                        <div class="story-order-actions">
+                            <button id="sort-story-pages" type="button" class="secondary-button">Ordina per numero</button>
+                            <button id="reverse-story-pages" type="button" class="secondary-button">Inverti ordine</button>
+                        </div>
+                    </div>
+                    <div id="story-pages-list" class="story-pages-list"></div>
+                </section>
+
+                <section class="story-metadata-panel">
+                    <label for="story-title-input">Titolo</label>
+                    <input id="story-title-input" type="text" maxlength="120" required placeholder="Titolo della storia">
+
+                    <div class="field-header">
+                        <label for="story-character-search">Personaggi</label>
+                        <button id="story-create-character" type="button" class="text-button">+ Crea personaggio</button>
+                    </div>
+                    <input id="story-character-search" type="search" autocomplete="off" placeholder="Cerca personaggio">
+                    <div id="story-character-results" class="search-results"></div>
+                    <div id="story-selected-characters" class="selected-characters"></div>
+
+                    <label for="story-tags-input">Tag della storia</label>
+                    <div class="tag-autocomplete">
+                        <input id="story-tags-input" type="text" autocomplete="off" placeholder="Fantasy, Romance, Manga">
+                        <div id="story-tag-suggestions" class="tag-suggestions" role="listbox"></div>
+                    </div>
+
+                    <label for="story-artists-input">Artista</label>
+                    <div class="tag-autocomplete">
+                        <input id="story-artists-input" type="text" autocomplete="off" placeholder="Nome dell’artista (facoltativo)">
+                        <div id="story-artist-suggestions" class="tag-suggestions" role="listbox"></div>
+                    </div>
+
+                    <label for="story-reading-direction">Direzione di lettura</label>
+                    <select id="story-reading-direction">
+                        <option value="rtl">Destra → sinistra (manga)</option>
+                        <option value="ltr">Sinistra → destra</option>
+                    </select>
+
+                    <label class="checkbox-row">
+                        <input id="story-ai-checkbox" type="checkbox">
+                        <span>Storia generata con IA</span>
+                    </label>
+
+                    <label id="story-duplicates-row" class="checkbox-row" hidden>
+                        <input id="story-allow-duplicates" type="checkbox">
+                        <span>Conserva anche duplicati identici</span>
+                    </label>
+
+                    <section class="destination-box">
+                        <strong>Destinazione automatica</strong>
+                        <span id="story-destination-preview">Inserisci titolo e personaggi.</span>
+                    </section>
+
+                    <p id="story-status" class="status-message"></p>
+                    <div class="dialog-actions split-actions">
+                        <div class="dialog-left-actions">
+                            <button id="dissolve-story" type="button" class="danger-button" hidden>Sciogli storia</button>
+                        </div>
+                        <div>
+                            <button id="cancel-story" type="button" class="secondary-button">Annulla</button>
+                            <button id="submit-story" type="submit">Crea storia</button>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </form>
+    </dialog>
+
+    <dialog id="story-reader-dialog" class="story-reader-dialog">
+        <div class="dialog-header">
+            <div>
+                <h2 id="story-reader-title">Storia</h2>
+                <p id="story-reader-meta"></p>
+            </div>
+            <button id="close-story-reader" class="icon-button" type="button" aria-label="Chiudi">×</button>
+        </div>
+        <div class="story-reader-toolbar">
+            <label>Modalità
+                <select id="story-reader-mode">
+                    <option value="single">Pagina singola</option>
+                    <option value="vertical">Scorrimento verticale</option>
+                </select>
+            </label>
+            <button id="edit-active-story" type="button" class="secondary-button">Modifica storia</button>
+        </div>
+        <div id="story-reader-content" class="story-reader-content"></div>
+        <div id="story-reader-navigation" class="story-reader-navigation">
+            <button id="story-reader-previous" type="button">← Precedente</button>
+            <strong id="story-reader-indicator">1 / 1</strong>
+            <button id="story-reader-next" type="button">Successiva →</button>
+        </div>
     </dialog>
 
     <dialog id="character-alias-dialog" class="small-dialog">

@@ -22,6 +22,7 @@ from backend.scanner import (
     search_characters,
 )
 from backend.thumbnails import gallery_preview_url, gallery_thumbnail_url
+from backend.stories import search_stories
 
 
 def _media_url(relative_path: str) -> str:
@@ -256,6 +257,11 @@ def get_gallery_overview() -> dict[str, Any]:
                 "SELECT COUNT(*) AS count FROM trash_items"
             ).fetchone()["count"]
         )
+        story_count = int(
+            connection.execute(
+                "SELECT COUNT(*) AS count FROM stories WHERE is_active = 1"
+            ).fetchone()["count"]
+        )
 
     todo = list_todo_files()
     return {
@@ -276,6 +282,7 @@ def get_gallery_overview() -> dict[str, Any]:
             "images": int(total_stats["images"] or 0),
             "videos": int(total_stats["videos"] or 0),
             "ai_files": int(total_stats["ai_files"] or 0),
+            "stories": story_count,
         },
     }
 
@@ -416,7 +423,10 @@ def _build_file_conditions(
     tags: list[str],
     query: str | None,
 ) -> tuple[list[str], list[Any]]:
-    conditions: list[str] = ["f.is_trashed = 0"]
+    conditions: list[str] = [
+        "f.is_trashed = 0",
+        "NOT EXISTS (SELECT 1 FROM story_pages sp WHERE sp.file_id = f.id)",
+    ]
     params: list[Any] = []
 
     if character_id is not None:
@@ -692,7 +702,7 @@ def list_tags(
                 ELSE 2
             END
         """
-        rank_params.extend([cleaned_query, f"{cleaned_query}%"] )
+        rank_params.extend([cleaned_query, f"{cleaned_query}%"])
 
     if tag_type is not None:
         normalized_type = str(tag_type).strip().casefold()
@@ -707,14 +717,23 @@ def list_tags(
         rows = connection.execute(
             f"""
             SELECT t.id, t.name, t.type,
-                   COUNT(DISTINCT CASE WHEN f.is_trashed = 0 THEN ft.file_id END) AS file_count
+                   (
+                       SELECT COUNT(DISTINCT ft.file_id)
+                       FROM file_tags ft
+                       JOIN files f ON f.id = ft.file_id
+                       WHERE ft.tag_id = t.id AND f.is_trashed = 0
+                   ) AS file_count,
+                   (
+                       SELECT COUNT(DISTINCT st.story_id)
+                       FROM story_tags st
+                       JOIN stories s ON s.id = st.story_id
+                       WHERE st.tag_id = t.id AND s.is_active = 1
+                   ) AS story_count
             FROM tags t
-            LEFT JOIN file_tags ft ON ft.tag_id = t.id
-            LEFT JOIN files f ON f.id = ft.file_id
             {where}
             GROUP BY t.id
-            HAVING file_count > 0
-            ORDER BY {order_rank}, file_count DESC, t.name COLLATE NOCASE
+            HAVING file_count > 0 OR story_count > 0
+            ORDER BY {order_rank}, (file_count + story_count) DESC, t.name COLLATE NOCASE
             LIMIT ?
             """,
             [*where_params, *rank_params, min(max(limit, 1), 500)],
@@ -726,6 +745,8 @@ def list_tags(
             "name": str(row["name"]),
             "type": str(row["type"] or "general"),
             "file_count": int(row["file_count"]),
+            "story_count": int(row["story_count"]),
+            "usage_count": int(row["file_count"]) + int(row["story_count"]),
         }
         for row in rows
     ]
@@ -734,11 +755,12 @@ def list_tags(
 def search_gallery(query: str, limit: int = 12) -> dict[str, Any]:
     normalized = normalize_search_text(query)
     if not normalized:
-        return {"characters": [], "tags": []}
+        return {"characters": [], "tags": [], "stories": []}
 
     return {
         "characters": search_characters(query, limit),
         "tags": list_tags(query, limit),
+        "stories": search_stories(query, limit),
     }
 
 
@@ -843,6 +865,9 @@ def update_file_metadata(
                 DELETE FROM tags
                 WHERE NOT EXISTS (
                     SELECT 1 FROM file_tags WHERE file_tags.tag_id = tags.id
+                )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM story_tags WHERE story_tags.tag_id = tags.id
                 )
                 """
             )

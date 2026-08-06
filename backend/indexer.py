@@ -6,6 +6,7 @@ from typing import Any
 
 from backend.database import get_connection
 from backend.file_manager import calculate_sha256
+from backend.stories import cleanup_empty_stories
 from backend.scanner import (
     cleanup_empty_entities,
     get_media_type,
@@ -95,6 +96,9 @@ def _remove_unused_tags(connection) -> int:
         DELETE FROM tags
         WHERE NOT EXISTS (
             SELECT 1 FROM file_tags WHERE file_tags.tag_id = tags.id
+        )
+          AND NOT EXISTS (
+            SELECT 1 FROM story_tags WHERE story_tags.tag_id = tags.id
         )
         """
     )
@@ -327,6 +331,7 @@ def synchronize_archive() -> dict[str, Any]:
 
         removed_tags = _remove_unused_tags(connection)
 
+    removed_empty_stories = cleanup_empty_stories()
     cleanup = cleanup_empty_entities()
     return {
         "added": added,
@@ -340,6 +345,7 @@ def synchronize_archive() -> dict[str, Any]:
         "total_on_disk": len(media_paths),
         "characters": character_sync,
         "cleanup": cleanup,
+        "removed_empty_stories": removed_empty_stories,
     }
 
 

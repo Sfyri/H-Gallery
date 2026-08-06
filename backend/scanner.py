@@ -288,6 +288,7 @@ def get_character_folders(franchise_path: Path, config: dict[str, Any]) -> list[
     special_names = {
         config.get("multiple_folder", "!Multiple"),
         config.get("ai_folder", ".AI"),
+        config.get("stories_folder", "!Stories"),
     }
 
     return sorted(
@@ -341,6 +342,24 @@ def _remove_tree_if_fileless(directory: Path) -> bool:
     return True
 
 
+def _prune_story_root(story_root: Path) -> int:
+    """Elimina le cartelle di storie vuote e poi l’eventuale radice !Stories."""
+
+    if not story_root.exists() or not story_root.is_dir():
+        return 0
+    removed = 0
+    try:
+        children = list(story_root.iterdir())
+    except OSError:
+        return 0
+    for child in children:
+        if child.is_dir() and _remove_tree_if_fileless(child):
+            removed += 1
+    if _remove_tree_if_fileless(story_root):
+        removed += 1
+    return removed
+
+
 def prune_empty_directories() -> dict[str, int]:
     """Rimuove dal disco soltanto cartelle gestite che non contengono file.
 
@@ -354,12 +373,14 @@ def prune_empty_directories() -> dict[str, int]:
     ai_folder = str(config.get("ai_folder", ".AI"))
     multiple_folder = str(config.get("multiple_folder", "!Multiple"))
     crossovers_folder = str(config.get("crossovers_folder", "!Crossovers"))
+    stories_folder = str(config.get("stories_folder", "!Stories"))
 
     removed_ai = 0
     removed_characters = 0
     removed_multiple = 0
     removed_franchises = 0
     removed_crossovers = 0
+    removed_stories = 0
 
     # Usa un elenco materializzato: alcune cartelle verranno eliminate durante
     # l'iterazione.
@@ -370,6 +391,8 @@ def prune_empty_directories() -> dict[str, int]:
 
         for character_path in list(get_character_folders(franchise_path, config)):
             ai_path = character_path / ai_folder
+            for story_root in (character_path / stories_folder, ai_path / stories_folder):
+                removed_stories += _prune_story_root(story_root)
             if _remove_tree_if_fileless(ai_path):
                 removed_ai += 1
             if _remove_tree_if_fileless(character_path):
@@ -377,7 +400,10 @@ def prune_empty_directories() -> dict[str, int]:
 
         multiple_path = franchise_path / multiple_folder
         if multiple_path.exists():
-            if _remove_tree_if_fileless(multiple_path / ai_folder):
+            multiple_ai_path = multiple_path / ai_folder
+            for story_root in (multiple_path / stories_folder, multiple_ai_path / stories_folder):
+                removed_stories += _prune_story_root(story_root)
+            if _remove_tree_if_fileless(multiple_ai_path):
                 removed_ai += 1
             if _remove_tree_if_fileless(multiple_path):
                 removed_multiple += 1
@@ -387,7 +413,10 @@ def prune_empty_directories() -> dict[str, int]:
 
     crossovers_path = gallery_root / crossovers_folder
     if crossovers_path.exists():
-        if _remove_tree_if_fileless(crossovers_path / ai_folder):
+        crossovers_ai_path = crossovers_path / ai_folder
+        for story_root in (crossovers_path / stories_folder, crossovers_ai_path / stories_folder):
+            removed_stories += _prune_story_root(story_root)
+        if _remove_tree_if_fileless(crossovers_ai_path):
             removed_ai += 1
         if _remove_tree_if_fileless(crossovers_path):
             removed_crossovers += 1
@@ -398,6 +427,7 @@ def prune_empty_directories() -> dict[str, int]:
         "removed_multiple_folders": removed_multiple,
         "removed_franchise_folders": removed_franchises,
         "removed_crossovers_folders": removed_crossovers,
+        "removed_story_folders": removed_stories,
     }
 
 
@@ -805,6 +835,7 @@ def create_character(
     special_names = {
         config.get("multiple_folder", "!Multiple").casefold(),
         config.get("ai_folder", ".AI").casefold(),
+        config.get("stories_folder", "!Stories").casefold(),
     }
     if character_name.casefold() in special_names:
         raise ValueError("Questo nome è riservato dal programma.")

@@ -31,6 +31,10 @@ TABLES_TO_EXPORT = (
     "tags",
     "file_characters",
     "file_tags",
+    "stories",
+    "story_pages",
+    "story_characters",
+    "story_tags",
     "operations",
     "trash_items",
 )

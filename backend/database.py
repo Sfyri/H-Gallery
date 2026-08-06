@@ -184,6 +184,58 @@ def init_database() -> None:
             CREATE INDEX IF NOT EXISTS idx_file_tags_tag
             ON file_tags(tag_id, file_id);
 
+            CREATE TABLE IF NOT EXISTS stories (
+                id INTEGER PRIMARY KEY,
+                title TEXT NOT NULL,
+                folder_name TEXT NOT NULL,
+                relative_path TEXT NOT NULL UNIQUE,
+                ai_generated INTEGER NOT NULL DEFAULT 0,
+                reading_direction TEXT NOT NULL DEFAULT 'rtl'
+                    CHECK(reading_direction IN ('ltr', 'rtl')),
+                cover_file_id INTEGER,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                FOREIGN KEY(cover_file_id) REFERENCES files(id) ON DELETE SET NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_stories_active_updated
+            ON stories(is_active, updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS story_pages (
+                story_id INTEGER NOT NULL,
+                file_id INTEGER NOT NULL UNIQUE,
+                page_number INTEGER NOT NULL CHECK(page_number >= 1),
+                PRIMARY KEY(story_id, page_number),
+                FOREIGN KEY(story_id) REFERENCES stories(id) ON DELETE CASCADE,
+                FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_story_pages_file
+            ON story_pages(file_id);
+
+            CREATE TABLE IF NOT EXISTS story_characters (
+                story_id INTEGER NOT NULL,
+                character_id INTEGER NOT NULL,
+                PRIMARY KEY(story_id, character_id),
+                FOREIGN KEY(story_id) REFERENCES stories(id) ON DELETE CASCADE,
+                FOREIGN KEY(character_id) REFERENCES characters(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_story_characters_character
+            ON story_characters(character_id, story_id);
+
+            CREATE TABLE IF NOT EXISTS story_tags (
+                story_id INTEGER NOT NULL,
+                tag_id INTEGER NOT NULL,
+                PRIMARY KEY(story_id, tag_id),
+                FOREIGN KEY(story_id) REFERENCES stories(id) ON DELETE CASCADE,
+                FOREIGN KEY(tag_id) REFERENCES tags(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_story_tags_tag
+            ON story_tags(tag_id, story_id);
+
             CREATE TABLE IF NOT EXISTS operations (
                 id INTEGER PRIMARY KEY,
                 operation_type TEXT NOT NULL,

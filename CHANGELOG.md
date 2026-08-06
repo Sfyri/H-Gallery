@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.5.0
+
+- Aggiunta la creazione di storie e manga da New e dalla galleria.
+- Riordino delle pagine tramite trascinamento o numero progressivo.
+- Aggiunti inversione dell’ordine e scelta della copertina.
+- Titolo, personaggi, tag, artista, IA e direzione di lettura per ogni storia.
+- Cartelle automatiche `!Stories` per personaggi, `!Multiple` e `!Crossovers`.
+- Rinomina automatica delle pagine con numerazione a tre cifre.
+- Lettore integrato a pagina singola o scorrimento verticale.
+- Modifica successiva dell’ordine e dei metadati.
+- Comando Sciogli storia che conserva le immagini e le riporta nella galleria normale.
+- Ricerca globale e filtri estesi alle storie.
+- Backup ed esportazione JSON estesi alle nuove tabelle delle storie.
+
 ## 1.4.0
 
 - Aggiunti tre tipi di tag con colori distinti: generali arancioni, artisti viola e AI verde.

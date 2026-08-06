@@ -18,7 +18,8 @@ Il programma lavora esclusivamente sul computer dell'utente tramite `127.0.0.1`.
 - classifica dei personaggi con punteggi `+1` e `-1`;
 - backup, ripristino ed esportazione JSON;
 - codici delle serie generati automaticamente;
-- pulizia automatica delle cartelle vuote.
+- pulizia automatica delle cartelle vuote;
+- gestione di storie e manga con ordine delle pagine, copertina e lettore dedicato.
 
 ## Struttura obbligatoria e portabile
 
@@ -39,6 +40,8 @@ H-Gallery/
 ├── .trash/
 ├── !Crossovers/
 └── cartelle delle serie/
+    └── Personaggio/
+        └── !Stories/
 ```
 
 La cartella principale può essere rinominata, spostata o trasferita su un'altra unità senza cambiare `config.json`, purché `.Script` resti direttamente al suo interno.
@@ -98,6 +101,36 @@ Metroid  → MTRD
 Se un codice è già occupato, viene aggiunto il primo suffisso disponibile: `SM`, `SM01`, `SM02`.
 
 I codici già presenti nel database non vengono modificati automaticamente.
+
+## Storie e manga
+
+Da **New** o dalla galleria puoi selezionare almeno due immagini e usare **Crea storia**.
+
+La schermata consente di:
+
+- riordinare le pagine trascinandole o assegnando numeri;
+- invertire l’ordine;
+- scegliere la copertina;
+- assegnare titolo, personaggi, tag, artista e stato IA;
+- scegliere la lettura da destra a sinistra oppure da sinistra a destra;
+- leggere la storia a pagina singola o con scorrimento verticale;
+- modificare successivamente ordine e metadati;
+- sciogliere la storia conservando tutte le immagini nella galleria normale.
+
+Le storie vengono salvate automaticamente in `!Stories`:
+
+```text
+Un personaggio:
+Serie/Personaggio/!Stories/Titolo/
+
+Più personaggi della stessa serie:
+Serie/!Multiple/!Stories/Titolo/
+
+Crossover:
+!Crossovers/!Stories/Titolo/
+```
+
+Per le storie IA, `!Stories` viene inserita dentro `.AI`. Le pagine ricevono nomi progressivi come `FECharlotte_Titolo_001.png`.
 
 ## Requisiti
 
