@@ -188,6 +188,241 @@ def _replace_file_characters(connection, file_id: int, character_ids: list[int])
     )
 
 
+def _replace_file_tags(
+    connection,
+    file_id: int,
+    tags: Iterable[str],
+    artists: Iterable[str],
+    ai_generated: bool,
+) -> None:
+    connection.execute("DELETE FROM file_tags WHERE file_id = ?", (file_id,))
+    for name, tag_type in _normalize_story_tags(tags, artists, ai_generated):
+        tag_id, _canonical_name, _canonical_type = ensure_tag(
+            connection, name, tag_type
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO file_tags(file_id, tag_id) VALUES (?, ?)",
+            (file_id, tag_id),
+        )
+
+
+def _file_metadata_by_id(
+    connection, file_ids: Iterable[int]
+) -> dict[int, dict[str, Any]]:
+    unique_ids = list(dict.fromkeys(int(value) for value in file_ids))
+    if not unique_ids:
+        return {}
+
+    placeholders = ",".join("?" for _ in unique_ids)
+    rows = connection.execute(
+        f"""
+        SELECT id, ai_generated
+        FROM files
+        WHERE id IN ({placeholders}) AND is_trashed = 0
+        """,
+        unique_ids,
+    ).fetchall()
+    result: dict[int, dict[str, Any]] = {
+        int(row["id"]): {
+            "ai_generated": bool(row["ai_generated"]),
+            "character_ids": [],
+            "tag_ids": [],
+        }
+        for row in rows
+    }
+
+    character_rows = connection.execute(
+        f"""
+        SELECT file_id, character_id
+        FROM file_characters
+        WHERE file_id IN ({placeholders})
+        ORDER BY file_id, character_id
+        """,
+        unique_ids,
+    ).fetchall()
+    for row in character_rows:
+        file_id = int(row["file_id"])
+        if file_id in result:
+            result[file_id]["character_ids"].append(int(row["character_id"]))
+
+    tag_rows = connection.execute(
+        f"""
+        SELECT file_id, tag_id
+        FROM file_tags
+        WHERE file_id IN ({placeholders})
+        ORDER BY file_id, tag_id
+        """,
+        unique_ids,
+    ).fetchall()
+    for row in tag_rows:
+        file_id = int(row["file_id"])
+        if file_id in result:
+            result[file_id]["tag_ids"].append(int(row["tag_id"]))
+
+    return result
+
+
+def _aggregate_file_metadata(
+    connection,
+    file_ids: Iterable[int],
+    *,
+    require_characters: bool = True,
+) -> dict[str, Any]:
+    unique_ids = list(dict.fromkeys(int(value) for value in file_ids))
+    if not unique_ids:
+        raise ValueError("La storia non contiene pagine.")
+
+    metadata = _file_metadata_by_id(connection, unique_ids)
+    missing = [file_id for file_id in unique_ids if file_id not in metadata]
+    if missing:
+        raise ValueError("Una o più immagini non sono disponibili.")
+
+    if require_characters:
+        without_characters = [
+            file_id
+            for file_id in unique_ids
+            if not metadata[file_id]["character_ids"]
+        ]
+        if without_characters:
+            raise ValueError(
+                "Ogni pagina deve avere almeno un personaggio prima di essere inserita nella storia."
+            )
+
+    character_ids = sorted(
+        {
+            character_id
+            for file_id in unique_ids
+            for character_id in metadata[file_id]["character_ids"]
+        }
+    )
+    tag_ids = sorted(
+        {
+            tag_id
+            for file_id in unique_ids
+            for tag_id in metadata[file_id]["tag_ids"]
+        }
+    )
+    all_ai = all(metadata[file_id]["ai_generated"] for file_id in unique_ids)
+    return {
+        "file_metadata": metadata,
+        "character_ids": character_ids,
+        "tag_ids": tag_ids,
+        "ai_generated": all_ai,
+    }
+
+
+def _sync_story_metadata(
+    connection, story_id: int, file_ids: Iterable[int] | None = None
+) -> dict[str, Any]:
+    if file_ids is None:
+        rows = connection.execute(
+            "SELECT file_id FROM story_pages WHERE story_id = ? ORDER BY page_number",
+            (story_id,),
+        ).fetchall()
+        file_ids = [int(row["file_id"]) for row in rows]
+
+    aggregate = _aggregate_file_metadata(connection, file_ids)
+    connection.execute("DELETE FROM story_characters WHERE story_id = ?", (story_id,))
+    connection.executemany(
+        "INSERT INTO story_characters(story_id, character_id) VALUES (?, ?)",
+        [(story_id, character_id) for character_id in aggregate["character_ids"]],
+    )
+    connection.execute("DELETE FROM story_tags WHERE story_id = ?", (story_id,))
+    connection.executemany(
+        "INSERT INTO story_tags(story_id, tag_id) VALUES (?, ?)",
+        [(story_id, tag_id) for tag_id in aggregate["tag_ids"]],
+    )
+    connection.execute(
+        "UPDATE stories SET ai_generated = ? WHERE id = ?",
+        (int(aggregate["ai_generated"]), story_id),
+    )
+    return aggregate
+
+
+def refresh_story_metadata() -> int:
+    """Migra le vecchie storie e riallinea i metadati aggregati alle pagine.
+
+    Le storie create prima della 1.7 conservavano personaggi e tag soltanto
+    sul contenitore. Alla prima apertura tali associazioni vengono copiate
+    sulle singole pagine, poi la storia passa al modello ``page_union``.
+    Una storia malformata viene ignorata senza impedire l'avvio della
+    galleria; potrà essere corretta dall'editor.
+    """
+
+    refreshed = 0
+    with get_connection() as connection:
+        story_rows = connection.execute(
+            """
+            SELECT id, ai_generated, metadata_mode
+            FROM stories
+            WHERE is_active = 1
+            ORDER BY id
+            """
+        ).fetchall()
+        for row in story_rows:
+            story_id = int(row["id"])
+            page_rows = connection.execute(
+                "SELECT file_id FROM story_pages WHERE story_id = ? ORDER BY page_number",
+                (story_id,),
+            ).fetchall()
+            file_ids = [int(page["file_id"]) for page in page_rows]
+            if not file_ids:
+                continue
+
+            try:
+                if str(row["metadata_mode"] or "legacy") == "legacy":
+                    character_rows = connection.execute(
+                        "SELECT character_id FROM story_characters WHERE story_id = ?",
+                        (story_id,),
+                    ).fetchall()
+                    tag_rows = connection.execute(
+                        "SELECT tag_id FROM story_tags WHERE story_id = ?",
+                        (story_id,),
+                    ).fetchall()
+                    character_ids = [int(item["character_id"]) for item in character_rows]
+                    tag_ids = [int(item["tag_id"]) for item in tag_rows]
+
+                    for file_id in file_ids:
+                        connection.executemany(
+                            """
+                            INSERT OR IGNORE INTO file_characters(file_id, character_id)
+                            VALUES (?, ?)
+                            """,
+                            [(file_id, character_id) for character_id in character_ids],
+                        )
+                        connection.executemany(
+                            "INSERT OR IGNORE INTO file_tags(file_id, tag_id) VALUES (?, ?)",
+                            [(file_id, tag_id) for tag_id in tag_ids],
+                        )
+                        if bool(row["ai_generated"]):
+                            _set_file_ai_state(connection, file_id, True)
+
+                _sync_story_metadata(connection, story_id, file_ids)
+                connection.execute(
+                    "UPDATE stories SET metadata_mode = 'page_union' WHERE id = ?",
+                    (story_id,),
+                )
+
+                cover_row = connection.execute(
+                    """
+                    SELECT 1 FROM story_pages
+                    WHERE story_id = ?
+                      AND file_id = (SELECT cover_file_id FROM stories WHERE id = ?)
+                    """,
+                    (story_id, story_id),
+                ).fetchone()
+                if cover_row is None:
+                    connection.execute(
+                        "UPDATE stories SET cover_file_id = ? WHERE id = ?",
+                        (file_ids[0], story_id),
+                    )
+                refreshed += 1
+            except (ValueError, FileNotFoundError):
+                # Non bloccare l'avvio per una vecchia storia incompleta.
+                continue
+    return refreshed
+
+
 def _remove_empty_story_records(connection) -> int:
     rows = connection.execute(
         """
@@ -307,9 +542,9 @@ def create_story_from_new(
                 """
                 INSERT INTO stories(
                     title, folder_name, relative_path, ai_generated,
-                    reading_direction, created_at, updated_at, is_active
+                    reading_direction, created_at, updated_at, is_active, metadata_mode
                 )
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1, 'page_union')
                 """,
                 (
                     _story_folder_name(title),
@@ -320,9 +555,6 @@ def create_story_from_new(
                 ),
             )
             story_id = int(cursor.lastrowid)
-            canonical_tags = _replace_story_metadata(
-                connection, story_id, character_ids, tags, artists, ai_generated
-            )
 
             file_ids: list[int] = []
             for page_number, source_info in enumerate(sources, start=1):
@@ -346,7 +578,7 @@ def create_story_from_new(
                 file_id = int(cursor.lastrowid)
                 file_ids.append(file_id)
                 _replace_file_characters(connection, file_id, character_ids)
-                _set_file_ai_state(connection, file_id, ai_generated)
+                _replace_file_tags(connection, file_id, tags, artists, ai_generated)
                 connection.execute(
                     "INSERT INTO story_pages(story_id, file_id, page_number) VALUES (?, ?, ?)",
                     (story_id, file_id, page_number),
@@ -365,6 +597,7 @@ def create_story_from_new(
                 "UPDATE stories SET cover_file_id = ? WHERE id = ?",
                 (file_ids[cover_position], story_id),
             )
+            _sync_story_metadata(connection, story_id, file_ids)
     except Exception:
         for final_path, original_path in reversed(moved):
             if final_path.exists():
@@ -374,7 +607,7 @@ def create_story_from_new(
         raise
 
     cleanup_empty_entities()
-    return get_story(story_id) | {"status": "created", "category": category, "tags": canonical_tags}
+    return get_story(story_id) | {"status": "created", "category": category}
 
 
 def _load_gallery_sources(file_ids: list[int]) -> list[dict[str, Any]]:
@@ -389,7 +622,7 @@ def _load_gallery_sources(file_ids: list[int]) -> list[dict[str, Any]]:
         rows = connection.execute(
             f"""
             SELECT f.id, f.filename, f.relative_path, f.extension, f.size,
-                   f.sha256, f.modified_at, f.media_type
+                   f.sha256, f.modified_at, f.media_type, f.ai_generated
             FROM files f
             WHERE f.id IN ({placeholders}) AND f.is_trashed = 0
             """,
@@ -425,6 +658,7 @@ def _load_gallery_sources(file_ids: list[int]) -> list[dict[str, Any]]:
                 "size": int(row["size"]),
                 "sha256": str(row["sha256"]),
                 "modified_at": float(row["modified_at"] or source.stat().st_mtime),
+                "ai_generated": bool(row["ai_generated"]),
             }
         )
     return sources
@@ -434,18 +668,17 @@ def create_story_from_gallery(
     *,
     file_ids: list[int],
     title: str,
-    character_ids: list[int],
-    tags: list[str],
-    artists: list[str],
-    ai_generated: bool,
     reading_direction: str,
     cover_index: int = 0,
 ) -> dict[str, Any]:
     sources = _load_gallery_sources(file_ids)
-    characters = get_characters_by_ids(character_ids)
+    source_ids = [int(source["id"]) for source in sources]
+    with get_connection() as connection:
+        aggregate = _aggregate_file_metadata(connection, source_ids)
+    characters = get_characters_by_ids(aggregate["character_ids"])
     direction = _validate_reading_direction(reading_direction)
     destination, prefix, category, folder_name = determine_story_destination(
-        characters, ai_generated, title
+        characters, bool(aggregate["ai_generated"]), title
     )
     destination.mkdir(parents=True, exist_ok=False)
     gallery_root = Path(load_config()["gallery_root"]).resolve()
@@ -466,35 +699,33 @@ def create_story_from_gallery(
                 """
                 INSERT INTO stories(
                     title, folder_name, relative_path, ai_generated,
-                    reading_direction, created_at, updated_at, is_active
-                ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)
+                    reading_direction, created_at, updated_at, is_active, metadata_mode
+                ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1, 'page_union')
                 """,
                 (
-                    _story_folder_name(title), folder_name,
+                    _story_folder_name(title),
+                    folder_name,
                     destination.relative_to(gallery_root).as_posix(),
-                    int(ai_generated), direction,
+                    int(aggregate["ai_generated"]),
+                    direction,
                 ),
             )
             story_id = int(cursor.lastrowid)
-            canonical_tags = _replace_story_metadata(
-                connection, story_id, character_ids, tags, artists, ai_generated
-            )
             for page_number, source_info in enumerate(sources, start=1):
                 file_id = int(source_info["id"])
                 connection.execute(
                     """
                     UPDATE files
-                    SET filename = ?, relative_path = ?, ai_generated = ?, modified_at = ?
+                    SET filename = ?, relative_path = ?, modified_at = ?
                     WHERE id = ?
                     """,
                     (
-                        source_info["filename"], source_info["destination_relative"],
-                        int(ai_generated), source_info["final_path"].stat().st_mtime,
+                        source_info["filename"],
+                        source_info["destination_relative"],
+                        source_info["final_path"].stat().st_mtime,
                         file_id,
                     ),
                 )
-                _replace_file_characters(connection, file_id, character_ids)
-                _set_file_ai_state(connection, file_id, ai_generated)
                 connection.execute(
                     "INSERT INTO story_pages(story_id, file_id, page_number) VALUES (?, ?, ?)",
                     (story_id, file_id, page_number),
@@ -512,6 +743,7 @@ def create_story_from_gallery(
                 "UPDATE stories SET cover_file_id = ? WHERE id = ?",
                 (int(sources[cover_position]["id"]), story_id),
             )
+            _sync_story_metadata(connection, story_id, source_ids)
     except Exception:
         for final_path, original_path in reversed(moved):
             if final_path.exists():
@@ -521,7 +753,7 @@ def create_story_from_gallery(
         raise
 
     cleanup_empty_entities()
-    return get_story(story_id) | {"status": "created", "category": category, "tags": canonical_tags}
+    return get_story(story_id) | {"status": "created", "category": category}
 
 
 def _story_character_rows(connection, story_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
@@ -794,56 +1026,128 @@ def search_stories(query: str, limit: int = 12) -> list[dict[str, Any]]:
     return list_stories(query=query, limit=limit)["stories"]
 
 
+def _fallback_cover_file_id(
+    current: dict[str, Any], ordered_ids: list[int], requested_cover: int | None
+) -> int:
+    ordered_set = set(ordered_ids)
+    if requested_cover is not None and int(requested_cover) in ordered_set:
+        return int(requested_cover)
+
+    current_ids = [int(page["id"]) for page in current.get("pages", [])]
+    old_cover = current.get("cover_file_id")
+    if old_cover is not None and int(old_cover) in current_ids:
+        cover_index = current_ids.index(int(old_cover))
+        for candidate in current_ids[cover_index + 1 :]:
+            if candidate in ordered_set:
+                return candidate
+        for candidate in reversed(current_ids[:cover_index]):
+            if candidate in ordered_set:
+                return candidate
+    return ordered_ids[0]
+
+
 def update_story(
     story_id: int,
     *,
     title: str,
-    character_ids: list[int],
-    tags: list[str],
-    artists: list[str],
-    ai_generated: bool,
     reading_direction: str,
     ordered_file_ids: list[int],
     cover_file_id: int | None,
 ) -> dict[str, Any]:
     current = get_story(story_id)
-    current_ids = [int(page["id"]) for page in current["pages"]]
-    ordered_ids = list(dict.fromkeys(int(value) for value in ordered_file_ids))
-    if set(ordered_ids) != set(current_ids) or len(ordered_ids) != len(current_ids):
-        raise ValueError("L’ordine deve contenere tutte e sole le pagine della storia.")
-    if cover_file_id is None:
-        cover_file_id = ordered_ids[0]
-    if int(cover_file_id) not in set(ordered_ids):
-        raise ValueError("La copertina deve essere una pagina della storia.")
+    ordered_ids = [int(value) for value in ordered_file_ids]
+    if len(ordered_ids) < 2:
+        raise ValueError(
+            "Una storia deve contenere almeno due pagine. Usa Sciogli storia per recuperarle tutte."
+        )
+    if len(ordered_ids) > MAX_STORY_PAGES:
+        raise ValueError(f"Una storia può contenere al massimo {MAX_STORY_PAGES} pagine.")
+    if len(set(ordered_ids)) != len(ordered_ids):
+        raise ValueError("La stessa immagine non può essere inserita due volte nella storia.")
 
-    characters = get_characters_by_ids(character_ids)
-    direction = _validate_reading_direction(reading_direction)
+    current_ids = [int(page["id"]) for page in current["pages"]]
+    all_ids = list(dict.fromkeys([*current_ids, *ordered_ids]))
+    placeholders = ",".join("?" for _ in all_ids)
     gallery_root = Path(load_config()["gallery_root"]).resolve()
+
+    with get_connection() as connection:
+        rows = connection.execute(
+            f"""
+            SELECT id, filename, relative_path, media_type, extension, size,
+                   sha256, ai_generated, modified_at
+            FROM files
+            WHERE id IN ({placeholders}) AND is_trashed = 0
+            """,
+            all_ids,
+        ).fetchall()
+        records = {int(row["id"]): row for row in rows}
+        missing_requested = [file_id for file_id in ordered_ids if file_id not in records]
+        if missing_requested:
+            raise ValueError("Una o più immagini da salvare non sono disponibili.")
+        for file_id in ordered_ids:
+            if str(records[file_id]["media_type"]) != "image":
+                raise ValueError("Le storie possono contenere soltanto immagini.")
+
+        membership_rows = connection.execute(
+            f"SELECT file_id, story_id FROM story_pages WHERE file_id IN ({placeholders})",
+            all_ids,
+        ).fetchall()
+        memberships = {int(row["file_id"]): int(row["story_id"]) for row in membership_rows}
+        for file_id in ordered_ids:
+            member_story_id = memberships.get(file_id)
+            if member_story_id is not None and member_story_id != story_id:
+                raise ValueError("Una delle immagini appartiene già a un’altra storia.")
+
+        aggregate = _aggregate_file_metadata(connection, ordered_ids)
+        metadata = _file_metadata_by_id(connection, all_ids)
+
+    characters = get_characters_by_ids(aggregate["character_ids"])
+    direction = _validate_reading_direction(reading_direction)
     old_story_path = (gallery_root / current["relative_path"]).resolve()
     destination, prefix, _category, folder_name = determine_story_destination(
         characters,
-        ai_generated,
+        bool(aggregate["ai_generated"]),
         title,
         current_relative_path=current["relative_path"],
     )
+    selected_cover_id = _fallback_cover_file_id(current, ordered_ids, cover_file_id)
+    removed_ids = [file_id for file_id in current_ids if file_id not in set(ordered_ids)]
 
-    page_map = {int(page["id"]): page for page in current["pages"]}
     operation_root = CACHE_ROOT / "story_operations" / uuid.uuid4().hex
     operation_root.mkdir(parents=True, exist_ok=False)
-    plans: list[dict[str, Any]] = []
+    plans: dict[int, dict[str, Any]] = {}
 
     try:
-        for file_id in ordered_ids:
-            page = page_map[file_id]
-            source = (gallery_root / page["relative_path"]).resolve()
-            if not source.exists():
-                raise FileNotFoundError(f"Pagina non trovata: {page['relative_path']}")
-            staging = operation_root / f"{file_id}{source.suffix.lower()}"
-            shutil.move(str(source), str(staging))
-            plans.append({"id": file_id, "source": source, "staging": staging, "extension": source.suffix.lower()})
+        for file_id in all_ids:
+            row = records.get(file_id)
+            if row is None:
+                continue
+            source = (gallery_root / str(row["relative_path"])).resolve()
+            try:
+                source.relative_to(gallery_root)
+            except ValueError as error:
+                raise PermissionError("Percorso di una pagina non consentito.") from error
+            exists = source.exists() and source.is_file()
+            if file_id in ordered_ids and not exists:
+                raise FileNotFoundError(
+                    f"Pagina non trovata: {row['relative_path']}. Rimuovila dalla storia oppure ripristina il file."
+                )
+            plan = {
+                "id": file_id,
+                "source": source,
+                "extension": str(row["extension"]),
+                "exists": exists,
+                "removed": file_id in removed_ids,
+            }
+            plans[file_id] = plan
+            if exists:
+                staging = operation_root / f"{file_id}{source.suffix.lower()}"
+                shutil.move(str(source), str(staging))
+                plan["staging"] = staging
 
         destination.mkdir(parents=True, exist_ok=True)
-        for page_number, plan in enumerate(plans, start=1):
+        for page_number, file_id in enumerate(ordered_ids, start=1):
+            plan = plans[file_id]
             final = destination / f"{prefix}_{page_number:03d}{plan['extension']}"
             if final.exists():
                 raise FileExistsError(f"Esiste già una pagina con questo nome: {final.name}")
@@ -851,38 +1155,70 @@ def update_story(
             plan["final"] = final
             plan["page_number"] = page_number
 
+        destination_cache: dict[tuple[tuple[int, ...], bool], tuple[Path, str]] = {}
+        for file_id in removed_ids:
+            plan = plans.get(file_id)
+            if plan is None or not plan["exists"]:
+                continue
+            item_metadata = metadata.get(file_id)
+            if not item_metadata or not item_metadata["character_ids"]:
+                raise ValueError(
+                    "Una pagina rimossa non ha personaggi associati e non può essere ricollocata."
+                )
+            cache_key = (
+                tuple(item_metadata["character_ids"]),
+                bool(item_metadata["ai_generated"]),
+            )
+            destination_info = destination_cache.get(cache_key)
+            if destination_info is None:
+                page_characters = get_characters_by_ids(list(cache_key[0]))
+                page_destination, page_prefix, _page_category = determine_destination(
+                    page_characters, cache_key[1]
+                )
+                page_destination.mkdir(parents=True, exist_ok=True)
+                destination_info = (page_destination, page_prefix)
+                destination_cache[cache_key] = destination_info
+            page_destination, page_prefix = destination_info
+            filename = find_next_filename(
+                page_destination, page_prefix, plan["extension"]
+            )
+            final = page_destination / filename
+            shutil.move(str(plan["staging"]), str(final))
+            plan["final"] = final
+
         with get_connection() as connection:
             connection.execute(
                 """
                 UPDATE stories
                 SET title = ?, folder_name = ?, relative_path = ?, ai_generated = ?,
-                    reading_direction = ?, cover_file_id = ?, updated_at = CURRENT_TIMESTAMP
+                    reading_direction = ?, cover_file_id = ?, metadata_mode = 'page_union',
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
                 (
-                    _story_folder_name(title), folder_name,
+                    _story_folder_name(title),
+                    folder_name,
                     destination.relative_to(gallery_root).as_posix(),
-                    int(ai_generated), direction, int(cover_file_id), story_id,
+                    int(aggregate["ai_generated"]),
+                    direction,
+                    selected_cover_id,
+                    story_id,
                 ),
             )
-            _replace_story_metadata(
-                connection, story_id, character_ids, tags, artists, ai_generated
-            )
             connection.execute("DELETE FROM story_pages WHERE story_id = ?", (story_id,))
-            for plan in plans:
-                file_id = int(plan["id"])
+
+            for file_id in ordered_ids:
+                plan = plans[file_id]
                 final: Path = plan["final"]
                 relative = final.relative_to(gallery_root).as_posix()
                 connection.execute(
                     """
                     UPDATE files
-                    SET filename = ?, relative_path = ?, ai_generated = ?, modified_at = ?
+                    SET filename = ?, relative_path = ?, modified_at = ?
                     WHERE id = ?
                     """,
-                    (final.name, relative, int(ai_generated), final.stat().st_mtime, file_id),
+                    (final.name, relative, final.stat().st_mtime, file_id),
                 )
-                _replace_file_characters(connection, file_id, character_ids)
-                _set_file_ai_state(connection, file_id, ai_generated)
                 connection.execute(
                     "INSERT INTO story_pages(story_id, file_id, page_number) VALUES (?, ?, ?)",
                     (story_id, file_id, int(plan["page_number"])),
@@ -890,57 +1226,106 @@ def update_story(
                 connection.execute(
                     """
                     INSERT INTO operations(operation_type, source_relative_path, destination_relative_path)
-                    VALUES ('story_page_reorder', ?, ?)
+                    VALUES ('story_page_update', ?, ?)
                     """,
-                    (
-                        plan["source"].relative_to(gallery_root).as_posix(),
-                        relative,
-                    ),
+                    (plan["source"].relative_to(gallery_root).as_posix(), relative),
                 )
+
+            for file_id in removed_ids:
+                plan = plans.get(file_id)
+                if plan is None or not plan["exists"]:
+                    connection.execute("DELETE FROM files WHERE id = ?", (file_id,))
+                    continue
+                final = Path(plan["final"])
+                relative = final.relative_to(gallery_root).as_posix()
+                connection.execute(
+                    "UPDATE files SET filename = ?, relative_path = ?, modified_at = ? WHERE id = ?",
+                    (final.name, relative, final.stat().st_mtime, file_id),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO operations(operation_type, source_relative_path, destination_relative_path)
+                    VALUES ('story_page_remove', ?, ?)
+                    """,
+                    (plan["source"].relative_to(gallery_root).as_posix(), relative),
+                )
+
+            _sync_story_metadata(connection, story_id, ordered_ids)
     except Exception:
-        for plan in reversed(plans):
-            current_path = plan.get("final")
-            if current_path is not None and Path(current_path).exists():
-                plan["source"].parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(current_path), str(plan["source"]))
-            elif plan["staging"].exists():
-                plan["source"].parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(plan["staging"]), str(plan["source"]))
-        shutil.rmtree(operation_root, ignore_errors=True)
-        if destination != old_story_path:
+        for plan in plans.values():
+            final = plan.get("final")
+            staging = plan.get("staging")
+            if final is not None and Path(final).exists():
+                if staging is None:
+                    staging = operation_root / f"rollback_{plan['id']}{Path(final).suffix.lower()}"
+                    plan["staging"] = staging
+                shutil.move(str(final), str(staging))
+        for plan in plans.values():
+            staging = plan.get("staging")
+            source: Path = plan["source"]
+            if staging is not None and Path(staging).exists():
+                source.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(staging), str(source))
+        if destination != old_story_path and destination.exists():
             shutil.rmtree(destination, ignore_errors=True)
         raise
     finally:
         shutil.rmtree(operation_root, ignore_errors=True)
 
     cleanup_empty_entities()
-    return get_story(story_id) | {"status": "updated"}
+    return get_story(story_id) | {
+        "status": "updated",
+        "added_pages": len([file_id for file_id in ordered_ids if file_id not in set(current_ids)]),
+        "removed_pages": len(removed_ids),
+    }
 
 
 def dissolve_story(story_id: int) -> dict[str, Any]:
     story = get_story(story_id)
     if not story["pages"]:
         raise ValueError("La storia non contiene pagine.")
-    character_ids = [int(character["id"]) for character in story["characters"]]
-    characters = get_characters_by_ids(character_ids)
-    destination, prefix, _category = determine_destination(characters, bool(story["ai_generated"]))
-    destination.mkdir(parents=True, exist_ok=True)
+
+    page_ids = [int(page["id"]) for page in story["pages"]]
+    with get_connection() as connection:
+        metadata = _file_metadata_by_id(connection, page_ids)
+
     gallery_root = Path(load_config()["gallery_root"]).resolve()
     moved: list[dict[str, Any]] = []
+    destination_cache: dict[tuple[tuple[int, ...], bool], tuple[Path, str]] = {}
 
     try:
         for page in story["pages"]:
+            file_id = int(page["id"])
             source = (gallery_root / page["relative_path"]).resolve()
+            if not source.exists() or not source.is_file():
+                raise FileNotFoundError(
+                    f"Pagina non trovata: {page['relative_path']}. Rimuovila dalla storia prima di scioglierla."
+                )
+            item_metadata = metadata.get(file_id)
+            if not item_metadata or not item_metadata["character_ids"]:
+                raise ValueError(
+                    "Una pagina non ha personaggi associati e non può essere ricollocata."
+                )
+            cache_key = (
+                tuple(item_metadata["character_ids"]),
+                bool(item_metadata["ai_generated"]),
+            )
+            destination_info = destination_cache.get(cache_key)
+            if destination_info is None:
+                characters = get_characters_by_ids(list(cache_key[0]))
+                destination, prefix, _category = determine_destination(
+                    characters, cache_key[1]
+                )
+                destination.mkdir(parents=True, exist_ok=True)
+                destination_info = (destination, prefix)
+                destination_cache[cache_key] = destination_info
+            destination, prefix = destination_info
             filename = find_next_filename(destination, prefix, source.suffix)
             final = destination / filename
             shutil.move(str(source), str(final))
-            moved.append({"id": int(page["id"]), "source": source, "final": final})
+            moved.append({"id": file_id, "source": source, "final": final})
 
         with get_connection() as connection:
-            story_tag_rows = connection.execute(
-                "SELECT tag_id FROM story_tags WHERE story_id = ?",
-                (story_id,),
-            ).fetchall()
             for item in moved:
                 file_id = int(item["id"])
                 final: Path = item["final"]
@@ -949,20 +1334,12 @@ def dissolve_story(story_id: int) -> dict[str, Any]:
                     "UPDATE files SET filename = ?, relative_path = ?, modified_at = ? WHERE id = ?",
                     (final.name, relative, final.stat().st_mtime, file_id),
                 )
-                for tag_row in story_tag_rows:
-                    connection.execute(
-                        "INSERT OR IGNORE INTO file_tags(file_id, tag_id) VALUES (?, ?)",
-                        (file_id, int(tag_row["tag_id"])),
-                    )
                 connection.execute(
                     """
                     INSERT INTO operations(operation_type, source_relative_path, destination_relative_path)
                     VALUES ('story_dissolve', ?, ?)
                     """,
-                    (
-                        item["source"].relative_to(gallery_root).as_posix(),
-                        relative,
-                    ),
+                    (item["source"].relative_to(gallery_root).as_posix(), relative),
                 )
             connection.execute("DELETE FROM stories WHERE id = ?", (story_id,))
     except Exception:
@@ -980,3 +1357,4 @@ def dissolve_story(story_id: int) -> dict[str, Any]:
         "story_id": story_id,
         "moved_files": [item["final"].relative_to(gallery_root).as_posix() for item in moved],
     }
+

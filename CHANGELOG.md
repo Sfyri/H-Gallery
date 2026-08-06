@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.7.0
+
+- Modifica avanzata delle storie con aggiunta, rimozione e riordino delle pagine.
+- Le pagine mantengono personaggi, tag, artisti e stato IA individuali.
+- I metadati della storia vengono ricavati automaticamente dall’unione delle pagine.
+- Le pagine rimosse tornano nella propria cartella e la numerazione resta continua.
+- Copertina di riserva automatica e salvataggio unico con ripristino in caso di errore.
+- Migrazione automatica e compatibile delle storie create con versioni precedenti.
+
 ## 1.6.4
 
 - Alias dei personaggi mostrati su una riga separata.

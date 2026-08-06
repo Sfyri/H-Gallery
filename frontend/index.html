@@ -430,6 +430,7 @@
                             <small>Trascina le pagine oppure modifica il numero.</small>
                         </div>
                         <div class="story-order-actions">
+                            <button id="add-story-pages" type="button" class="secondary-button" hidden>Aggiungi pagine</button>
                             <button id="sort-story-pages" type="button" class="secondary-button">Ordina per numero</button>
                             <button id="reverse-story-pages" type="button" class="secondary-button">Inverti ordine</button>
                         </div>
@@ -441,26 +442,33 @@
                     <label for="story-title-input">Titolo</label>
                     <input id="story-title-input" type="text" maxlength="120" required placeholder="Titolo della storia">
 
-                    <div class="field-header">
-                        <label for="story-character-search">Personaggi</label>
-                        <button id="story-create-character" type="button" class="text-button">+ Crea personaggio</button>
-                    </div>
-                    <div class="character-autocomplete">
-                        <input id="story-character-search" type="search" autocomplete="off" placeholder="Cerca personaggio">
-                        <div id="story-character-results" class="search-results character-suggestions"></div>
-                    </div>
-                    <div id="story-selected-characters" class="selected-characters"></div>
+                    <div id="story-new-metadata-fields" class="story-new-metadata-fields">
+                        <div class="field-header">
+                            <label for="story-character-search">Personaggi</label>
+                            <button id="story-create-character" type="button" class="text-button">+ Crea personaggio</button>
+                        </div>
+                        <div class="character-autocomplete">
+                            <input id="story-character-search" type="search" autocomplete="off" placeholder="Cerca personaggio">
+                            <div id="story-character-results" class="search-results character-suggestions"></div>
+                        </div>
+                        <div id="story-selected-characters" class="selected-characters"></div>
 
-                    <label for="story-tags-input">Tag della storia</label>
-                    <div class="tag-autocomplete">
-                        <input id="story-tags-input" type="text" autocomplete="off" placeholder="Fantasy, Romance, Manga">
-                        <div id="story-tag-suggestions" class="tag-suggestions" role="listbox"></div>
-                    </div>
+                        <label for="story-tags-input">Tag delle pagine</label>
+                        <div class="tag-autocomplete">
+                            <input id="story-tags-input" type="text" autocomplete="off" placeholder="Fantasy, Romance, Manga">
+                            <div id="story-tag-suggestions" class="tag-suggestions" role="listbox"></div>
+                        </div>
 
-                    <label for="story-artists-input">Artista</label>
-                    <div class="tag-autocomplete">
-                        <input id="story-artists-input" type="text" autocomplete="off" placeholder="Nome dell’artista (facoltativo)">
-                        <div id="story-artist-suggestions" class="tag-suggestions" role="listbox"></div>
+                        <label for="story-artists-input">Artista</label>
+                        <div class="tag-autocomplete">
+                            <input id="story-artists-input" type="text" autocomplete="off" placeholder="Nome dell’artista (facoltativo)">
+                            <div id="story-artist-suggestions" class="tag-suggestions" role="listbox"></div>
+                        </div>
+
+                        <label class="checkbox-row">
+                            <input id="story-ai-checkbox" type="checkbox">
+                            <span>Pagine generate con IA</span>
+                        </label>
                     </div>
 
                     <label for="story-reading-direction">Direzione di lettura</label>
@@ -468,11 +476,6 @@
                         <option value="rtl">Destra → sinistra (manga)</option>
                         <option value="ltr">Sinistra → destra</option>
                     </select>
-
-                    <label class="checkbox-row">
-                        <input id="story-ai-checkbox" type="checkbox">
-                        <span>Storia generata con IA</span>
-                    </label>
 
                     <label id="story-duplicates-row" class="checkbox-row" hidden>
                         <input id="story-allow-duplicates" type="checkbox">
@@ -492,6 +495,31 @@
                 </section>
             </div>
         </form>
+    </dialog>
+
+
+    <dialog id="story-page-picker-dialog" class="story-page-picker-dialog">
+        <div class="dialog-header">
+            <div>
+                <h2>Aggiungi pagine dalla galleria</h2>
+                <p>Seleziona immagini già organizzate. I loro personaggi, tag e artisti vengono mantenuti.</p>
+            </div>
+            <button id="close-story-page-picker" class="icon-button" type="button" aria-label="Chiudi">×</button>
+        </div>
+        <div class="story-page-picker-body">
+            <input id="story-page-picker-search" type="search" autocomplete="off" placeholder="Cerca per file, personaggio, serie o tag">
+            <div class="story-page-picker-summary">
+                <span id="story-page-picker-count">0 immagini selezionate</span>
+                <button id="clear-story-page-picker" type="button" class="text-button">Deseleziona</button>
+            </div>
+            <div id="story-page-picker-grid" class="story-page-picker-grid"></div>
+            <button id="load-more-story-pages" type="button" class="secondary-button" hidden>Carica altre immagini</button>
+            <p id="story-page-picker-status" class="status-message"></p>
+            <div class="dialog-actions">
+                <button id="cancel-story-page-picker" type="button" class="secondary-button">Annulla</button>
+                <button id="confirm-story-page-picker" type="button">Aggiungi selezionate</button>
+            </div>
+        </div>
     </dialog>
 
     <dialog id="story-reader-dialog" class="story-reader-dialog">

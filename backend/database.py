@@ -196,6 +196,7 @@ def init_database() -> None:
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 is_active INTEGER NOT NULL DEFAULT 1,
+                metadata_mode TEXT NOT NULL DEFAULT 'page_union',
                 FOREIGN KEY(cover_file_id) REFERENCES files(id) ON DELETE SET NULL
             );
 
@@ -279,6 +280,12 @@ def init_database() -> None:
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_files_modified ON files(modified_at DESC)"
         )
+
+        story_columns = _column_names(connection, "stories")
+        if "metadata_mode" not in story_columns:
+            connection.execute(
+                "ALTER TABLE stories ADD COLUMN metadata_mode TEXT NOT NULL DEFAULT 'legacy'"
+            )
 
         tag_columns = _column_names(connection, "tags")
         if "type" not in tag_columns:

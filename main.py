@@ -45,6 +45,7 @@ from backend.stories import (
     get_story,
     list_stories,
     preview_story,
+    refresh_story_metadata,
     update_story,
 )
 from backend.trash import (
@@ -131,20 +132,12 @@ class StoryCreateFromNewRequest(BaseModel):
 class StoryCreateFromGalleryRequest(BaseModel):
     file_ids: list[int] = Field(min_length=2, max_length=500)
     title: str = Field(min_length=1, max_length=120)
-    character_ids: list[int] = Field(min_length=1)
-    tags: list[str] = Field(default_factory=list)
-    artists: list[str] = Field(default_factory=list)
-    ai_generated: bool = False
     reading_direction: str = "rtl"
     cover_index: int = Field(default=0, ge=0)
 
 
 class StoryUpdateRequest(BaseModel):
     title: str = Field(min_length=1, max_length=120)
-    character_ids: list[int] = Field(min_length=1)
-    tags: list[str] = Field(default_factory=list)
-    artists: list[str] = Field(default_factory=list)
-    ai_generated: bool = False
     reading_direction: str = "rtl"
     ordered_file_ids: list[int] = Field(min_length=2, max_length=500)
     cover_file_id: int | None = None
@@ -201,13 +194,14 @@ class BackupRestoreRequest(BaseModel):
 async def lifespan(_: FastAPI):
     init_database()
     sync_characters()
+    refresh_story_metadata()
     yield
 
 
 app = FastAPI(
     title="H-Gallery",
     description="Galleria locale per immagini e video",
-    version="1.5.0",
+    version="1.7.0",
     lifespan=lifespan,
 )
 
@@ -431,10 +425,6 @@ def create_gallery_story(request: StoryCreateFromGalleryRequest):
         result = create_story_from_gallery(
             file_ids=request.file_ids,
             title=request.title,
-            character_ids=request.character_ids,
-            tags=request.tags,
-            artists=request.artists,
-            ai_generated=request.ai_generated,
             reading_direction=request.reading_direction,
             cover_index=request.cover_index,
         )
@@ -487,10 +477,6 @@ def edit_story(story_id: int, request: StoryUpdateRequest):
         result = update_story(
             story_id,
             title=request.title,
-            character_ids=request.character_ids,
-            tags=request.tags,
-            artists=request.artists,
-            ai_generated=request.ai_generated,
             reading_direction=request.reading_direction,
             ordered_file_ids=request.ordered_file_ids,
             cover_file_id=request.cover_file_id,

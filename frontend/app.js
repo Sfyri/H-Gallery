@@ -178,6 +178,7 @@ const dom = {
     storyCharacterResults: byId("story-character-results"),
     storySelectedCharacters: byId("story-selected-characters"),
     storyCreateCharacter: byId("story-create-character"),
+    storyNewMetadataFields: byId("story-new-metadata-fields"),
     storyTagsInput: byId("story-tags-input"),
     storyTagSuggestions: byId("story-tag-suggestions"),
     storyArtistsInput: byId("story-artists-input"),
@@ -188,8 +189,20 @@ const dom = {
     storyAllowDuplicates: byId("story-allow-duplicates"),
     storyStatus: byId("story-status"),
     storyPagesList: byId("story-pages-list"),
+    addStoryPages: byId("add-story-pages"),
     sortStoryPages: byId("sort-story-pages"),
     reverseStoryPages: byId("reverse-story-pages"),
+
+    storyPagePickerDialog: byId("story-page-picker-dialog"),
+    closeStoryPagePicker: byId("close-story-page-picker"),
+    cancelStoryPagePicker: byId("cancel-story-page-picker"),
+    confirmStoryPagePicker: byId("confirm-story-page-picker"),
+    storyPagePickerSearch: byId("story-page-picker-search"),
+    storyPagePickerCount: byId("story-page-picker-count"),
+    clearStoryPagePicker: byId("clear-story-page-picker"),
+    storyPagePickerGrid: byId("story-page-picker-grid"),
+    loadMoreStoryPages: byId("load-more-story-pages"),
+    storyPagePickerStatus: byId("story-page-picker-status"),
 
     storyReaderDialog: byId("story-reader-dialog"),
     storyReaderTitle: byId("story-reader-title"),
@@ -238,6 +251,12 @@ const state = {
     readerStory: null,
     readerPageIndex: 0,
     draggedStoryPageKey: null,
+    storyPickerFiles: [],
+    storyPickerSelectedIds: new Set(),
+    storyPickerPage: 1,
+    storyPickerPages: 1,
+    storyPickerLoading: false,
+    storyPickerRequestId: 0,
     timers: {}
 };
 
@@ -999,12 +1018,7 @@ function renderStoryCards(stories) {
         readButton.type = "button";
         readButton.textContent = "Leggi";
         readButton.addEventListener("click", () => openStoryReader(story.id));
-        const editButton = document.createElement("button");
-        editButton.type = "button";
-        editButton.className = "secondary-button";
-        editButton.textContent = "Modifica";
-        editButton.addEventListener("click", () => openStoryEditor(story.id));
-        actions.append(readButton, editButton);
+        actions.append(readButton);
         card.append(preview, info, actions);
         fragment.appendChild(card);
     });
@@ -2713,13 +2727,15 @@ function storyItemFromGallery(file) {
     return {
         key: String(file.id),
         id: file.id,
+        relative_path: file.relative_path,
         name: file.filename,
         thumbnail_url: file.thumbnail_url,
         media_url: file.media_url,
         media_type: file.media_type,
         has_transparency: Boolean(file.has_transparency),
         ai_generated: file.ai_generated,
-        characters: file.characters || []
+        characters: file.characters || [],
+        tags: file.tags || []
     };
 }
 
@@ -2727,6 +2743,7 @@ function storyItemFromPage(page) {
     return {
         key: String(page.id),
         id: page.id,
+        relative_path: page.relative_path,
         name: page.filename,
         thumbnail_url: page.thumbnail_url,
         media_url: page.media_url,
@@ -2734,7 +2751,8 @@ function storyItemFromPage(page) {
         has_transparency: Boolean(page.has_transparency),
         available: page.available !== false,
         ai_generated: page.ai_generated,
-        characters: []
+        characters: page.characters || [],
+        tags: page.tags || []
     };
 }
 
@@ -2764,6 +2782,35 @@ function addStoryCharacter(character) {
 function removeStoryCharacter(characterId) {
     state.storyCharacters = state.storyCharacters.filter(item => item.id !== characterId);
     renderStorySelectedCharacters();
+}
+
+function configureStoryDialogForMode(mode) {
+    const usesManualMetadata = mode === "new";
+    dom.storyNewMetadataFields.hidden = !usesManualMetadata;
+    dom.addStoryPages.hidden = mode !== "edit";
+    dom.storyDuplicatesRow.hidden = mode !== "new";
+}
+
+function removeStoryPage(itemKey) {
+    if (state.storyMode !== "edit") return;
+    if (state.storySourceItems.length <= 2) {
+        setStatus(
+            dom.storyStatus,
+            "Una storia deve contenere almeno due pagine. Usa Sciogli storia per recuperarle tutte."
+        );
+        return;
+    }
+
+    const index = state.storySourceItems.findIndex(item => storyItemKey(item) === itemKey);
+    if (index < 0) return;
+    const removingCover = String(state.storyCoverKey) === itemKey;
+    state.storySourceItems.splice(index, 1);
+    if (removingCover) {
+        const replacement = state.storySourceItems[Math.min(index, state.storySourceItems.length - 1)];
+        state.storyCoverKey = replacement ? storyItemKey(replacement) : null;
+    }
+    setStatus(dom.storyStatus, "");
+    renderStoryPages();
 }
 
 function renderStoryPages() {
@@ -2813,6 +2860,18 @@ function renderStoryPages() {
         });
         coverLabel.append(cover, document.createTextNode("Copertina"));
         controls.append(numberLabel, coverLabel);
+
+        if (state.storyMode === "edit") {
+            const removeButton = document.createElement("button");
+            removeButton.type = "button";
+            removeButton.className = "story-page-remove danger-button";
+            removeButton.textContent = "Rimuovi dalla storia";
+            removeButton.addEventListener("click", event => {
+                event.stopPropagation();
+                removeStoryPage(storyItemKey(item));
+            });
+            controls.appendChild(removeButton);
+        }
 
         page.addEventListener("dragstart", () => {
             state.draggedStoryPageKey = storyItemKey(item);
@@ -2871,12 +2930,165 @@ function reverseStoryPages() {
     renderStoryPages();
 }
 
+function updateStoryPickerSelectionUi() {
+    const count = state.storyPickerSelectedIds.size;
+    dom.storyPagePickerCount.textContent = `${count} ${count === 1 ? "immagine selezionata" : "immagini selezionate"}`;
+    dom.confirmStoryPagePicker.disabled = count === 0;
+    dom.clearStoryPagePicker.disabled = count === 0;
+}
+
+function renderStoryPagePickerFiles() {
+    dom.storyPagePickerGrid.replaceChildren();
+    const alreadyAdded = new Set(
+        state.storySourceItems
+            .filter(item => item.id != null)
+            .map(item => Number(item.id))
+    );
+    const fragment = document.createDocumentFragment();
+
+    state.storyPickerFiles.forEach(file => {
+        const card = document.createElement("label");
+        card.className = "story-picker-card";
+        const alreadyInStory = alreadyAdded.has(Number(file.id));
+        const missingCharacters = !(file.characters || []).length;
+        const unavailable = alreadyInStory || missingCharacters;
+        card.classList.toggle("already-added", unavailable);
+
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = state.storyPickerSelectedIds.has(Number(file.id));
+        checkbox.disabled = unavailable;
+        checkbox.addEventListener("change", () => {
+            if (checkbox.checked) state.storyPickerSelectedIds.add(Number(file.id));
+            else state.storyPickerSelectedIds.delete(Number(file.id));
+            card.classList.toggle("selected-card", checkbox.checked);
+            updateStoryPickerSelectionUi();
+        });
+        card.classList.toggle("selected-card", checkbox.checked);
+
+        const image = document.createElement("img");
+        image.src = file.thumbnail_url || file.media_url;
+        image.alt = file.filename;
+        image.loading = "lazy";
+
+        const info = document.createElement("span");
+        info.className = "story-picker-card-info";
+        const name = document.createElement("strong");
+        name.textContent = file.filename;
+        const characters = document.createElement("small");
+        characters.textContent = alreadyInStory
+            ? "Già presente nella storia"
+            : missingCharacters
+                ? "Nessun personaggio associato"
+                : file.characters.map(character => character.name).join(", ");
+        info.append(name, characters);
+
+        card.append(checkbox, image, info);
+        fragment.appendChild(card);
+    });
+    dom.storyPagePickerGrid.appendChild(fragment);
+    dom.loadMoreStoryPages.hidden = state.storyPickerPage >= state.storyPickerPages;
+    updateStoryPickerSelectionUi();
+}
+
+async function loadStoryPagePickerFiles({ reset = false } = {}) {
+    if (!reset && state.storyPickerLoading) return;
+    const requestId = ++state.storyPickerRequestId;
+    state.storyPickerLoading = true;
+    if (reset) {
+        state.storyPickerPage = 1;
+        state.storyPickerFiles = [];
+        dom.storyPagePickerGrid.replaceChildren();
+    }
+    const requestedPage = state.storyPickerPage;
+    setStatus(dom.storyPagePickerStatus, "Caricamento immagini...");
+    try {
+        const params = new URLSearchParams({
+            media_type: "image",
+            sort: "newest",
+            page: String(requestedPage),
+            limit: "80"
+        });
+        const query = dom.storyPagePickerSearch.value.trim();
+        if (query) params.set("q", query);
+        const data = await readJson(await fetch(`/api/gallery/files?${params}`));
+        if (requestId !== state.storyPickerRequestId) return;
+        const knownIds = new Set(state.storyPickerFiles.map(file => Number(file.id)));
+        data.files.forEach(file => {
+            if (!knownIds.has(Number(file.id))) state.storyPickerFiles.push(file);
+        });
+        state.storyPickerPage = requestedPage;
+        state.storyPickerPages = data.pages;
+        renderStoryPagePickerFiles();
+        setStatus(
+            dom.storyPagePickerStatus,
+            state.storyPickerFiles.length ? "" : "Nessuna immagine disponibile nella galleria."
+        );
+    } catch (error) {
+        if (requestId === state.storyPickerRequestId) {
+            setStatus(dom.storyPagePickerStatus, error.message);
+        }
+    } finally {
+        if (requestId === state.storyPickerRequestId) {
+            state.storyPickerLoading = false;
+        }
+    }
+}
+
+function openStoryPagePicker() {
+    if (state.storyMode !== "edit") return;
+    state.storyPickerSelectedIds.clear();
+    state.storyPickerFiles = [];
+    state.storyPickerPage = 1;
+    state.storyPickerPages = 1;
+    dom.storyPagePickerSearch.value = "";
+    setStatus(dom.storyPagePickerStatus, "");
+    updateStoryPickerSelectionUi();
+    dom.storyPagePickerDialog.showModal();
+    loadStoryPagePickerFiles({ reset: true });
+    dom.storyPagePickerSearch.focus();
+}
+
+function closeStoryPagePicker() {
+    state.storyPickerRequestId += 1;
+    state.storyPickerLoading = false;
+    dom.storyPagePickerDialog.close();
+    state.storyPickerSelectedIds.clear();
+    state.storyPickerFiles = [];
+    setStatus(dom.storyPagePickerStatus, "");
+}
+
+function addSelectedStoryPages() {
+    const selected = state.storyPickerFiles.filter(file =>
+        state.storyPickerSelectedIds.has(Number(file.id))
+    );
+    if (!selected.length) return;
+    const currentIds = new Set(
+        state.storySourceItems.filter(item => item.id != null).map(item => Number(item.id))
+    );
+    selected.forEach(file => {
+        if (!currentIds.has(Number(file.id))) {
+            state.storySourceItems.push(storyItemFromGallery(file));
+            currentIds.add(Number(file.id));
+        }
+    });
+    if (!state.storyCoverKey && state.storySourceItems[0]) {
+        state.storyCoverKey = storyItemKey(state.storySourceItems[0]);
+    }
+    closeStoryPagePicker();
+    setStatus(dom.storyStatus, "");
+    renderStoryPages();
+    dom.storyDialogSubtitle.textContent = `${state.storySourceItems.length} pagine`;
+}
+
 function resetStoryDialog() {
     state.storySourceItems = [];
     state.storyCharacters = [];
     state.activeStory = null;
     state.storyCoverKey = null;
     state.storyMode = null;
+    state.storyPickerFiles = [];
+    state.storyPickerSelectedIds.clear();
     dom.storyPagesList.replaceChildren();
     dom.storyCharacterResults.replaceChildren();
     dom.storyTagSuggestions.replaceChildren();
@@ -2906,7 +3118,7 @@ function openStoryCreator(items, mode) {
     dom.storyArtistsInput.value = "";
     dom.storyReadingDirection.value = "rtl";
     dom.storyAiCheckbox.checked = mode === "gallery" && items.every(item => item.ai_generated);
-    dom.storyDuplicatesRow.hidden = mode !== "new";
+    configureStoryDialogForMode(mode);
     dom.storyAllowDuplicates.checked = false;
     dom.dissolveStory.hidden = true;
     dom.submitStory.textContent = "Crea storia";
@@ -2935,13 +3147,13 @@ async function openStoryEditor(storyId) {
         dom.storyArtistsInput.value = story.tags.filter(tag => tag.type === "artist").map(tag => tag.name).join(", ");
         dom.storyReadingDirection.value = story.reading_direction;
         dom.storyAiCheckbox.checked = story.ai_generated;
-        dom.storyDuplicatesRow.hidden = true;
+        configureStoryDialogForMode("edit");
         dom.dissolveStory.hidden = false;
-        dom.submitStory.textContent = "Salva storia";
+        dom.submitStory.textContent = "Salva modifiche";
         setStatus(dom.storyStatus, "");
         renderStorySelectedCharacters();
         renderStoryPages();
-            dom.storyDialog.showModal();
+        dom.storyDialog.showModal();
     } catch (error) {
         setStatus(dom.globalStatus, error.message);
     }
@@ -2963,7 +3175,7 @@ async function submitStoryForm(allowDuplicates = false) {
         setStatus(dom.storyStatus, "Inserisci il titolo della storia.");
         return;
     }
-    if (!state.storyCharacters.length) {
+    if (state.storyMode === "new" && !state.storyCharacters.length) {
         setStatus(dom.storyStatus, "Seleziona almeno un personaggio.");
         return;
     }
@@ -2976,11 +3188,13 @@ async function submitStoryForm(allowDuplicates = false) {
     setStatus(dom.storyStatus, "Salvataggio della storia...");
     const common = {
         title,
+        reading_direction: dom.storyReadingDirection.value
+    };
+    const newPageMetadata = {
         character_ids: state.storyCharacters.map(character => character.id),
         tags: parseTags(dom.storyTagsInput.value),
         artists: parseTags(dom.storyArtistsInput.value),
-        ai_generated: dom.storyAiCheckbox.checked,
-        reading_direction: dom.storyReadingDirection.value
+        ai_generated: dom.storyAiCheckbox.checked
     };
 
     try {
@@ -3001,6 +3215,7 @@ async function submitStoryForm(allowDuplicates = false) {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     ...common,
+                    ...newPageMetadata,
                     relative_paths: state.storySourceItems.map(item => item.relative_path),
                     cover_index: storyCoverIndex(),
                     allow_duplicates: allowDuplicates || dom.storyAllowDuplicates.checked
@@ -3314,9 +3529,27 @@ dom.storyCharacterSearch.addEventListener("blur", () => {
     window.setTimeout(() => dom.storyCharacterResults.replaceChildren(), 120);
 });
 dom.storyCreateCharacter.addEventListener("click", () => openCreateCharacterDialog(dom.storyCharacterSearch.value, "story"));
+dom.addStoryPages.addEventListener("click", openStoryPagePicker);
 dom.sortStoryPages.addEventListener("click", sortStoryPagesByNumbers);
 dom.reverseStoryPages.addEventListener("click", reverseStoryPages);
 dom.dissolveStory.addEventListener("click", dissolveActiveStory);
+
+dom.closeStoryPagePicker.addEventListener("click", closeStoryPagePicker);
+dom.cancelStoryPagePicker.addEventListener("click", closeStoryPagePicker);
+dom.confirmStoryPagePicker.addEventListener("click", addSelectedStoryPages);
+dom.clearStoryPagePicker.addEventListener("click", () => {
+        state.storyPickerSelectedIds.clear();
+        renderStoryPagePickerFiles();
+    });
+dom.loadMoreStoryPages.addEventListener("click", () => {
+        if (state.storyPickerPage < state.storyPickerPages) {
+            state.storyPickerPage += 1;
+            loadStoryPagePickerFiles();
+        }
+    });
+dom.storyPagePickerSearch.addEventListener("input", () => {
+        debounce("story-page-picker-search", () => loadStoryPagePickerFiles({ reset: true }), 180);
+    });
 
 dom.closeStoryReader.addEventListener("click", closeStoryReader);
 dom.storyReaderMode.addEventListener("change", renderStoryReader);
