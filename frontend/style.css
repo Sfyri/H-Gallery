@@ -1463,6 +1463,21 @@ main {
     width: 100%;
 }
 
+.story-metadata-panel .checkbox-row {
+    align-items: center;
+    justify-content: flex-start;
+}
+
+.story-metadata-panel .checkbox-row input[type="checkbox"] {
+    flex: 0 0 auto;
+    width: 17px;
+    height: 17px;
+}
+
+.story-metadata-panel .checkbox-row span {
+    min-width: 0;
+}
+
 .story-order-actions {
     display: flex;
     flex-wrap: wrap;
@@ -1471,7 +1486,7 @@ main {
 
 .story-pages-list {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(145px, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 12px;
     max-height: 70vh;
     overflow: auto;
@@ -1507,10 +1522,18 @@ main {
 }
 
 .story-page-controls {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 7px;
+}
+
+.story-page-number {
     display: grid;
-    grid-template-columns: auto 1fr;
+    grid-template-columns: auto minmax(0, 1fr);
     align-items: center;
     gap: 7px;
+    min-width: 0;
 }
 
 .story-page-controls input[type="number"] {
@@ -1522,15 +1545,29 @@ main {
     display: flex;
     align-items: center;
     gap: 6px;
+    width: 100%;
     font-size: 12px;
     color: #b9c0cc;
 }
 
-.story-page-name {
-    overflow: hidden;
+.story-page-missing {
+    display: grid;
+    place-items: center;
+    width: min(100%, 720px);
+    min-height: 240px;
+    padding: 20px;
+    border: 1px dashed #4a5260;
+    border-radius: 7px;
+    color: #aeb6c3;
+    background: #11151b;
+    text-align: center;
+}
+
+.story-page-missing-preview {
+    width: 100%;
+    min-height: 170px;
+    padding: 10px;
     font-size: 12px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
 }
 
 .story-reader-dialog {
@@ -1611,7 +1648,14 @@ main {
     }
 
     .story-pages-list {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
         max-height: 45vh;
+    }
+}
+
+@media (max-width: 520px) {
+    .story-pages-list {
+        grid-template-columns: 1fr;
     }
 }
 
@@ -1682,4 +1726,14 @@ main {
     .file-navigation {
         flex-wrap: wrap;
     }
+}
+
+/* v1.6.4 — menu personaggi sovrapposti e sottotitoli più leggibili */
+.collection-card p {
+    white-space: pre-line;
+}
+
+.dialog-controls .character-suggestions,
+.story-metadata-panel .character-suggestions {
+    z-index: 90;
 }

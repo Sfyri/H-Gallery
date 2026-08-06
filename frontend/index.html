@@ -304,11 +304,6 @@
                         <span>Conserva anche i duplicati identici</span>
                     </label>
 
-                    <section class="destination-box">
-                        <strong>Destinazione automatica</strong>
-                        <span id="destination-preview">Seleziona almeno un personaggio.</span>
-                    </section>
-
                     <p id="organize-status" class="status-message"></p>
                     <div class="dialog-actions">
                         <button id="cancel-organize" type="button" class="secondary-button">Annulla</button>
@@ -377,8 +372,10 @@
                     <dl id="file-properties" class="file-properties"></dl>
 
                     <label for="edit-character-search">Personaggi presenti</label>
-                    <input id="edit-character-search" type="search" autocomplete="off" placeholder="Cerca e aggiungi personaggi">
-                    <div id="edit-search-results" class="search-results"></div>
+                    <div class="character-autocomplete">
+                        <input id="edit-character-search" type="search" autocomplete="off" placeholder="Cerca e aggiungi personaggi">
+                        <div id="edit-search-results" class="search-results character-suggestions"></div>
+                    </div>
                     <div id="edit-selected-characters" class="selected-characters"></div>
 
                     <label for="edit-tags-input">Tag</label>
@@ -448,8 +445,10 @@
                         <label for="story-character-search">Personaggi</label>
                         <button id="story-create-character" type="button" class="text-button">+ Crea personaggio</button>
                     </div>
-                    <input id="story-character-search" type="search" autocomplete="off" placeholder="Cerca personaggio">
-                    <div id="story-character-results" class="search-results"></div>
+                    <div class="character-autocomplete">
+                        <input id="story-character-search" type="search" autocomplete="off" placeholder="Cerca personaggio">
+                        <div id="story-character-results" class="search-results character-suggestions"></div>
+                    </div>
                     <div id="story-selected-characters" class="selected-characters"></div>
 
                     <label for="story-tags-input">Tag della storia</label>
@@ -479,11 +478,6 @@
                         <input id="story-allow-duplicates" type="checkbox">
                         <span>Conserva anche duplicati identici</span>
                     </label>
-
-                    <section class="destination-box">
-                        <strong>Destinazione automatica</strong>
-                        <span id="story-destination-preview">Inserisci titolo e personaggi.</span>
-                    </section>
 
                     <p id="story-status" class="status-message"></p>
                     <div class="dialog-actions split-actions">

@@ -117,7 +117,6 @@ const dom = {
     organizeAiCheckbox: byId("organize-ai-checkbox"),
     organizeKeepDuplicatesRow: byId("organize-keep-duplicates-row"),
     organizeKeepDuplicatesCheckbox: byId("organize-keep-duplicates-checkbox"),
-    destinationPreview: byId("destination-preview"),
     openCreateCharacter: byId("open-create-character"),
 
     createCharacterDialog: byId("create-character-dialog"),
@@ -187,7 +186,6 @@ const dom = {
     storyAiCheckbox: byId("story-ai-checkbox"),
     storyDuplicatesRow: byId("story-duplicates-row"),
     storyAllowDuplicates: byId("story-allow-duplicates"),
-    storyDestinationPreview: byId("story-destination-preview"),
     storyStatus: byId("story-status"),
     storyPagesList: byId("story-pages-list"),
     sortStoryPages: byId("sort-story-pages"),
@@ -774,7 +772,6 @@ function renderOverview() {
 }
 
 async function openFranchise(franchiseId) {
-    setStatus(dom.globalStatus, "Caricamento personaggi...");
     try {
         const data = await readJson(await fetch(`/api/gallery/franchises/${franchiseId}/characters`));
         state.currentFranchise = data;
@@ -804,7 +801,7 @@ function renderCharacterGrid(data) {
         fragment.appendChild(createCollectionCard({
             title: character.name,
             subtitle: character.aliases?.length
-                ? `${character.total_files} File associati · Alias: ${character.aliases.join(", ")}`
+                ? `${character.total_files} File associati\nAlias: ${character.aliases.join(", ")}`
                 : `${character.total_files} File associati`,
             coverUrl: character.cover_url,
             badges: [`${character.images} Immagini`, `${character.videos} Video`, `${character.ai_files} IA`],
@@ -1285,9 +1282,75 @@ function getSelectedTodoFiles() {
     return state.todoFiles.filter(file => state.todoSelectedPaths.has(file.relative_path));
 }
 
-async function loadTodoFiles() {
+function findTodoCard(relativePath) {
+    return [...dom.todoMediaGrid.querySelectorAll(".todo-media-card")]
+        .find(card => card.dataset.todoPath === relativePath) || null;
+}
+
+function captureTodoContinuation(removedPaths) {
+    const removed = new Set(removedPaths);
+    const removedIndexes = state.todoFiles
+        .map((file, index) => removed.has(file.relative_path) ? index : -1)
+        .filter(index => index >= 0);
+
+    if (!removedIndexes.length) return null;
+
+    const firstRemovedIndex = Math.min(...removedIndexes);
+    const lastRemovedIndex = Math.max(...removedIndexes);
+    const nextFile = state.todoFiles
+        .slice(lastRemovedIndex + 1)
+        .find(file => !removed.has(file.relative_path));
+    const previousFile = [...state.todoFiles.slice(0, firstRemovedIndex)]
+        .reverse()
+        .find(file => !removed.has(file.relative_path));
+    const targetFile = nextFile || previousFile;
+
+    if (!targetFile) return null;
+
+    const stickyTop = document.querySelector(".topbar")?.getBoundingClientRect().bottom || 0;
+    const visibleRemovedCards = removedIndexes
+        .map(index => findTodoCard(state.todoFiles[index].relative_path))
+        .filter(Boolean)
+        .map(card => ({ card, rect: card.getBoundingClientRect() }))
+        .filter(item => item.rect.bottom > stickyTop && item.rect.top < window.innerHeight)
+        .sort((left, right) => Math.abs(left.rect.top - stickyTop) - Math.abs(right.rect.top - stickyTop));
+
+    const targetCard = findTodoCard(targetFile.relative_path);
+    const referenceCard = visibleRemovedCards[0]?.card || findTodoCard(state.todoFiles[firstRemovedIndex].relative_path);
+    const desiredTop = nextFile
+        ? referenceCard?.getBoundingClientRect().top
+        : targetCard?.getBoundingClientRect().top;
+
+    return {
+        targetPath: targetFile.relative_path,
+        desiredTop: Number.isFinite(desiredTop) ? desiredTop : null,
+        fallbackScrollY: window.scrollY
+    };
+}
+
+async function restoreTodoContinuation(continuation) {
+    if (!continuation?.targetPath) return;
+
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    const card = findTodoCard(continuation.targetPath);
+    if (!card) {
+        window.scrollTo({ top: continuation.fallbackScrollY || 0, behavior: "auto" });
+        return;
+    }
+
+    if (Number.isFinite(continuation.desiredTop)) {
+        const delta = card.getBoundingClientRect().top - continuation.desiredTop;
+        if (Math.abs(delta) > 0.5) window.scrollBy({ top: delta, behavior: "auto" });
+        return;
+    }
+
+    card.scrollIntoView({ block: "nearest", behavior: "auto" });
+}
+
+async function loadTodoFiles(continuation = null) {
+    const preservePosition = Boolean(continuation?.targetPath);
     dom.todoFileCount.textContent = "Caricamento...";
-    dom.todoMediaGrid.replaceChildren();
+    if (!preservePosition) dom.todoMediaGrid.replaceChildren();
     try {
         const data = await readJson(await fetch("/api/todo/files"));
         state.todoFiles = data.files;
@@ -1302,7 +1365,7 @@ async function loadTodoFiles() {
             const empty = document.createElement("p");
             empty.className = "empty-message";
             empty.textContent = "New non contiene immagini o video.";
-            dom.todoMediaGrid.appendChild(empty);
+            dom.todoMediaGrid.replaceChildren(empty);
             return;
         }
 
@@ -1360,11 +1423,13 @@ async function loadTodoFiles() {
             card.append(selectionLabel, preview, info);
             fragment.appendChild(card);
         });
-        dom.todoMediaGrid.appendChild(fragment);
+        dom.todoMediaGrid.replaceChildren(fragment);
         updateTodoSelectionUi();
+        await restoreTodoContinuation(continuation);
     } catch (error) {
         console.error(error);
         state.todoFiles = [];
+        dom.todoMediaGrid.replaceChildren();
         dom.todoFileCount.textContent = "Errore";
         updateTodoSelectionUi();
         setStatus(dom.globalStatus, error.message);
@@ -1378,7 +1443,8 @@ async function trashTodoFile(file) {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ relative_path: file.relative_path })
         }));
-        await Promise.all([loadTodoFiles(), loadOverview(true, false)]);
+        const continuation = captureTodoContinuation([file.relative_path]);
+        await Promise.all([loadTodoFiles(continuation), loadOverview(true, false)]);
         setStatus(dom.globalStatus, "File spostato nel cestino.", true);
     } catch (error) {
         setStatus(dom.globalStatus, error.message);
@@ -1391,6 +1457,7 @@ async function trashSelectedTodoFiles() {
 
     dom.trashSelectedTodoButton.disabled = true;
     const failedPaths = new Set();
+    const movedPaths = [];
     let movedCount = 0;
 
     for (const file of files) {
@@ -1400,6 +1467,7 @@ async function trashSelectedTodoFiles() {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ relative_path: file.relative_path })
             }));
+            movedPaths.push(file.relative_path);
             movedCount += 1;
         } catch (error) {
             console.error(error);
@@ -1408,7 +1476,8 @@ async function trashSelectedTodoFiles() {
     }
 
     state.todoSelectedPaths = failedPaths;
-    await Promise.all([loadTodoFiles(), loadOverview(true, false)]);
+    const continuation = captureTodoContinuation(movedPaths);
+    await Promise.all([loadTodoFiles(continuation), loadOverview(true, false)]);
 
     const failedCount = failedPaths.size;
     const message = failedCount
@@ -1730,7 +1799,6 @@ function openOrganizer(fileOrFiles) {
     dom.submitOrganize.textContent = isBatch
         ? `Organizza ${files.length} file`
         : "Rinomina e sposta";
-    dom.destinationPreview.textContent = "Seleziona almeno un personaggio.";
     setStatus(dom.organizeStatus, "");
     renderSelectedCharacters(dom.organizeSelectedCharacters, state.organizeCharacters, removeOrganizeCharacter);
     dom.organizeDialog.showModal();
@@ -1751,39 +1819,11 @@ function addOrganizeCharacter(character) {
     dom.organizeCharacterSearch.value = "";
     dom.organizeSearchResults.replaceChildren();
     renderSelectedCharacters(dom.organizeSelectedCharacters, state.organizeCharacters, removeOrganizeCharacter);
-    updateDestinationPreview();
 }
 
 function removeOrganizeCharacter(characterId) {
     state.organizeCharacters = state.organizeCharacters.filter(item => item.id !== characterId);
     renderSelectedCharacters(dom.organizeSelectedCharacters, state.organizeCharacters, removeOrganizeCharacter);
-    updateDestinationPreview();
-}
-
-async function updateDestinationPreview() {
-    if (!state.activeTodoFile || !state.organizeCharacters.length) {
-        dom.destinationPreview.textContent = "Seleziona almeno un personaggio.";
-        return;
-    }
-    try {
-        const response = await fetch("/api/organize/preview", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                character_ids: state.organizeCharacters.map(character => character.id),
-                ai_generated: dom.organizeAiCheckbox.checked,
-                extension: state.activeTodoFile.extension
-            })
-        });
-        const data = await readJson(response);
-        if (state.activeTodoFiles.length > 1) {
-            dom.destinationPreview.textContent = `${data.destination_folder}/ · ${state.activeTodoFiles.length} nomi progressivi (primo: ${data.filename})`;
-        } else {
-            dom.destinationPreview.textContent = data.destination_relative_path;
-        }
-    } catch (error) {
-        dom.destinationPreview.textContent = error.message;
-    }
 }
 
 function buildBatchResultMessage(result) {
@@ -1828,6 +1868,8 @@ async function submitBatchOrganization() {
         ...result.duplicates.map(item => item.relative_path),
         ...result.errors.map(item => item.relative_path)
     ]);
+    const organizedPaths = result.organized.map(item => item.source_relative_path);
+    const continuation = captureTodoContinuation(organizedPaths);
     state.todoSelectedPaths = remainingPaths;
 
     const message = buildBatchResultMessage(result);
@@ -1838,7 +1880,7 @@ async function submitBatchOrganization() {
     }
 
     closeOrganizer();
-    await Promise.all([loadTodoFiles(), loadOverview(true, false)]);
+    await Promise.all([loadTodoFiles(continuation), loadOverview(true, false)]);
     setStatus(dom.globalStatus, message, result.organized_count > 0 && result.error_count === 0);
 }
 
@@ -1882,10 +1924,11 @@ async function submitOrganization(allowDuplicate = false) {
         }
 
         const result = await readJson(response);
+        const continuation = captureTodoContinuation([state.activeTodoFile.relative_path]);
         state.todoSelectedPaths.delete(state.activeTodoFile.relative_path);
         setStatus(dom.globalStatus, `File organizzato: ${result.relative_path}`, true);
         closeOrganizer();
-        await Promise.all([loadTodoFiles(), loadOverview(true, false)]);
+        await Promise.all([loadTodoFiles(continuation), loadOverview(true, false)]);
     } catch (error) {
         console.error(error);
         setStatus(dom.organizeStatus, error.message);
@@ -2689,6 +2732,7 @@ function storyItemFromPage(page) {
         media_url: page.media_url,
         media_type: "image",
         has_transparency: Boolean(page.has_transparency),
+        available: page.available !== false,
         ai_generated: page.ai_generated,
         characters: []
     };
@@ -2715,13 +2759,11 @@ function addStoryCharacter(character) {
     dom.storyCharacterSearch.value = "";
     dom.storyCharacterResults.replaceChildren();
     renderStorySelectedCharacters();
-    updateStoryDestinationPreview();
 }
 
 function removeStoryCharacter(characterId) {
     state.storyCharacters = state.storyCharacters.filter(item => item.id !== characterId);
     renderStorySelectedCharacters();
-    updateStoryDestinationPreview();
 }
 
 function renderStoryPages() {
@@ -2733,15 +2775,23 @@ function renderStoryPages() {
         page.draggable = true;
         page.dataset.key = storyItemKey(item);
 
-        const image = document.createElement("img");
-        image.src = item.thumbnail_url || item.media_url;
-        image.alt = item.name;
-        image.loading = "lazy";
-        image.classList.toggle("transparent-media", Boolean(item.has_transparency));
+        let preview;
+        if (item.available === false) {
+            preview = document.createElement("div");
+            preview.className = "story-page-missing story-page-missing-preview";
+            preview.textContent = "Pagina non disponibile";
+        } else {
+            preview = document.createElement("img");
+            preview.src = item.thumbnail_url || item.media_url;
+            preview.alt = item.name;
+            preview.loading = "lazy";
+            preview.classList.toggle("transparent-media", Boolean(item.has_transparency));
+        }
 
         const controls = document.createElement("div");
         controls.className = "story-page-controls";
         const numberLabel = document.createElement("label");
+        numberLabel.className = "story-page-number";
         numberLabel.textContent = "Pagina";
         const number = document.createElement("input");
         number.type = "number";
@@ -2763,11 +2813,6 @@ function renderStoryPages() {
         });
         coverLabel.append(cover, document.createTextNode("Copertina"));
         controls.append(numberLabel, coverLabel);
-
-        const name = document.createElement("span");
-        name.className = "story-page-name";
-        name.textContent = item.name;
-        name.title = item.name;
 
         page.addEventListener("dragstart", () => {
             state.draggedStoryPageKey = storyItemKey(item);
@@ -2799,7 +2844,7 @@ function renderStoryPages() {
             renderStoryPages();
         });
 
-        page.append(image, controls, name);
+        page.append(preview, controls);
         fragment.appendChild(page);
     });
     dom.storyPagesList.appendChild(fragment);
@@ -2824,29 +2869,6 @@ function sortStoryPagesByNumbers() {
 function reverseStoryPages() {
     state.storySourceItems.reverse();
     renderStoryPages();
-}
-
-async function updateStoryDestinationPreview() {
-    const title = dom.storyTitleInput.value.trim();
-    if (!title || !state.storyCharacters.length || state.storySourceItems.length < 2) {
-        dom.storyDestinationPreview.textContent = "Inserisci titolo e almeno un personaggio.";
-        return;
-    }
-    try {
-        const result = await readJson(await fetch("/api/stories/preview", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                title,
-                character_ids: state.storyCharacters.map(character => character.id),
-                ai_generated: dom.storyAiCheckbox.checked,
-                page_count: state.storySourceItems.length
-            })
-        }));
-        dom.storyDestinationPreview.textContent = `${result.destination_relative_path}/ · ${result.page_count} pagine · ${result.page_name_example}`;
-    } catch (error) {
-        dom.storyDestinationPreview.textContent = error.message;
-    }
 }
 
 function resetStoryDialog() {
@@ -2891,7 +2913,6 @@ function openStoryCreator(items, mode) {
     setStatus(dom.storyStatus, "");
     renderStorySelectedCharacters();
     renderStoryPages();
-    updateStoryDestinationPreview();
     dom.storyDialog.showModal();
     dom.storyTitleInput.focus();
 }
@@ -2920,8 +2941,7 @@ async function openStoryEditor(storyId) {
         setStatus(dom.storyStatus, "");
         renderStorySelectedCharacters();
         renderStoryPages();
-        updateStoryDestinationPreview();
-        dom.storyDialog.showModal();
+            dom.storyDialog.showModal();
     } catch (error) {
         setStatus(dom.globalStatus, error.message);
     }
@@ -3046,13 +3066,24 @@ async function openStoryReader(storyId) {
         state.readerStory = story;
         state.readerPageIndex = 0;
         dom.storyReaderTitle.textContent = story.title;
-        dom.storyReaderMeta.textContent = `${story.pages.length} pagine · ${story.characters.map(character => character.name).join(", ")}`;
+        const missingPages = story.pages.filter(page => page.available === false).length;
+        const missingLabel = missingPages ? ` · ${missingPages} non disponibili` : "";
+        dom.storyReaderMeta.textContent = `${story.pages.length} pagine${missingLabel} · ${story.characters.map(character => character.name).join(", ")}`;
         dom.storyReaderMode.value = "single";
         renderStoryReader();
         dom.storyReaderDialog.showModal();
     } catch (error) {
         setStatus(dom.globalStatus, error.message);
     }
+}
+
+function createMissingStoryPage(pageNumber = null) {
+    const placeholder = document.createElement("div");
+    placeholder.className = "story-page-missing";
+    placeholder.textContent = pageNumber === null
+        ? "Nessuna pagina disponibile."
+        : `Pagina ${pageNumber} non disponibile.`;
+    return placeholder;
 }
 
 function renderStoryReader() {
@@ -3062,10 +3093,20 @@ function renderStoryReader() {
     const vertical = dom.storyReaderMode.value === "vertical";
     dom.storyReaderNavigation.hidden = vertical;
 
+    if (!story.pages.length) {
+        dom.storyReaderNavigation.hidden = true;
+        dom.storyReaderContent.appendChild(createMissingStoryPage());
+        return;
+    }
+
     if (vertical) {
         const container = document.createElement("div");
         container.className = "story-reader-vertical";
         story.pages.forEach(page => {
+            if (page.available === false) {
+                container.appendChild(createMissingStoryPage(page.page_number));
+                return;
+            }
             const image = document.createElement("img");
             image.src = page.media_url;
             image.alt = `${story.title} — pagina ${page.page_number}`;
@@ -3081,11 +3122,15 @@ function renderStoryReader() {
     const page = story.pages[state.readerPageIndex];
     const container = document.createElement("div");
     container.className = "story-reader-single";
-    const image = document.createElement("img");
-    image.src = page.media_url;
-    image.alt = `${story.title} — pagina ${state.readerPageIndex + 1}`;
-    image.classList.toggle("transparent-media", Boolean(page.has_transparency));
-    container.appendChild(image);
+    if (page.available === false) {
+        container.appendChild(createMissingStoryPage(page.page_number));
+    } else {
+        const image = document.createElement("img");
+        image.src = page.media_url;
+        image.alt = `${story.title} — pagina ${state.readerPageIndex + 1}`;
+        image.classList.toggle("transparent-media", Boolean(page.has_transparency));
+        container.appendChild(image);
+    }
     dom.storyReaderContent.appendChild(container);
     dom.storyReaderIndicator.textContent = `${state.readerPageIndex + 1} / ${story.pages.length}`;
     dom.storyReaderPrevious.disabled = state.readerPageIndex <= 0;
@@ -3143,7 +3188,7 @@ dom.characterScorePlus.addEventListener("click", async () => {
 dom.manageCharacterAliases.addEventListener("click", openCharacterAliasDialog);
 
 // New e organizzazione.
-dom.refreshTodoButton.addEventListener("click", loadTodoFiles);
+dom.refreshTodoButton.addEventListener("click", () => loadTodoFiles());
 dom.selectAllTodoButton.addEventListener("click", selectAllTodoFiles);
 dom.clearTodoSelectionButton.addEventListener("click", clearTodoSelection);
 dom.organizeSelectedTodoButton.addEventListener("click", () => openOrganizer(getSelectedTodoFiles()));
@@ -3153,7 +3198,6 @@ dom.refreshTrashButton.addEventListener("click", () => loadTrashItems());
 dom.emptyTrashButton.addEventListener("click", emptyTrashFromUi);
 dom.closeOrganizeDialog.addEventListener("click", closeOrganizer);
 dom.cancelOrganize.addEventListener("click", closeOrganizer);
-dom.organizeAiCheckbox.addEventListener("change", updateDestinationPreview);
 const loadOrganizerCharacterSuggestions = () => searchCharacterNames(
     dom.organizeCharacterSearch.value,
     dom.organizeSearchResults,
@@ -3207,15 +3251,27 @@ dom.filePreviousButton.addEventListener("click", () => navigateFileDialog(-1));
 dom.fileNextButton.addEventListener("click", () => navigateFileDialog(1));
 dom.revealFileButton.addEventListener("click", revealActiveFile);
 dom.trashFileButton.addEventListener("click", trashActiveGalleryFile);
-dom.editCharacterSearch.addEventListener("input", () => debounce("edit-search", () => {
-    searchCharacterNames(
-        dom.editCharacterSearch.value,
-        dom.editSearchResults,
-        state.editCharacters,
-        addEditCharacter,
-        name => openCreateCharacterDialog(name, "edit")
-    );
-}));
+const loadEditCharacterSuggestions = () => searchCharacterNames(
+    dom.editCharacterSearch.value,
+    dom.editSearchResults,
+    state.editCharacters,
+    addEditCharacter,
+    name => openCreateCharacterDialog(name, "edit")
+);
+dom.editCharacterSearch.setAttribute("aria-autocomplete", "list");
+dom.editCharacterSearch.setAttribute("aria-controls", dom.editSearchResults.id);
+dom.editCharacterSearch.addEventListener("focus", () => {
+    if (dom.editCharacterSearch.value.trim()) loadEditCharacterSuggestions();
+});
+dom.editCharacterSearch.addEventListener("input", () => {
+    debounce("edit-search", loadEditCharacterSuggestions, 120);
+});
+dom.editCharacterSearch.addEventListener("keydown", event => {
+    if (event.key === "Escape") dom.editSearchResults.replaceChildren();
+});
+dom.editCharacterSearch.addEventListener("blur", () => {
+    window.setTimeout(() => dom.editSearchResults.replaceChildren(), 120);
+});
 dom.fileEditForm.addEventListener("submit", event => {
     event.preventDefault();
     saveFileMetadata();
@@ -3236,17 +3292,27 @@ dom.storyForm.addEventListener("submit", event => {
     event.preventDefault();
     submitStoryForm(false);
 });
-dom.storyTitleInput.addEventListener("input", () => debounce("story-preview", updateStoryDestinationPreview));
-dom.storyAiCheckbox.addEventListener("change", updateStoryDestinationPreview);
-dom.storyCharacterSearch.addEventListener("input", () => debounce("story-character-search", () => {
-    searchCharacterNames(
-        dom.storyCharacterSearch.value,
-        dom.storyCharacterResults,
-        state.storyCharacters,
-        addStoryCharacter,
-        name => openCreateCharacterDialog(name, "story")
-    );
-}));
+const loadStoryCharacterSuggestions = () => searchCharacterNames(
+    dom.storyCharacterSearch.value,
+    dom.storyCharacterResults,
+    state.storyCharacters,
+    addStoryCharacter,
+    name => openCreateCharacterDialog(name, "story")
+);
+dom.storyCharacterSearch.setAttribute("aria-autocomplete", "list");
+dom.storyCharacterSearch.setAttribute("aria-controls", dom.storyCharacterResults.id);
+dom.storyCharacterSearch.addEventListener("focus", () => {
+    if (dom.storyCharacterSearch.value.trim()) loadStoryCharacterSuggestions();
+});
+dom.storyCharacterSearch.addEventListener("input", () => {
+    debounce("story-character-search", loadStoryCharacterSuggestions, 120);
+});
+dom.storyCharacterSearch.addEventListener("keydown", event => {
+    if (event.key === "Escape") dom.storyCharacterResults.replaceChildren();
+});
+dom.storyCharacterSearch.addEventListener("blur", () => {
+    window.setTimeout(() => dom.storyCharacterResults.replaceChildren(), 120);
+});
 dom.storyCreateCharacter.addEventListener("click", () => openCreateCharacterDialog(dom.storyCharacterSearch.value, "story"));
 dom.sortStoryPages.addEventListener("click", sortStoryPagesByNumbers);
 dom.reverseStoryPages.addEventListener("click", reverseStoryPages);

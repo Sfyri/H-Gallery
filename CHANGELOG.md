@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.6.4
+
+- Alias dei personaggi mostrati su una riga separata.
+- Ricerca personaggi sovrapposta in Dettagli file e Crea storia.
+- Rimosso il pannello Destinazione automatica dall’organizzazione.
+- Rimosso il messaggio rapido “Caricamento personaggi”.
+
+## 1.6.3
+
+- Griglia Storie limitata a quattro pagine per riga.
+- Copertina su una riga separata e nomi file rimossi dalle pagine.
+- Allineati correttamente i checkbox IA e duplicati.
+- Rimosso il pannello della destinazione automatica.
+- Le pagine mancanti vengono segnalate senza bloccare il lettore o l’editor.
+
+## 1.6.2
+
+- New mantiene il punto di lavoro dopo organizzazione o cestino.
+- Viene mostrato il file successivo, oppure il precedente se era l’ultimo.
+
 ## 1.6.1
 
 - Anteprime della griglia senza sfondo a scacchi.

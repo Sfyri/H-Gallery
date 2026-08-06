@@ -738,6 +738,8 @@ def _hydrate_story_pages(connection, story_id: int) -> list[dict[str, Any]]:
     gallery_root = Path(load_config()["gallery_root"]).resolve()
     pages: list[dict[str, Any]] = []
     for row in rows:
+        absolute_path = gallery_root / str(row["relative_path"])
+        available = absolute_path.exists() and absolute_path.is_file()
         pages.append(
             {
                 "page_number": int(row["page_number"]),
@@ -749,6 +751,7 @@ def _hydrate_story_pages(connection, story_id: int) -> list[dict[str, Any]]:
                 "size": int(row["size"]),
                 "modified_at": float(row["modified_at"] or 0),
                 "ai_generated": bool(row["ai_generated"]),
+                "available": available,
                 "media_url": _media_url(str(row["relative_path"])),
                 "thumbnail_url": gallery_thumbnail_url(
                     int(row["id"]), int(row["size"]), float(row["modified_at"] or 0)
@@ -757,9 +760,7 @@ def _hydrate_story_pages(connection, story_id: int) -> list[dict[str, Any]]:
                     int(row["id"]), int(row["size"]), float(row["modified_at"] or 0),
                     str(row["media_type"]), str(row["extension"]),
                 ),
-                "has_transparency": image_has_transparency(
-                    gallery_root / str(row["relative_path"])
-                ),
+                "has_transparency": image_has_transparency(absolute_path) if available else False,
             }
         )
     return pages
