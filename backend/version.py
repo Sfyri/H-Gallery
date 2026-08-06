@@ -4,8 +4,8 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 PACKAGE_NAME = "h-gallery"
-DISPLAY_VERSION = "2.0.0-alpha.5"
-PACKAGE_VERSION = "2.0.0a5"
+DISPLAY_VERSION = "2.0.0-alpha.6"
+PACKAGE_VERSION = "2.0.0a6"
 
 
 def get_package_version() -> str:

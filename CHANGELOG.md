@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.0.0-alpha.6
+
+- README riscritto e ridotto per installazione, primo utilizzo e build.
+- Allineata la versione del progetto prima della pubblicazione su GitHub.
+
 ## 2.0.0-alpha.5
 
 - Corretto il rilevamento di Inno Setup quando è presente un solo percorso valido.

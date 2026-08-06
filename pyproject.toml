@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "h-gallery"
-version = "2.0.0a5"
+version = "2.0.0a6"
 description = "Galleria locale per organizzare immagini, video, personaggi, tag e storie."
 readme = "README.md"
 requires-python = ">=3.10"
