@@ -1,0 +1,27 @@
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(2, 0, 0, 5),
+    prodvers=(2, 0, 0, 5),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable(
+        '040904B0',
+        [StringStruct('CompanyName', 'Sfyri'),
+         StringStruct('FileDescription', 'H-Gallery'),
+         StringStruct('FileVersion', '2.0.0-alpha.5'),
+         StringStruct('InternalName', 'H-Gallery'),
+         StringStruct('LegalCopyright', 'Copyright (c) Sfyri'),
+         StringStruct('OriginalFilename', 'H-Gallery.exe'),
+         StringStruct('ProductName', 'H-Gallery'),
+         StringStruct('ProductVersion', '2.0.0-alpha.5')])
+    ]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)

@@ -1,9 +1,33 @@
 * text=auto
 
+# Script Windows
 *.bat text eol=crlf
+*.cmd text eol=crlf
+*.vbs text eol=crlf
+*.ps1 text eol=crlf
+
+# Codice e configurazioni multipiattaforma
 *.py text eol=lf
 *.js text eol=lf
 *.css text eol=lf
 *.html text eol=lf
 *.json text eol=lf
+*.toml text eol=lf
 *.md text eol=lf
+*.txt text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.ini text eol=lf
+*.spec text eol=lf
+*.iss text eol=lf
+
+# Risorse binarie
+*.ico binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.zip binary
+*.exe binary
+*.dll binary

@@ -198,6 +198,25 @@
             </div>
 
             <div class="settings-grid">
+                <section class="settings-card settings-card-wide">
+                    <div class="settings-card-heading">
+                        <div>
+                            <h3>Galleria attiva</h3>
+                            <p>Il programma e l'archivio possono trovarsi in cartelle diverse.</p>
+                        </div>
+                        <button id="refresh-galleries-button" type="button" class="secondary-button">Aggiorna dati</button>
+                    </div>
+                    <dl class="gallery-location-details">
+                        <div><dt>Nome</dt><dd id="active-gallery-name">—</dd></div>
+                        <div><dt>Percorso</dt><dd id="active-gallery-path">—</dd></div>
+                        <div><dt>Configurazione archivio</dt><dd id="active-gallery-config-path">—</dd></div>
+                        <div><dt>Cache</dt><dd id="active-gallery-cache-path">—</dd></div>
+                    </dl>
+                    <div id="registered-gallery-list" class="registered-gallery-list"></div>
+                    <p id="gallery-manager-status" class="status-message"></p>
+                    <small>Per aggiungere o cambiare archivio, chiudi H-Gallery e avvia <strong>Reconfigure.bat</strong>. La cartella selezionata diventerà attiva al riavvio.</small>
+                </section>
+
                 <section class="settings-card">
                     <h3>Archivio</h3>
                     <p>Rileggi la struttura delle serie e allinea il database ai file presenti sul disco.</p>

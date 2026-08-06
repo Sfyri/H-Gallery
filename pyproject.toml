@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "h-gallery"
+version = "2.0.0a5"
+description = "Galleria locale per organizzare immagini, video, personaggi, tag e storie."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  { name = "Sfyri" },
+]
+keywords = ["gallery", "images", "videos", "fastapi", "local"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Web Environment",
+  "Framework :: FastAPI",
+  "Intended Audience :: End Users/Desktop",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Multimedia :: Graphics :: Viewers",
+]
+dependencies = [
+  "fastapi[standard]>=0.115,<1",
+  "Pillow>=11,<13",
+  "pystray>=0.19.5,<1; platform_system == 'Windows'",
+]
+
+[project.urls]
+Homepage = "https://github.com/Sfyri/H-Gallery"
+Repository = "https://github.com/Sfyri/H-Gallery"
+Issues = "https://github.com/Sfyri/H-Gallery/issues"
+
+[project.scripts]
+h-gallery = "h_gallery_cli:main"
+h-gallery-launcher = "h_gallery_launcher:main"
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.2",
+]
+installer = [
+  "pyinstaller>=6.11,<7",
+]
+
+[tool.setuptools]
+include-package-data = true
+py-modules = ["main", "configure", "h_gallery_cli", "h_gallery_launcher"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["backend*", "frontend*"]
+exclude = ["cache*", "data*", "backups*"]
+
+[tool.setuptools.package-data]
+frontend = ["*.html", "*.css", "*.js"]
+"backend.resources" = ["*.json"]

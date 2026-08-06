@@ -2,193 +2,336 @@
 
 Galleria locale per organizzare, cercare e visualizzare raccolte di immagini e video suddivise per serie e personaggi.
 
-Il programma lavora esclusivamente sul computer dell'utente tramite `127.0.0.1`. Non carica i file su servizi esterni.
+Il programma lavora sul computer dell’utente tramite `127.0.0.1`. Non carica i file su servizi esterni.
+
+> **Versione 2.0.0-alpha.4** — quarta fase della nuova struttura: aggiunti la build autonoma Windows e lo script Inno Setup per produrre un normale installer `H-Gallery-Setup.exe`.
 
 ## Funzioni principali
 
 - galleria organizzata per serie e personaggi;
-- area **New** collegata alla cartella fisica `.toDo`;
-- organizzazione singola o multipla dei nuovi file;
-- ricerca e selezione di uno o più personaggi;
-- tag personalizzati e tag automatico `AI`;
+- area **New** collegata alla cartella `.toDo`;
+- organizzazione singola o multipla;
+- tag, artisti, alias e contenuti IA;
 - gestione di `.AI`, `!Multiple` e `!Crossovers`;
 - controllo dei duplicati identici tramite SHA-256;
-- cestino interno `.trash` con ripristino;
-- miniature WebP e anteprime animate per GIF e video;
-- classifica dei personaggi con punteggi `+1` e `-1`;
+- cestino interno `.trash`;
+- miniature e anteprime animate;
+- classifica dei personaggi;
 - backup, ripristino ed esportazione JSON;
-- codici delle serie generati automaticamente;
-- pulizia automatica delle cartelle vuote;
-- gestione di storie e manga con ordine delle pagine, copertina e lettore dedicato.
+- storie e manga con copertina, ordine, lettore e modifica delle pagine;
+- gestione di più gallerie indipendenti;
+- launcher Windows in background con icona nell’area di notifica;
+- build autonoma e installer Windows che non richiedono Python sul computer dell’utente.
 
-## Struttura obbligatoria e portabile
+## Struttura
 
-`.Script` deve trovarsi direttamente nella radice della galleria. H-Gallery usa sempre la cartella padre di `.Script`, quindi non salva più un percorso assoluto.
+Il programma e la galleria possono trovarsi in directory diverse.
+
+### Programma
+
+Esempio di installazione locale:
 
 ```text
-H-Gallery/
-├── .Script/             # codice, repository Git, ambiente Python e cache
-│   ├── backend/
-│   ├── frontend/
-│   ├── cache/           # miniature ricostruibili
-│   ├── config.json
-│   └── Start.bat
-├── .user/
-│   ├── data/            # database, tag, associazioni e punteggi
-│   └── backups/         # backup ed esportazioni
-├── .toDo/
-├── .trash/
-├── !Crossovers/
-└── cartelle delle serie/
-    └── Personaggio/
-        └── !Stories/
+D:\software\H-Gallery\.Script\
+├── backend\
+├── frontend\
+├── .venv\
+├── pyproject.toml
+├── H-Gallery.vbs
+├── Start.bat
+└── Reconfigure.bat
 ```
 
-La cartella principale può essere rinominata, spostata o trasferita su un'altra unità senza cambiare `config.json`, purché `.Script` resti direttamente al suo interno.
+Con `pipx` o `uv tool`, il programma viene installato nell’ambiente gestito dallo strumento e non deve restare dentro la galleria.
 
-## Installazione rapida
+### Galleria
 
-1. Crea o scegli la cartella principale della galleria.
-2. Estrai o clona il repository dentro una sottocartella chiamata `.Script`.
-3. Avvia `.Script/Install.bat`.
-4. Avvia `.Script/Start.bat`.
+```text
+E:\H-Gallery\
+├── .user\
+│   ├── config.json
+│   ├── data\
+│   └── backups\
+├── .toDo\
+├── .trash\
+├── !Crossovers\
+└── cartelle delle serie\
+```
 
-`Install.bat` rileva automaticamente la cartella padre, crea `.user`, `.toDo`, `.trash` e la configurazione locale.
+La cache ricostruibile viene salvata fuori dalla galleria. Su Windows si trova normalmente in `%LOCALAPPDATA%\H-Gallery\cache`.
 
-Per gli avvii successivi è sufficiente usare `Start.bat`.
+L’elenco delle gallerie registrate viene salvato in `%APPDATA%\H-Gallery\galleries.json`.
+
+## Aggiornamento dalla 2.0.0-alpha.3
+
+Per aggiornare l'installazione locale usata per lo sviluppo:
+
+1. arresta H-Gallery dall'icona nell'area di notifica;
+2. copia i file dell'aggiornamento nella cartella del programma;
+3. sostituisci i file esistenti;
+4. esegui nuovamente `Install.bat`;
+5. avvia `H-Gallery.vbs` e verifica la galleria attiva.
+
+Questa fase aggiunge gli strumenti per creare l'installer, ma non obbliga a sostituire subito l'installazione locale funzionante.
+
+## Installer Windows per l'utente finale
+
+La distribuzione creata nella fase 4 installa H-Gallery come normale applicazione in:
+
+```text
+%LOCALAPPDATA%\Programs\H-Gallery
+```
+
+L'utente finale non deve installare Python, eseguire file `.bat` o mantenere il progetto sorgente. L'installer crea collegamenti nel menu Start e può creare facoltativamente un collegamento sul desktop.
+
+L'installer e il disinstallatore non cancellano le gallerie, `.user`, `.toDo`, `.trash`, il registro delle gallerie, la cache o i log.
+
+## Creare `H-Gallery-Setup.exe`
+
+La compilazione deve essere eseguita su Windows. Servono:
+
+- l'ambiente locale preparato con `Install.bat`;
+- Inno Setup 6.
+
+Dalla cartella del programma esegui:
+
+```text
+Build-Windows-Installer.bat
+```
+
+Lo script installa PyInstaller nell'ambiente locale, crea l'applicazione autonoma e poi compila l'installer. Il risultato viene salvato in:
+
+```text
+dist\installer\H-Gallery-Setup-2.0.0-alpha.4.exe
+```
+
+Prima della pubblicazione, prova l'installer su un computer o una macchina virtuale Windows che non abbia Python e non contenga la cartella sorgente di H-Gallery.
+
+## Installazione locale su Windows
+
+Richiede Python 3.10 o successivo.
+
+1. estrai o clona il progetto in una cartella separata dalla galleria;
+2. esegui `Install.bat`;
+3. seleziona o crea una galleria se richiesto;
+4. usa `H-Gallery.vbs` per gli avvii normali;
+5. in alternativa usa `Start.bat`;
+6. usa `Reconfigure.bat` oppure **Cambia galleria...** dall’icona nell’area di notifica.
+
+## Launcher Windows
+
+Dopo l’avvio compare un’icona di H-Gallery vicino all’orologio di Windows. Il relativo menu contiene:
+
+- **Apri H-Gallery**;
+- **Apri cartella della galleria**;
+- **Cambia galleria...**;
+- **Apri cartella dei log**;
+- **Arresta H-Gallery**.
+
+Un secondo avvio non crea un altro server: riapre nel browser l’istanza già attiva.
+
+I log vengono salvati in:
+
+```text
+%LOCALAPPDATA%\H-Gallery\logs\h-gallery.log
+```
+
+Il file viene ruotato automaticamente per evitare una crescita illimitata.
+
+## Installazione standard con pipx
+
+Dalla cartella del progetto:
+
+```powershell
+pipx install .
+h-gallery launcher
+```
+
+Direttamente dal repository GitHub:
+
+```powershell
+pipx install "git+https://github.com/Sfyri/H-Gallery.git"
+h-gallery launcher
+```
+
+Aggiornamento da GitHub:
+
+```powershell
+pipx upgrade h-gallery
+```
+
+## Installazione standard con uv
+
+Installazione persistente:
+
+```powershell
+uv tool install "git+https://github.com/Sfyri/H-Gallery.git"
+h-gallery launcher
+```
+
+Aggiornamento:
+
+```powershell
+uv tool upgrade h-gallery
+```
+
+Esecuzione temporanea senza installazione permanente:
+
+```powershell
+uvx --from "git+https://github.com/Sfyri/H-Gallery.git" h-gallery
+```
+
+## Comando `h-gallery`
+
+Avvio tradizionale in primo piano:
+
+```powershell
+h-gallery
+h-gallery start
+```
+
+Avvio Windows in background:
+
+```powershell
+h-gallery launcher
+```
+
+Controllo del launcher:
+
+```powershell
+h-gallery open
+h-gallery status
+h-gallery stop
+```
+
+Opzioni del server tradizionale:
+
+```powershell
+h-gallery start --gallery "E:\H-Gallery"
+h-gallery start --no-browser
+h-gallery start --host 127.0.0.1 --port 8000
+```
+
+Gestione delle gallerie:
+
+```powershell
+h-gallery configure
+h-gallery configure --gallery "E:\H-Gallery"
+h-gallery configure --create "D:\Nuova Galleria"
+h-gallery list
+```
+
+Versione installata:
+
+```powershell
+h-gallery --version
+```
+
+## Linux
+
+Il pacchetto può essere installato nativamente con `pipx` o `uv tool`. Non è necessario Wine.
+
+Esempio:
+
+```bash
+uv tool install "git+https://github.com/Sfyri/H-Gallery.git"
+h-gallery
+```
+
+Su Linux il metodo principale rimane l’avvio da terminale. Il launcher con area di notifica di questa fase è rivolto a Windows.
+
+Per evitare l’apertura automatica del browser:
+
+```bash
+h-gallery start --no-browser
+```
+
+Se l’ambiente Linux non dispone di Tk, la prima configurazione usa una procedura testuale nel terminale.
+
+## Gestire più gallerie
+
+Il gestore permette di:
+
+- aggiungere una galleria esistente;
+- creare una nuova galleria;
+- scegliere quale usare al prossimo avvio;
+- rimuovere una voce dall’elenco senza cancellare i file.
+
+Esempio:
+
+```text
+E:\Galleria principale\
+D:\Galleria test\
+F:\Archivio vecchio\
+```
+
+Ogni galleria mantiene autonomamente `.user`, database, tag, artisti, storie, backup, `.toDo` e `.trash`.
+
+Con il launcher Windows, usa **Cambia galleria...** dal menu dell’icona. Il server viene riavviato automaticamente soltanto se la galleria attiva cambia.
+
+Con il comando installato:
+
+```powershell
+h-gallery configure
+h-gallery launcher
+```
 
 ## Primo utilizzo
 
-H-Gallery non importa automaticamente i file trascinati nella finestra del browser. Per aggiungere contenuti:
+H-Gallery non importa automaticamente i file trascinati nella finestra del browser.
 
-1. copia o sposta immagini e video nella cartella `.toDo`, situata accanto a `.Script`;
-2. avvia H-Gallery e apri la sezione **New**;
+1. copia o sposta immagini e video nella cartella `.toDo` della galleria attiva;
+2. apri la sezione **New**;
 3. seleziona uno o più file;
 4. usa **Organizza** o **Organizza insieme**;
-5. assegna almeno un personaggio, quindi conferma **Rinomina e sposta**.
+5. assegna almeno un personaggio e conferma **Rinomina e sposta**.
 
-Il programma creerà o userà le cartelle di serie e personaggi appropriate, rinominerà i file e li mostrerà nella galleria. Non è necessario creare manualmente una cartella di serie prima dell'organizzazione: serie e personaggi possono essere creati direttamente dall'interfaccia.
-
-Quando la galleria non contiene ancora file organizzati, la schermata principale mostra queste istruzioni e un pulsante per aprire **New**.
+Quando non esistono file organizzati, la schermata principale mostra una guida iniziale e un pulsante per aprire **New**.
 
 ## Trasferimento su un altro computer
 
-Conserva:
+Copia l’intera cartella della galleria, inclusi:
 
 - `.user`;
 - `.toDo` e `.trash`;
-- tutte le cartelle delle serie e i file multimediali.
+- cartelle delle serie e file multimediali.
 
-`.Script` può essere riscaricata dal repository. La cache in `.Script/cache` è facoltativa e può essere rigenerata.
+Sul nuovo computer installa H-Gallery e registra la cartella copiata con:
 
-Dopo aver scaricato nuovamente il repository dentro `.Script`, esegui `Install.bat` e poi `Start.bat`.
-
-## Migrazione dalle versioni precedenti
-
-Al primo avvio vengono spostati automaticamente:
-
-```text
-.Script/data      → .user/data
-.Script/backups   → .user/backups
+```powershell
+h-gallery configure --gallery "E:\H-Gallery"
 ```
 
-La cache resta in `.Script/cache`. `gallery_root`, se presente nel vecchio `config.json`, viene rimosso automaticamente senza alterare le altre impostazioni.
+Il registro delle gallerie può essere ricreato: i dati importanti restano nella cartella della galleria.
 
-## Codici automatici delle serie
+## Sviluppo e build
 
-Per una serie composta da più parole vengono usate le iniziali:
-
-```text
-The Legend of Zelda → TLOZ
-Super Mario         → SM
-Fire Emblem         → FE
-```
-
-Per una serie composta da una sola parola vengono usate le prime quattro consonanti:
-
-```text
-Konosuba → KNSB
-Pokémon  → PKMN
-Metroid  → MTRD
-```
-
-Se un codice è già occupato, viene aggiunto il primo suffisso disponibile: `SM`, `SM01`, `SM02`.
-
-I codici già presenti nel database non vengono modificati automaticamente.
-
-## Storie e manga
-
-Da **New** o dalla galleria puoi selezionare almeno due immagini e usare **Crea storia**.
-
-La schermata consente di:
-
-- riordinare le pagine trascinandole o assegnando numeri;
-- invertire l’ordine;
-- scegliere la copertina;
-- assegnare titolo, personaggi, tag, artista e stato IA;
-- scegliere la lettura da destra a sinistra oppure da sinistra a destra;
-- leggere la storia a pagina singola o con scorrimento verticale;
-- modificare successivamente ordine e metadati;
-- sciogliere la storia conservando tutte le immagini nella galleria normale.
-
-Le storie vengono salvate automaticamente in `!Stories`:
-
-```text
-Un personaggio:
-Serie/Personaggio/!Stories/Titolo/
-
-Più personaggi della stessa serie:
-Serie/!Multiple/!Stories/Titolo/
-
-Crossover:
-!Crossovers/!Stories/Titolo/
-```
-
-Per le storie IA, `!Stories` viene inserita dentro `.AI`. Le pagine ricevono nomi progressivi come `FECharlotte_Titolo_001.png`.
-
-## Requisiti
-
-- Windows 10 o Windows 11;
-- Python 3.10 o successivo;
-- FFmpeg facoltativo, necessario solo per le anteprime animate dei video.
-
-## File locali non pubblicati su GitHub
-
-Questi elementi sono locali:
-
-```text
-config.json
-.venv/
-cache/
-```
-
-`data` e `backups` non si trovano nel repository: sono conservati nella cartella sorella `.user`.
-
-`config.example.json` è il modello pubblico usato per creare o aggiornare `config.json`.
-
-## Configurazione
-
-`config.json` contiene solo i nomi delle cartelle speciali e altre preferenze. Non contiene il percorso della galleria.
-
-`Reconfigure.bat` aggiorna la configurazione usando i valori disponibili senza chiedere una directory.
-
-## Avvio manuale per lo sviluppo
-
-Da `.Script`:
+Installazione modificabile:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-python configure.py
-fastapi dev main.py
+python -m pip install --editable ".[dev]"
+h-gallery --version
 ```
 
-Poi apri `http://127.0.0.1:8000`.
+Creazione dei pacchetti `wheel` e `sdist`:
+
+```powershell
+python -m build
+```
+
+Creazione dell'installer Windows:
+
+```text
+Build-Windows-Installer.bat
+```
+
+I pacchetti Python e l'installer vengono creati nelle sottocartelle di `dist`. La documentazione specifica della build Windows è in `packaging/windows/README.md`.
 
 ## FFmpeg
 
-FFmpeg è facoltativo. Senza FFmpeg la galleria funziona normalmente, ma i video non mostrano l'anteprima animata al passaggio del mouse.
+FFmpeg è facoltativo. Senza FFmpeg la galleria funziona normalmente, ma i video non mostrano l’anteprima animata al passaggio del mouse.
 
 ```powershell
 ffmpeg -version
@@ -197,19 +340,12 @@ ffmpeg -version
 ## Sicurezza
 
 - conserva una copia esterna delle immagini e dei video;
-- crea periodicamente backup dall'applicazione;
-- durante un trasferimento non dimenticare `.user/data/gallery.db`;
-- non pubblicare `config.json`, `.user`, `.venv` o la cache.
+- crea periodicamente backup dall’applicazione;
+- non cancellare `.user/data/gallery.db`;
+- rimuovere una galleria dal gestore non elimina mai i suoi file;
+- prima di eliminare una vecchia copia del programma, verifica che la nuova installazione apra correttamente la galleria;
+- usa **Arresta H-Gallery** dall’icona prima di aggiornare i file del programma.
 
 ## Licenza
 
 Distribuito con licenza MIT. Consulta `LICENSE`.
-
-### Tag, artisti e alias
-
-- I tag generali sono mostrati in arancione.
-- Il tag automatico `AI` è mostrato in verde.
-- Gli artisti si inseriscono nel campo dedicato facoltativo e sono mostrati in viola.
-- Tag e artisti già utilizzati vengono suggeriti durante la digitazione.
-- Ogni personaggio può avere più alias, usati dalla ricerca senza cambiare il nome della cartella o dei file.
-

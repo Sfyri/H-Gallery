@@ -1,5 +1,51 @@
 # Changelog
 
+## 2.0.0-alpha.5
+
+- Corretto il rilevamento di Inno Setup quando è presente un solo percorso valido.
+- Evitato che PowerShell interpreti soltanto la lettera `C` come comando durante la build Windows.
+
+## 2.0.0-alpha.4
+
+- Aggiunta la configurazione PyInstaller per creare un'applicazione Windows autonoma senza Python installato.
+- Aggiunta la configurazione Inno Setup per generare `H-Gallery-Setup-<versione>.exe`.
+- Aggiunti collegamenti per avvio, configurazione delle gallerie e arresto dal menu Start.
+- L'installer usa un'installazione per utente, non richiede privilegi amministrativi e non modifica le gallerie.
+- Aggiunto `Build-Windows-Installer.bat` con generazione automatica di icona e metadati di versione.
+- Il launcher riconosce l'esecuzione PyInstaller e riavvia o apre la configurazione usando lo stesso eseguibile.
+- La disinstallazione arresta il server ma conserva gallerie, configurazione, cache e log.
+
+## 2.0.0-alpha.3
+
+- Aggiunto il launcher Windows in background senza terminale persistente.
+- Aggiunta un’icona nell’area di notifica con apertura, cartella galleria, cambio archivio, log e arresto.
+- Impedito l’avvio di più istanze: un secondo avvio riapre la finestra nel browser.
+- Aggiunti i comandi `h-gallery launcher`, `open`, `stop` e `status`.
+- Aggiunti `H-Gallery.vbs` e `Stop-H-Gallery.vbs` per l’avvio e l’arresto senza console.
+- Aggiunto un log rotante in `%LOCALAPPDATA%\H-Gallery\logs`.
+- Aggiornato `Start.bat` per avviare il nuovo launcher e chiudere subito il terminale.
+
+## 2.0.0-alpha.2
+
+- Aggiunto `pyproject.toml` con pacchetto Python standard e dipendenze dichiarate.
+- Aggiunto il comando multipiattaforma `h-gallery` per avvio, configurazione ed elenco delle gallerie.
+- Supportate installazioni con `pipx`, `uv tool`, `uvx` e `pip`.
+- Inclusi frontend e configurazione predefinita nel pacchetto installato.
+- Aggiornati `Install.bat`, `Start.bat` e `Reconfigure.bat` per usare il comando installato.
+- Centralizzata la versione usata da API e manifest dei backup.
+- Mantenuta la compatibilità con l'installazione locale nella cartella del programma.
+
+## 2.0.0-alpha.1
+
+- Separato il percorso del programma da quello della galleria.
+- Aggiunto un registro utente delle gallerie con archivio attivo.
+- Aggiunta la creazione, registrazione e selezione di più gallerie tramite `Reconfigure.bat`.
+- Spostata la configurazione specifica dell'archivio in `.user/config.json`.
+- Spostata la cache ricostruibile nella cartella locale dell'utente e separata per galleria.
+- Mantenuta la rilevazione automatica della vecchia struttura `.Script` per la prima migrazione.
+- Aggiunto il riepilogo della galleria attiva nella pagina Impostazioni.
+- Aggiornati avvio, installazione e README per la nuova struttura.
+
 ## 1.7.1
 
 - Aggiunta una guida iniziale mostrata solo quando la galleria non contiene file organizzati.

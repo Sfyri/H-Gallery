@@ -14,10 +14,10 @@ from urllib.parse import quote
 from PIL import Image, ImageDraw, ImageOps, ImageSequence
 
 from backend.database import get_connection
+from backend.paths import CACHE_ROOT as APP_CACHE_ROOT
 from backend.scanner import get_media_type, list_todo_files, load_config
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-CACHE_ROOT = PROJECT_ROOT / "cache" / "thumbnails"
+CACHE_ROOT = APP_CACHE_ROOT / "thumbnails"
 THUMBNAIL_SIZE = 512
 THUMBNAIL_QUALITY = 80
 CACHE_VERSION = 1

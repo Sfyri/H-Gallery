@@ -14,6 +14,13 @@ const dom = {
     trashBadge: byId("trash-badge"),
     archiveSyncButton: byId("archive-sync-button"),
     folderSyncButton: byId("folder-sync-button"),
+    activeGalleryName: byId("active-gallery-name"),
+    activeGalleryPath: byId("active-gallery-path"),
+    activeGalleryConfigPath: byId("active-gallery-config-path"),
+    activeGalleryCachePath: byId("active-gallery-cache-path"),
+    registeredGalleryList: byId("registered-gallery-list"),
+    galleryManagerStatus: byId("gallery-manager-status"),
+    refreshGalleriesButton: byId("refresh-galleries-button"),
 
     manualBackupCount: byId("manual-backup-count"),
     automaticBackupCount: byId("automatic-backup-count"),
@@ -604,6 +611,7 @@ function showView(viewName) {
     if (viewName === "trash") loadTrashItems();
     if (viewName === "ranking") loadRanking();
     if (viewName === "settings") {
+        loadGalleryConfiguration();
         loadCacheStats();
         loadBackups();
     }
@@ -2387,6 +2395,59 @@ async function loadRanking() {
     }
 }
 
+function renderGalleryConfiguration(data) {
+    const active = data.active_gallery || {};
+    dom.activeGalleryName.textContent = active.name || "—";
+    dom.activeGalleryPath.textContent = active.path || "—";
+    dom.activeGalleryConfigPath.textContent = data.gallery_config_path || "—";
+    dom.activeGalleryCachePath.textContent = data.cache_path || "—";
+
+    dom.registeredGalleryList.replaceChildren();
+    const galleries = Array.isArray(data.results) ? data.results : [];
+    if (!galleries.length) {
+        const empty = document.createElement("p");
+        empty.className = "empty-message";
+        empty.textContent = "Nessuna galleria registrata.";
+        dom.registeredGalleryList.appendChild(empty);
+        return;
+    }
+
+    for (const gallery of galleries) {
+        const row = document.createElement("article");
+        row.className = "registered-gallery-item";
+        if (gallery.active) row.classList.add("active");
+
+        const info = document.createElement("div");
+        const title = document.createElement("strong");
+        title.textContent = gallery.name;
+        const path = document.createElement("span");
+        path.textContent = gallery.path;
+        info.append(title, path);
+
+        const status = document.createElement("span");
+        status.className = "registered-gallery-status";
+        status.textContent = gallery.active
+            ? "Attiva"
+            : (gallery.available ? "Registrata" : "Non disponibile");
+        row.append(info, status);
+        dom.registeredGalleryList.appendChild(row);
+    }
+}
+
+async function loadGalleryConfiguration() {
+    dom.refreshGalleriesButton.disabled = true;
+    setStatus(dom.galleryManagerStatus, "Lettura delle gallerie...");
+    try {
+        const data = await readJson(await fetch("/api/settings/galleries"));
+        renderGalleryConfiguration(data);
+        setStatus(dom.galleryManagerStatus, "");
+    } catch (error) {
+        setStatus(dom.galleryManagerStatus, error.message);
+    } finally {
+        dom.refreshGalleriesButton.disabled = false;
+    }
+}
+
 function setBackupButtonsDisabled(disabled) {
     dom.refreshBackupsButton.disabled = disabled;
     dom.createBackupButton.disabled = disabled;
@@ -3602,6 +3663,7 @@ document.addEventListener("keydown", event => {
 dom.rankingFilter.addEventListener("change", loadRanking);
 dom.archiveSyncButton.addEventListener("click", synchronizeArchive);
 dom.folderSyncButton.addEventListener("click", syncFolders);
+dom.refreshGalleriesButton.addEventListener("click", loadGalleryConfiguration);
 dom.refreshBackupsButton.addEventListener("click", loadBackups);
 dom.createBackupButton.addEventListener("click", createManualBackup);
 dom.exportMetadataButton.addEventListener("click", exportMetadata);

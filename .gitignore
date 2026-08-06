@@ -1,6 +1,7 @@
 # Configurazione personale
 config.json
 .env
+.env.*
 
 # Ambiente Python
 .venv/
@@ -19,6 +20,19 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Packaging Python
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# Runtime e launcher
+*.pid
+*.lock
 
 # Editor
 .vscode/
@@ -31,5 +45,6 @@ Desktop.ini
 
 # Log e file temporanei
 *.log
+*.log.*
 *.tmp
 *.bak

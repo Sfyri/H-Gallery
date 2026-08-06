@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from backend.app_config import list_galleries
 from backend.database import init_database
 from backend.backups import (
     create_automatic_backup,
@@ -67,6 +68,9 @@ from backend.thumbnails import (
     get_trash_source,
     regenerate_cache,
 )
+from backend.paths import CACHE_ROOT, CONFIG_PATH, GALLERY_ID, GALLERY_NAME, GALLERY_ROOT, SCRIPT_ROOT
+from backend.version import get_display_version
+from frontend import FRONTEND_ROOT
 from backend.scanner import (
     create_character,
     create_franchise,
@@ -82,8 +86,6 @@ from backend.scanner import (
     update_character_aliases,
 )
 
-PROJECT_ROOT = Path(__file__).resolve().parent
-FRONTEND_ROOT = PROJECT_ROOT / "frontend"
 
 
 class OrganizeRequest(BaseModel):
@@ -201,7 +203,7 @@ async def lifespan(_: FastAPI):
 app = FastAPI(
     title="H-Gallery",
     description="Galleria locale per immagini e video",
-    version="1.7.0",
+    version=get_display_version(),
     lifespan=lifespan,
 )
 
@@ -760,6 +762,24 @@ def trash_animated_preview(trash_id: int):
         raise HTTPException(status_code=404, detail=str(error)) from error
     except (ValueError, PermissionError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.get("/api/settings/galleries")
+def gallery_configuration_status():
+    data = list_galleries(script_root=SCRIPT_ROOT)
+    data.update(
+        {
+            "active_gallery": {
+                "id": GALLERY_ID,
+                "name": GALLERY_NAME,
+                "path": str(GALLERY_ROOT),
+            },
+            "gallery_config_path": str(CONFIG_PATH),
+            "cache_path": str(CACHE_ROOT),
+            "restart_required_to_switch": True,
+        }
+    )
+    return data
 
 
 @app.get("/api/settings/cache")

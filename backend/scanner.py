@@ -13,7 +13,12 @@ from urllib.parse import quote
 from PIL import Image, ImageSequence, UnidentifiedImageError
 
 from backend.database import get_connection
-from backend.paths import CONFIG_PATH, GALLERY_ROOT, ensure_user_layout, migrate_legacy_user_storage
+from backend.paths import (
+    CONFIG_PATH,
+    GALLERY_ROOT,
+    ensure_user_layout,
+    migrate_legacy_user_storage,
+)
 
 IMAGE_EXTENSIONS = {
     ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff",
@@ -31,29 +36,33 @@ INVALID_WINDOWS_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1F]')
 
 
 def load_config() -> dict[str, Any]:
-    """Legge le impostazioni e ricava automaticamente la radice della galleria.
+    """Legge le preferenze della galleria attiva.
 
-    `.Script` deve trovarsi direttamente dentro la cartella principale. Il
-    percorso assoluto non viene più salvato in config.json, così l'intero
-    archivio può essere spostato o rinominato senza riconfigurazione.
+    Il percorso dell'archivio è gestito dalla configurazione dell'applicazione,
+    mentre le preferenze specifiche della galleria sono conservate in
+    ``.user/config.json`` dentro l'archivio stesso.
     """
+
+    migrate_legacy_user_storage()
+    ensure_user_layout()
 
     if not CONFIG_PATH.exists():
         raise FileNotFoundError(
-            "File config.json non trovato. Avvia Install.bat oppure configure.py "
-            f"per configurare H-Gallery: {CONFIG_PATH}"
+            "Configurazione della galleria non trovata. Avvia configure.py o "
+            f"Reconfigure.bat: {CONFIG_PATH}"
         )
 
     with CONFIG_PATH.open("r", encoding="utf-8") as config_file:
         config = json.load(config_file)
 
     if not isinstance(config, dict):
-        raise ValueError("config.json non contiene un oggetto JSON valido.")
+        raise ValueError("La configurazione della galleria non è valida.")
 
-    # Migrazione non distruttiva dalle versioni che salvavano un percorso
-    # assoluto. Le altre impostazioni e i codici già presenti restano invariati.
-    if "gallery_root" in config:
+    # Il percorso assoluto appartiene al registro dell'applicazione e non alla
+    # configurazione portabile dell'archivio.
+    if "gallery_root" in config or "script_folder" in config:
         config.pop("gallery_root", None)
+        config.pop("script_folder", None)
         temporary_path = CONFIG_PATH.with_suffix(".json.tmp")
         temporary_path.write_text(
             json.dumps(config, ensure_ascii=False, indent=2) + "\n",
@@ -62,12 +71,7 @@ def load_config() -> dict[str, Any]:
         temporary_path.replace(CONFIG_PATH)
 
     if not GALLERY_ROOT.exists() or not GALLERY_ROOT.is_dir():
-        raise NotADirectoryError(
-            f"La cartella padre di .Script non è accessibile: {GALLERY_ROOT}"
-        )
-
-    migrate_legacy_user_storage()
-    ensure_user_layout()
+        raise NotADirectoryError(f"La galleria non è accessibile: {GALLERY_ROOT}")
 
     runtime_config = dict(config)
     runtime_config["gallery_root"] = str(GALLERY_ROOT)

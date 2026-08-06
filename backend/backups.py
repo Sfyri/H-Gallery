@@ -14,9 +14,9 @@ from backend.paths import (
     BACKUPS_ROOT,
     CONFIG_PATH,
     DATA_ROOT,
-    SCRIPT_ROOT,
     migrate_legacy_user_storage,
 )
+from backend.version import get_display_version
 
 
 migrate_legacy_user_storage()
@@ -87,11 +87,7 @@ def _database_backup(destination: Path) -> None:
 
 
 def _read_version() -> str:
-    version_path = SCRIPT_ROOT / "VERSION.txt"
-    try:
-        return version_path.read_text(encoding="utf-8").strip() or "sconosciuta"
-    except OSError:
-        return "sconosciuta"
+    return get_display_version()
 
 
 def _write_manifest(
@@ -282,7 +278,7 @@ def restore_backup(backup_id: str, confirmation: str) -> dict[str, Any]:
 
     DATA_ROOT.mkdir(parents=True, exist_ok=True)
     restore_database = DATA_ROOT / f".restore_{_timestamp()}.db"
-    restore_config = SCRIPT_ROOT / f".restore_{_timestamp()}.json"
+    restore_config = CONFIG_PATH.parent / f".restore_{_timestamp()}.json"
     shutil.copy2(source_database, restore_database)
     if source_config.exists():
         shutil.copy2(source_config, restore_config)

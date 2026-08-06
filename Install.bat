@@ -37,24 +37,24 @@ if not exist ".venv\Scripts\python.exe" (
 )
 
 echo.
-echo Installazione delle dipendenze...
-".venv\Scripts\python.exe" -m pip install --upgrade pip
+echo Aggiornamento degli strumenti di installazione...
+".venv\Scripts\python.exe" -m pip install --upgrade pip setuptools wheel
 if errorlevel 1 goto installation_error
 
-".venv\Scripts\python.exe" -m pip install -r requirements.txt
+echo.
+echo Installazione del pacchetto H-Gallery...
+".venv\Scripts\python.exe" -m pip install --editable .
 if errorlevel 1 goto installation_error
 
-if not exist "config.json" (
-    echo.
-    echo Configurazione iniziale...
-    ".venv\Scripts\python.exe" configure.py
-    if errorlevel 1 goto installation_error
-)
+echo.
+echo Configurazione della galleria...
+".venv\Scripts\h-gallery.exe" configure --ensure
+if errorlevel 1 goto installation_error
 
 echo.
 echo ========================================
 echo Installazione completata.
-echo Avvia il programma con Start.bat.
+echo Avvia il programma con H-Gallery.vbs oppure Start.bat.
 echo ========================================
 echo.
 pause
