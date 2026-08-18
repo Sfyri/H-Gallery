@@ -26,7 +26,6 @@ class MainActivity : FlutterActivity() {
     private var pendingPickerResult: MethodChannel.Result? = null
     private var pendingGalleryName: String = ""
     private var mediaBridge: GalleryMediaBridge? = null
-    private var syncBridge: GallerySyncBridge? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -34,8 +33,6 @@ class MainActivity : FlutterActivity() {
             .setMethodCallHandler(::handleMethodCall)
         mediaBridge?.dispose()
         mediaBridge = GalleryMediaBridge(this, flutterEngine.dartExecutor.binaryMessenger)
-        syncBridge?.dispose()
-        syncBridge = GallerySyncBridge(this, flutterEngine.dartExecutor.binaryMessenger)
     }
 
     private fun handleMethodCall(call: MethodCall, result: MethodChannel.Result) {
@@ -89,8 +86,6 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
-        syncBridge?.dispose()
-        syncBridge = null
         mediaBridge?.dispose()
         mediaBridge = null
         super.onDestroy()

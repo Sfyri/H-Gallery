@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>H-Gallery · Collega Android</title>
+  <style>
+    :root{color-scheme:dark;font-family:Inter,system-ui,sans-serif;background:#0e1014;color:#f3f5f7}
+    body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;box-sizing:border-box}
+    main{width:min(720px,100%);background:#171a20;border:1px solid #2a303a;border-radius:22px;padding:28px;box-sizing:border-box}
+    h1{margin:0 0 8px;font-size:28px} p{color:#aeb6c2;line-height:1.55}
+    .code{font-size:48px;font-weight:800;letter-spacing:.18em;margin:26px 0 8px;font-variant-numeric:tabular-nums}
+    .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.pill{padding:7px 11px;border-radius:999px;background:#222731;color:#b9c3d1;font-size:13px}
+    button{border:0;border-radius:12px;padding:11px 15px;font-weight:700;cursor:pointer;background:#738cff;color:white}
+    section{margin-top:28px;padding-top:22px;border-top:1px solid #2a303a} ul{padding-left:20px;color:#d8dde5}.muted{color:#8f99a8;font-size:13px}.error{color:#ff8e8e}
+  </style>
+</head>
+<body>
+<main>
+  <h1>Collega H-Gallery Android</h1>
+  <p>Apri H-Gallery sul telefono, premi <strong>Collega PC</strong>, scegli questo computer e inserisci il codice qui sotto.</p>
+  <div id="code" class="code">------</div>
+  <div class="row"><span id="expiry" class="pill">Caricamento…</span><button id="refresh">Nuovo codice</button></div>
+  <p class="muted">Il codice cambia automaticamente dopo 5 minuti e dopo ogni nuova associazione.</p>
+  <section>
+    <h2>Dispositivi associati</h2>
+    <ul id="devices"><li>Nessun dispositivo.</li></ul>
+    <p id="error" class="error"></p>
+  </section>
+</main>
+<script>
+let expiresAt=0;
+async function load(){
+  try{
+    const r=await fetch('/api/mobile/pairing',{cache:'no-store'}); if(!r.ok) throw new Error('HTTP '+r.status);
+    const d=await r.json(); document.getElementById('code').textContent=d.code; expiresAt=d.expires_at*1000;
+    const ul=document.getElementById('devices'); ul.innerHTML='';
+    if(!d.devices.length){ul.innerHTML='<li>Nessun dispositivo.</li>'}
+    else d.devices.forEach(x=>{const li=document.createElement('li'); li.textContent=x.name+' · '+x.device_id; ul.appendChild(li)});
+    document.getElementById('error').textContent='';
+  }catch(e){document.getElementById('error').textContent='Impossibile leggere lo stato M6: '+e}
+}
+function tick(){const s=Math.max(0,Math.ceil((expiresAt-Date.now())/1000)); document.getElementById('expiry').textContent='Scade tra '+Math.floor(s/60)+':'+String(s%60).padStart(2,'0'); if(s===0) load();}
+document.getElementById('refresh').onclick=async()=>{await fetch('/api/mobile/pairing/refresh',{method:'POST'});await load()};
+load(); setInterval(tick,1000); setInterval(load,10000);
+</script>
+</body>
+</html>

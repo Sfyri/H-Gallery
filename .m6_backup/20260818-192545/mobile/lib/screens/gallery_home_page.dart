@@ -5,7 +5,6 @@ import '../models/gallery_profile.dart';
 import '../services/gallery_bridge.dart';
 import '../theme/app_theme.dart';
 import 'gallery_ready_page.dart';
-import 'device_connection_page.dart';
 
 class GalleryHomePage extends StatefulWidget {
   const GalleryHomePage({required this.galleryService, super.key});
@@ -164,12 +163,6 @@ class _GalleryHomePageState extends State<GalleryHomePage> {
     );
   }
 
-  void _openDeviceConnection() {
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(builder: (_) => const DeviceConnectionPage()),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -185,16 +178,6 @@ class _GalleryHomePageState extends State<GalleryHomePage> {
                   child: _Header(
                     busy: _working,
                     onAdd: _working ? null : _addGallery,
-                  ),
-                ),
-              ),
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-                sliver: SliverToBoxAdapter(
-                  child: OutlinedButton.icon(
-                    onPressed: _openDeviceConnection,
-                    icon: const Icon(Icons.devices_rounded),
-                    label: const Text('Collega PC'),
                   ),
                 ),
               ),

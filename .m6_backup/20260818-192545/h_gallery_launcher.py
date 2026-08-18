@@ -18,7 +18,7 @@ from backend.app_config import get_active_gallery, get_user_cache_root, get_user
 from backend.version import get_display_version
 from configure import ensure_configuration
 
-DEFAULT_HOST = "0.0.0.0"
+DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
 CONTROL_STATE_PATH = get_user_config_root() / "launcher.json"
 CONTROL_LOCK_PATH = get_user_config_root() / "launcher.lock"
