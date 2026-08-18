@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from typing import Iterator
 
 from backend.paths import DATA_ROOT, migrate_legacy_user_storage
+from backend.sync_foundation import initialize_sync_schema
 
 
 migrate_legacy_user_storage()
@@ -29,7 +30,6 @@ def ensure_tag(
     Se un tag generale viene inserito nel campo Artista, viene promosso ad
     artista mantenendo lo stesso ID e tutte le associazioni esistenti.
     """
-
     cleaned = normalize_tag_name(name)
     if not cleaned:
         raise ValueError("Il nome del tag non può essere vuoto.")
@@ -40,7 +40,6 @@ def ensure_tag(
 
     if cleaned.casefold() == "ai":
         normalized_type = "system"
-
     row = connection.execute(
         "SELECT id, name, type FROM tags WHERE name = ? COLLATE NOCASE",
         (cleaned,),
@@ -52,7 +51,6 @@ def ensure_tag(
             (cleaned, normalized_type),
         )
         return int(cursor.lastrowid), cleaned, normalized_type
-
     current_type = str(row["type"] or "general")
     final_type = current_type
     if current_type == "general" and normalized_type in {"artist", "system"}:
@@ -95,7 +93,6 @@ def init_database() -> None:
 
     La funzione è compatibile con i database creati dalle versioni 0.3 e 0.4.
     """
-
     with get_connection() as connection:
         connection.executescript(
             """
@@ -109,7 +106,6 @@ def init_database() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_franchises_code
             ON franchises(code);
-
             CREATE TABLE IF NOT EXISTS characters (
                 id INTEGER PRIMARY KEY,
                 franchise_id INTEGER NOT NULL,
@@ -120,10 +116,8 @@ def init_database() -> None:
                 FOREIGN KEY(franchise_id) REFERENCES franchises(id),
                 UNIQUE(franchise_id, name)
             );
-
             CREATE INDEX IF NOT EXISTS idx_characters_franchise
             ON characters(franchise_id, is_active);
-
             CREATE TABLE IF NOT EXISTS files (
                 id INTEGER PRIMARY KEY,
                 filename TEXT NOT NULL,
@@ -137,7 +131,6 @@ def init_database() -> None:
                 added_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 is_trashed INTEGER NOT NULL DEFAULT 0
             );
-
             CREATE INDEX IF NOT EXISTS idx_files_sha256
             ON files(sha256);
 
@@ -150,7 +143,6 @@ def init_database() -> None:
                 type TEXT NOT NULL DEFAULT 'general'
                     CHECK(type IN ('general', 'artist', 'system'))
             );
-
             CREATE TABLE IF NOT EXISTS character_aliases (
                 id INTEGER PRIMARY KEY,
                 character_id INTEGER NOT NULL,
@@ -161,7 +153,6 @@ def init_database() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_character_aliases_alias
             ON character_aliases(alias);
-
             CREATE TABLE IF NOT EXISTS file_characters (
                 file_id INTEGER NOT NULL,
                 character_id INTEGER NOT NULL,
@@ -172,7 +163,6 @@ def init_database() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_file_characters_character
             ON file_characters(character_id, file_id);
-
             CREATE TABLE IF NOT EXISTS file_tags (
                 file_id INTEGER NOT NULL,
                 tag_id INTEGER NOT NULL,
@@ -183,7 +173,6 @@ def init_database() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_file_tags_tag
             ON file_tags(tag_id, file_id);
-
             CREATE TABLE IF NOT EXISTS stories (
                 id INTEGER PRIMARY KEY,
                 title TEXT NOT NULL,
@@ -199,10 +188,8 @@ def init_database() -> None:
                 metadata_mode TEXT NOT NULL DEFAULT 'page_union',
                 FOREIGN KEY(cover_file_id) REFERENCES files(id) ON DELETE SET NULL
             );
-
             CREATE INDEX IF NOT EXISTS idx_stories_active_updated
             ON stories(is_active, updated_at DESC);
-
             CREATE TABLE IF NOT EXISTS story_pages (
                 story_id INTEGER NOT NULL,
                 file_id INTEGER NOT NULL UNIQUE,
@@ -211,7 +198,6 @@ def init_database() -> None:
                 FOREIGN KEY(story_id) REFERENCES stories(id) ON DELETE CASCADE,
                 FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
             );
-
             CREATE INDEX IF NOT EXISTS idx_story_pages_file
             ON story_pages(file_id);
 
@@ -222,7 +208,6 @@ def init_database() -> None:
                 FOREIGN KEY(story_id) REFERENCES stories(id) ON DELETE CASCADE,
                 FOREIGN KEY(character_id) REFERENCES characters(id)
             );
-
             CREATE INDEX IF NOT EXISTS idx_story_characters_character
             ON story_characters(character_id, story_id);
 
@@ -233,7 +218,6 @@ def init_database() -> None:
                 FOREIGN KEY(story_id) REFERENCES stories(id) ON DELETE CASCADE,
                 FOREIGN KEY(tag_id) REFERENCES tags(id)
             );
-
             CREATE INDEX IF NOT EXISTS idx_story_tags_tag
             ON story_tags(tag_id, story_id);
 
@@ -244,7 +228,6 @@ def init_database() -> None:
                 destination_relative_path TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
-
             CREATE TABLE IF NOT EXISTS trash_items (
                 id INTEGER PRIMARY KEY,
                 file_id INTEGER UNIQUE,
@@ -259,12 +242,10 @@ def init_database() -> None:
                 deleted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
             );
-
             CREATE INDEX IF NOT EXISTS idx_trash_deleted
             ON trash_items(deleted_at DESC);
             """
         )
-
         # Migrazione dei database creati dalla v0.4, nei quali modified_at
         # non era ancora presente.
         file_columns = _column_names(connection, "files")
@@ -276,7 +257,6 @@ def init_database() -> None:
             connection.execute(
                 "ALTER TABLE files ADD COLUMN is_trashed INTEGER NOT NULL DEFAULT 0"
             )
-
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_files_modified ON files(modified_at DESC)"
         )
@@ -286,7 +266,6 @@ def init_database() -> None:
             connection.execute(
                 "ALTER TABLE stories ADD COLUMN metadata_mode TEXT NOT NULL DEFAULT 'legacy'"
             )
-
         tag_columns = _column_names(connection, "tags")
         if "type" not in tag_columns:
             connection.execute(
@@ -299,3 +278,7 @@ def init_database() -> None:
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_tags_type ON tags(type, name)"
         )
+
+        # Fondamenta della sincronizzazione multi-device. La migrazione è
+        # non distruttiva e non abilita ancora alcun trasferimento di rete.
+        initialize_sync_schema(connection)

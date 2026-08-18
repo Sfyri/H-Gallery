@@ -13,6 +13,7 @@ from backend.app_config import list_galleries, register_gallery
 from backend.version import get_display_version
 from configure import configure_gallery, ensure_configuration, run_gallery_manager
 
+
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
 
@@ -29,7 +30,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     subparsers = parser.add_subparsers(dest="command")
-
     start = subparsers.add_parser("start", help="avvia il server locale")
     start.add_argument("--gallery", type=Path, help="galleria da usare per questo avvio")
     start.add_argument("--host", default=DEFAULT_HOST, help="indirizzo del server")
@@ -39,7 +39,6 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="non apre automaticamente il browser",
     )
-
     configure = subparsers.add_parser(
         "configure",
         help="apre il gestore delle gallerie",
@@ -59,8 +58,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="verifica la galleria attiva senza aprire il gestore se è già valida",
     )
-
     subparsers.add_parser("list", help="elenca le gallerie configurate")
+    subparsers.add_parser(
+        "sync-check",
+        help="verifica le fondamenta locali della futura sincronizzazione",
+    )
     subparsers.add_parser("launcher", help="avvia H-Gallery in background con icona nell'area di notifica")
     subparsers.add_parser("open", help="apre nel browser il launcher già attivo")
     subparsers.add_parser("stop", help="arresta il launcher già attivo")
@@ -74,7 +76,19 @@ def _normalize_legacy_arguments(argv: Sequence[str]) -> list[str]:
     args = list(argv)
     if not args:
         return ["start"]
-    if args[0] in {"start", "configure", "list", "launcher", "open", "stop", "status", "-h", "--help", "--version"}:
+    if args[0] in {
+        "start",
+        "configure",
+        "list",
+        "sync-check",
+        "launcher",
+        "open",
+        "stop",
+        "status",
+        "-h",
+        "--help",
+        "--version",
+    }:
         return args
     return ["start", *args]
 
@@ -117,7 +131,6 @@ def _start_server(args: argparse.Namespace) -> int:
     # backend.paths risolve i percorsi dell'archivio durante l'importazione.
     import uvicorn
     from main import app
-
     print(f"H-Gallery {get_display_version()}")
     print(f"Galleria attiva: {entry['name']} — {entry['path']}")
     print(f"Indirizzo: {_browser_url(args.host, args.port)}")
@@ -167,9 +180,32 @@ def _list() -> int:
     return 0
 
 
+def _sync_check() -> int:
+    entry = ensure_configuration()
+
+    # Come per l'avvio del server, questi import devono avvenire dopo che la
+    # galleria attiva è stata risolta, perché backend.paths è gallery-specific.
+    from backend.database import get_connection, init_database
+    from backend.sync_foundation import get_sync_foundation_status
+
+    init_database()
+    with get_connection() as connection:
+        status = get_sync_foundation_status(connection)
+
+    print(f"Galleria: {entry['name']} — {entry['path']}")
+    print(f"Sync schema: v{status['schema_version']}")
+    print(f"Gallery UUID: {status['gallery_uuid']}")
+    print(f"Media indicizzati: {status['media_count']}")
+    print(f"Media senza Sync UUID: {status['missing_file_sync_ids']}")
+    print(f"Sync UUID duplicati: {status['duplicate_file_sync_ids']}")
+    print(f"Peer associati: {status['active_peers']}")
+    print(f"Eliminazioni in attesa: {status['pending_tombstones']}")
+    print("Stato: OK" if status["ready"] else "Stato: ERRORE")
+    return 0 if status["ready"] else 2
+
+
 def _launcher_command(command: str) -> int:
     from h_gallery_launcher import launch_detached, send_launcher_command
-
     if command == "launcher":
         return launch_detached()
     response = send_launcher_command(command.upper())
@@ -193,6 +229,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _configure(parsed)
         if parsed.command == "list":
             return _list()
+        if parsed.command == "sync-check":
+            return _sync_check()
         if parsed.command in {"launcher", "open", "stop", "status"}:
             return _launcher_command(parsed.command)
         return _start_server(parsed)
