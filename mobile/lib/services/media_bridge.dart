@@ -1,7 +1,9 @@
+
 import 'package:flutter/services.dart';
 
 import '../models/media_item.dart';
 import '../models/scan_result.dart';
+import '../models/viewer_source.dart';
 
 abstract interface class MediaService {
   Future<ScanResult> scanGallery(String galleryUuid);
@@ -19,6 +21,11 @@ abstract interface class MediaService {
     String syncUuid, {
     int maxPx = 360,
   });
+
+  Future<ViewerSource> prepareViewerSource(
+    String galleryUuid,
+    String syncUuid,
+  );
 }
 
 class PlatformMediaService implements MediaService {
@@ -88,5 +95,33 @@ class PlatformMediaService implements MediaService {
         'maxPx': maxPx,
       },
     );
+  }
+
+  @override
+  Future<ViewerSource> prepareViewerSource(
+    String galleryUuid,
+    String syncUuid,
+  ) async {
+    final value = await _channel.invokeMapMethod<Object?, Object?>(
+      'prepareViewerSource',
+      <String, Object?>{
+        'galleryUuid': galleryUuid,
+        'syncUuid': syncUuid,
+      },
+    );
+    if (value == null) {
+      throw PlatformException(
+        code: 'EMPTY_VIEWER_SOURCE',
+        message: 'Il media non ha restituito una sorgente visualizzabile.',
+      );
+    }
+    final source = ViewerSource.fromPlatform(value);
+    if (source.kind.isEmpty || source.value.isEmpty) {
+      throw PlatformException(
+        code: 'INVALID_VIEWER_SOURCE',
+        message: 'La sorgente del media non è valida.',
+      );
+    }
+    return source;
   }
 }

@@ -21,6 +21,7 @@ internal class GalleryMediaBridge(
 
     private val repository = GalleryMediaRepository(activity.applicationContext)
     private val thumbnails = GalleryThumbnailProvider(activity.applicationContext, repository)
+    private val viewerSources = GalleryViewerSourceProvider(activity.applicationContext, repository)
     private val executor = Executors.newFixedThreadPool(3)
     private val channel = MethodChannel(messenger, CHANNEL).apply {
         setMethodCallHandler(::handleMethodCall)
@@ -40,6 +41,7 @@ internal class GalleryMediaBridge(
                 runAsync(result, "SCAN_FAILED") {
                     val scanResult = repository.scanGallery(galleryUuid, treeUri)
                     thumbnails.clear()
+                    viewerSources.clearGallery(galleryUuid)
                     scanResult
                 }
             }
@@ -70,6 +72,18 @@ internal class GalleryMediaBridge(
                 val maxPx = call.argument<Int>("maxPx") ?: 360
                 runAsync(result, "THUMBNAIL_FAILED") {
                     thumbnails.loadThumbnail(galleryUuid, syncUuid, maxPx)
+                }
+            }
+
+            "prepareViewerSource" -> {
+                val galleryUuid = requiredGalleryUuid(call, result) ?: return
+                val syncUuid = call.argument<String>("syncUuid")?.trim().orEmpty()
+                if (syncUuid.isEmpty()) {
+                    result.error("INVALID_MEDIA", "Identità del media non valida.", null)
+                    return
+                }
+                runAsync(result, "VIEWER_SOURCE_FAILED") {
+                    viewerSources.prepare(galleryUuid, syncUuid)
                 }
             }
 

@@ -77,6 +77,15 @@ internal class GalleryMediaRepository(private val context: Context) {
         }
     }
 
+    fun mediaForViewer(galleryUuid: String, syncUuid: String): ViewerMediaRecord? {
+        val database = GalleryIndexDatabase(context, galleryUuid)
+        return try {
+            database.mediaForViewer(syncUuid)
+        } finally {
+            database.close()
+        }
+    }
+
     private fun scanDocuments(treeUri: Uri): List<IndexedMediaDocument> {
         val rootDocumentId = DocumentsContract.getTreeDocumentId(treeUri)
         val rootUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, rootDocumentId)

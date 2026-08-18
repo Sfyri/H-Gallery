@@ -43,6 +43,13 @@ internal data class ReconcileResult(
     val removed: Int,
 )
 
+internal data class ViewerMediaRecord(
+    val documentUri: String,
+    val mediaType: String,
+    val extension: String,
+    val sha256: String,
+)
+
 internal class GalleryIndexDatabase(
     context: Context,
     galleryUuid: String,
@@ -282,6 +289,26 @@ internal class GalleryIndexDatabase(
         ).use { cursor ->
             if (!cursor.moveToFirst()) return null
             return cursor.getString(0) to cursor.getString(1)
+        }
+    }
+
+    fun mediaForViewer(syncUuid: String): ViewerMediaRecord? {
+        readableDatabase.rawQuery(
+            """
+            SELECT document_uri, media_type, extension, sha256
+            FROM media
+            WHERE sync_uuid = ? AND is_present = 1
+            LIMIT 1
+            """.trimIndent(),
+            arrayOf(syncUuid),
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) return null
+            return ViewerMediaRecord(
+                documentUri = cursor.getString(0),
+                mediaType = cursor.getString(1),
+                extension = cursor.getString(2),
+                sha256 = cursor.getString(3),
+            )
         }
     }
 

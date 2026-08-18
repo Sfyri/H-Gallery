@@ -1,3 +1,4 @@
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -6,6 +7,7 @@ import '../models/media_item.dart';
 import '../models/scan_result.dart';
 import '../services/media_bridge.dart';
 import '../theme/app_theme.dart';
+import 'media_viewer_page.dart';
 
 class GalleryReadyPage extends StatefulWidget {
   const GalleryReadyPage({
@@ -169,6 +171,20 @@ class _GalleryReadyPageState extends State<GalleryReadyPage> {
     }
   }
 
+  Future<void> _openViewer(int index) {
+    return Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (context) => MediaViewerPage(
+          gallery: widget.gallery,
+          initialItems: _media,
+          initialIndex: index,
+          totalCount: _stats.total,
+          mediaService: widget.mediaService,
+        ),
+      ),
+    );
+  }
+
   Future<void> _showMediaInfo(MediaItem item) {
     return showModalBottomSheet<void>(
       context: context,
@@ -190,11 +206,6 @@ class _GalleryReadyPageState extends State<GalleryReadyPage> {
               _InfoRow(label: 'Tipo', value: item.typeLabel),
               _InfoRow(label: 'Dimensione', value: _formatBytes(item.sizeBytes)),
               _InfoRow(label: 'Percorso', value: item.relativePath),
-              const SizedBox(height: 10),
-              const Text(
-                'Il viewer completo verrà aggiunto nella prossima milestone.',
-                style: TextStyle(color: AppTheme.muted, height: 1.4),
-              ),
             ],
           ),
         ),
@@ -297,7 +308,8 @@ class _GalleryReadyPageState extends State<GalleryReadyPage> {
                 return _MediaTile(
                   item: item,
                   thumbnail: _thumbnailFor(item),
-                  onTap: () => _showMediaInfo(item),
+                  onTap: () => _openViewer(index),
+                  onLongPress: () => _showMediaInfo(item),
                 );
               },
             ),
@@ -371,11 +383,13 @@ class _MediaTile extends StatelessWidget {
     required this.item,
     required this.thumbnail,
     required this.onTap,
+    required this.onLongPress,
   });
 
   final MediaItem item;
   final Future<Uint8List?> thumbnail;
   final VoidCallback onTap;
+  final VoidCallback onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -385,6 +399,7 @@ class _MediaTile extends StatelessWidget {
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: onTap,
+        onLongPress: onLongPress,
         child: Stack(
           fit: StackFit.expand,
           children: [
