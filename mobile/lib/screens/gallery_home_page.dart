@@ -196,7 +196,7 @@ class _GalleryHomePageState extends State<GalleryHomePage> {
                   padding: const EdgeInsets.fromLTRB(20, 12, 20, 36),
                   sliver: SliverList.separated(
                     itemCount: _galleries.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 12),
+                    separatorBuilder: (_, _) => const SizedBox(height: 12),
                     itemBuilder: (context, index) {
                       final gallery = _galleries[index];
                       return _GalleryCard(
