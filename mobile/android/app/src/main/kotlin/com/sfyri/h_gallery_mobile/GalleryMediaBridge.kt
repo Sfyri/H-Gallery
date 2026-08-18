@@ -28,6 +28,7 @@ internal class GalleryMediaBridge(
     private val todoThumbnails = GalleryTodoThumbnailProvider(activity.applicationContext)
     private val todoViewerSources = GalleryTodoViewerSourceProvider(activity.applicationContext)
     private val organization = GalleryOrganizationRepository(activity.applicationContext)
+    private val metadataEditor = GalleryMediaMetadataEditor(activity.applicationContext)
     private val trash = GalleryTrashRepository(activity.applicationContext)
     private val trashThumbnails = GalleryTrashThumbnailProvider(activity.applicationContext, trash)
     private val trashViewerSources = GalleryTrashViewerSourceProvider(activity.applicationContext, trash)
@@ -133,6 +134,35 @@ internal class GalleryMediaBridge(
                 val syncUuid = requiredMediaId(call, result) ?: return
                 runAsync(result, "MEDIA_METADATA_FAILED") {
                     browse.mediaMetadata(galleryUuid, syncUuid)
+                }
+            }
+
+            "getEditableMediaMetadata" -> {
+                val galleryUuid = requiredGalleryUuid(call, result) ?: return
+                val syncUuid = requiredMediaId(call, result) ?: return
+                runAsync(result, "EDITABLE_MEDIA_METADATA_FAILED") {
+                    metadataEditor.read(galleryUuid, syncUuid)
+                }
+            }
+
+            "updateMediaMetadata" -> {
+                val galleryUuid = requiredGalleryUuid(call, result) ?: return
+                val syncUuid = requiredMediaId(call, result) ?: return
+                val characterIds = numberListArgument(call.arguments, "characterIds")
+                val tags = stringListArgument(call.arguments, "tags")
+                val artists = stringListArgument(call.arguments, "artists")
+                val aiGenerated = call.argument<Boolean>("aiGenerated") ?: false
+                runAsync(result, "MEDIA_METADATA_UPDATE_FAILED") {
+                    val value = metadataEditor.update(
+                        galleryUuid = galleryUuid,
+                        syncUuid = syncUuid,
+                        characterIds = characterIds,
+                        tags = tags,
+                        artists = artists,
+                        aiGenerated = aiGenerated,
+                    )
+                    clearGalleryCaches(galleryUuid)
+                    value
                 }
             }
 

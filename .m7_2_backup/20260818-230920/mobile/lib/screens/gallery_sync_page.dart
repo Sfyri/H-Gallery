@@ -22,7 +22,6 @@ class _GallerySyncPageState extends State<GallerySyncPage> {
   List<GalleryProfile> _android = const [];
   List<WindowsGalleryProfile> _windows = const [];
   Map<String, String> _androidGroups = const {};
-  Map<String, GallerySyncStatus> _statuses = const {};
   bool _loading = true;
   bool _working = false;
 
@@ -46,20 +45,14 @@ class _GallerySyncPageState extends State<GallerySyncPage> {
           .toList(growable: false);
       final windows = await _syncService.listWindowsGalleries();
       final groups = <String, String>{};
-      final statuses = <String, GallerySyncStatus>{};
       for (final gallery in android) {
-        final group = await _syncService.getSyncGroupUuid(gallery.galleryUuid);
-        groups[gallery.galleryUuid] = group;
-        if (group.isNotEmpty) {
-          statuses[gallery.galleryUuid] = await _syncService.getSyncStatus(gallery.galleryUuid);
-        }
+        groups[gallery.galleryUuid] = await _syncService.getSyncGroupUuid(gallery.galleryUuid);
       }
       if (!mounted) return;
       setState(() {
         _android = android;
         _windows = windows;
         _androidGroups = groups;
-        _statuses = statuses;
         _loading = false;
       });
     } on PlatformException catch (error) {
@@ -271,11 +264,11 @@ class _GallerySyncPageState extends State<GallerySyncPage> {
           : ListView(
               padding: const EdgeInsets.fromLTRB(20, 20, 20, 96),
               children: [
-                const Text('M7.4 · Gruppi di sincronizzazione', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
+                const Text('M7 · Gruppi di sincronizzazione', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
                 const SizedBox(height: 8),
                 const Text(
-                  'Ogni gruppo collega esplicitamente una galleria Android e una Windows. '
-                  'M7.4 sincronizza anche tag, artisti, personaggi e stato AI, e conserva la data dell’ultima verifica riuscita.',
+                  'Ogni galleria possiede già un ID univoco. M7.2 aggiunge un secondo ID per il gruppo: '
+                  'solo gallerie con lo stesso ID di gruppo possono essere confrontate e unite.',
                   style: TextStyle(color: AppTheme.muted, height: 1.45),
                 ),
                 const SizedBox(height: 22),
@@ -292,7 +285,6 @@ class _GallerySyncPageState extends State<GallerySyncPage> {
                       padding: const EdgeInsets.only(bottom: 12),
                       child: _LinkedGalleryCard(
                         pair: pair,
-                        status: _statuses[pair.android.galleryUuid],
                         busy: _working,
                         onSync: () => _openMerge(pair),
                         onUnlink: () => _unlink(pair),
@@ -310,23 +302,15 @@ class _GallerySyncPageState extends State<GallerySyncPage> {
 class _LinkedGalleryCard extends StatelessWidget {
   const _LinkedGalleryCard({
     required this.pair,
-    required this.status,
     required this.busy,
     required this.onSync,
     required this.onUnlink,
   });
 
   final _LinkedPair pair;
-  final GallerySyncStatus? status;
   final bool busy;
   final VoidCallback onSync;
   final VoidCallback onUnlink;
-
-  String _lastSyncLabel(GallerySyncStatus value) {
-    final date = DateTime.fromMillisecondsSinceEpoch(value.lastSyncEpochMs).toLocal();
-    String two(int number) => number.toString().padLeft(2, '0');
-    return '${two(date.day)}/${two(date.month)}/${date.year} ${two(date.hour)}:${two(date.minute)}';
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -357,32 +341,6 @@ class _LinkedGalleryCard extends StatelessWidget {
               'Gruppo ${pair.groupUuid.length > 12 ? '${pair.groupUuid.substring(0, 12)}…' : pair.groupUuid}',
               style: const TextStyle(color: AppTheme.muted, fontSize: 12),
             ),
-            if (status != null && status!.hasHistory) ...[
-              const SizedBox(height: 10),
-              Row(
-                children: [
-                  const Icon(Icons.verified_rounded, size: 17, color: AppTheme.success),
-                  const SizedBox(width: 7),
-                  Expanded(
-                    child: Text(
-                      'Ultima sincronizzazione verificata: ${_lastSyncLabel(status!)}',
-                      style: const TextStyle(fontSize: 12, color: AppTheme.muted),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 3),
-              Text(
-                'Ultimo conteggio: Android ${status!.androidCount} · Windows ${status!.windowsCount}',
-                style: const TextStyle(fontSize: 12, color: AppTheme.muted),
-              ),
-            ] else ...[
-              const SizedBox(height: 10),
-              const Text(
-                'Nessuna sincronizzazione verificata per questo gruppo.',
-                style: TextStyle(fontSize: 12, color: AppTheme.muted),
-              ),
-            ],
             if (windows != null && !windows.active) ...[
               const SizedBox(height: 10),
               const Text(
@@ -529,9 +487,8 @@ class _GalleryMergePageState extends State<GalleryMergePage> {
         title: const Text('Sincronizzare il gruppo?'),
         content: Text(
           'Verranno copiati ${plan.toAndroid} media su Android e ${plan.toWindows} su Windows. '
-          '${plan.metadataDifferences} media hanno metadata differenti e verranno uniti in modo additivo. '
-          'M7.4 mantiene i retry di M7.3 e verifica nuovamente file e metadata a fine merge. '
-          'Le eliminazioni non vengono ancora propagate.',
+          'M7.3 ritenta automaticamente gli errori di rete e, se il trasferimento viene interrotto, '
+          'al prossimo avvio salta i file già completati tramite SHA-256. Le eliminazioni non vengono propagate.',
         ),
         actions: [
           TextButton(
@@ -662,8 +619,6 @@ class _GalleryMergePageState extends State<GalleryMergePage> {
         return 'Merge metadata Windows';
       case 'finalize_windows':
         return 'Aggiornamento Windows';
-      case 'verify':
-        return 'Verifica finale';
       case 'cancelled':
         return 'Interrotta';
       case 'interrupted':
@@ -737,10 +692,6 @@ class _GalleryMergePageState extends State<GalleryMergePage> {
           if (plan != null) ...[
             const SizedBox(height: 22),
             _PlanCard(plan: plan, bytes: _bytes),
-            if (plan.metadataDifferences > 0) ...[
-              const SizedBox(height: 10),
-              _MetadataDetailsCard(plan: plan),
-            ],
             if (plan.pathConflicts > 0) ...[
               const SizedBox(height: 10),
               Card(
@@ -753,46 +704,14 @@ class _GalleryMergePageState extends State<GalleryMergePage> {
                 ),
               ),
             ],
-            if (plan.metadataTypeConflicts > 0) ...[
-              const SizedBox(height: 10),
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Text(
-                    '${plan.metadataTypeConflicts} conflitti tag/artista: M7.4 mantiene un solo tag e dà precedenza al tipo Artista.',
-                    style: const TextStyle(height: 1.4),
-                  ),
-                ),
-              ),
-            ],
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Icon(
-                  plan.synchronized ? Icons.check_circle_rounded : Icons.sync_problem_rounded,
-                  color: plan.synchronized ? AppTheme.success : AppTheme.accent,
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    plan.synchronized
-                        ? 'Gallerie già allineate: il merge eseguirà solo una nuova verifica.'
-                        : '${plan.pendingChanges} modifiche complessive da sincronizzare.',
-                    style: const TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                ),
-              ],
-            ),
             const SizedBox(height: 14),
             FilledButton.icon(
               onPressed: _syncing ? null : _sync,
               icon: const Icon(Icons.sync_rounded),
               label: Text(
-                plan.synchronized
-                    ? 'Verifica sincronizzazione'
-                    : plan.toAndroid == 0 && plan.toWindows == 0
-                        ? 'Sincronizza metadata'
-                        : 'Sincronizza gallerie',
+                plan.toAndroid == 0 && plan.toWindows == 0
+                    ? 'Sincronizza metadata'
+                    : 'Sincronizza gallerie',
               ),
             ),
           ],
@@ -891,22 +810,6 @@ class _SyncResultCard extends StatelessWidget {
             Text('Windows → Android completati: ${result.downloaded}'),
             Text('Android → Windows completati: ${result.uploaded}'),
             Text('Già presenti all’avvio: ${result.alreadyPresent}'),
-            Text('Metadata differenti all’avvio: ${result.metadataDifferencesBefore}'),
-            Text('Metadata modificati su Android: ${result.metadataChangedAndroid}'),
-            Text('Metadata modificati su Windows: ${result.metadataChangedWindows}'),
-            if (result.createdCharactersAndroid > 0 || result.createdFranchisesAndroid > 0)
-              Text(
-                'Creati su Android: ${result.createdFranchisesAndroid} serie · ${result.createdCharactersAndroid} personaggi',
-              ),
-            if (result.createdCharactersWindows > 0 || result.createdFranchisesWindows > 0)
-              Text(
-                'Creati su Windows: ${result.createdFranchisesWindows} serie · ${result.createdCharactersWindows} personaggi',
-              ),
-            Text(
-              result.verifiedSynced
-                  ? 'Verifica finale: file e metadata allineati'
-                  : 'Metadata ancora differenti dopo il merge: ${result.metadataDifferencesAfter}',
-            ),
             if (result.failed > 0) Text('Trasferimenti falliti: ${result.failed}'),
             if (result.pending > 0) Text('Non ancora tentati: ${result.pending}'),
             Text('Totale Android: ${result.androidCount}'),
@@ -945,163 +848,6 @@ class _SyncResultCard extends StatelessWidget {
   }
 }
 
-class _MetadataDetailsCard extends StatelessWidget {
-  const _MetadataDetailsCard({required this.plan});
-
-  final GallerySyncPlan plan;
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      child: ExpansionTile(
-        leading: const Icon(Icons.rule_folder_rounded, color: AppTheme.accent),
-        title: const Text(
-          'Dettaglio metadata',
-          style: TextStyle(fontWeight: FontWeight.w700),
-        ),
-        subtitle: Text(
-          '${plan.metadataDifferences} media · ${plan.metadataChangeCount} modifiche',
-        ),
-        childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
-        children: [
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: AppTheme.panel,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: const Text(
-              'M7.4 esegue un merge additivo: nessun metadata verrà rimosso durante questa sincronizzazione.',
-              style: TextStyle(color: AppTheme.muted, height: 1.35),
-            ),
-          ),
-          const SizedBox(height: 10),
-          for (var index = 0; index < plan.metadataDetails.length; index++) ...[
-            _MetadataDifferenceTile(detail: plan.metadataDetails[index]),
-            if (index != plan.metadataDetails.length - 1) const Divider(height: 18),
-          ],
-          if (plan.metadataDetailsTruncated) ...[
-            const SizedBox(height: 12),
-            const Text(
-              'L’anteprima mostra i primi 200 media con differenze. Il conteggio totale sopra comprende comunque tutte le modifiche rilevate.',
-              style: TextStyle(color: AppTheme.muted, fontSize: 12, height: 1.35),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-class _MetadataDifferenceTile extends StatelessWidget {
-  const _MetadataDifferenceTile({required this.detail});
-
-  final GalleryMetadataDifference detail;
-
-  @override
-  Widget build(BuildContext context) {
-    return ExpansionTile(
-      tilePadding: EdgeInsets.zero,
-      childrenPadding: const EdgeInsets.only(bottom: 10),
-      title: Text(
-        detail.filename.isEmpty ? detail.relativePath : detail.filename,
-        maxLines: 2,
-        overflow: TextOverflow.ellipsis,
-        style: const TextStyle(fontWeight: FontWeight.w700),
-      ),
-      subtitle: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (detail.relativePath.isNotEmpty)
-            Text(
-              detail.relativePath,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 11, color: AppTheme.muted),
-            ),
-          Text(
-            '${detail.changeCount} modifiche',
-            style: const TextStyle(fontSize: 12, color: AppTheme.muted),
-          ),
-        ],
-      ),
-      children: [
-        if (detail.toAndroid.isNotEmpty)
-          _MetadataDirection(
-            icon: Icons.phone_android_rounded,
-            title: 'Su Android verrà aggiunto',
-            changes: detail.toAndroid,
-          ),
-        if (detail.toWindows.isNotEmpty)
-          _MetadataDirection(
-            icon: Icons.computer_rounded,
-            title: 'Su Windows verrà aggiunto',
-            changes: detail.toWindows,
-          ),
-        if (detail.typeConflict)
-          const Padding(
-            padding: EdgeInsets.only(top: 6),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                'Conflitto di tipo tag/artista: prevale Artista.',
-                style: TextStyle(color: AppTheme.muted, fontSize: 12),
-              ),
-            ),
-          ),
-      ],
-    );
-  }
-}
-
-class _MetadataDirection extends StatelessWidget {
-  const _MetadataDirection({
-    required this.icon,
-    required this.title,
-    required this.changes,
-  });
-
-  final IconData icon;
-  final String title;
-  final List<GalleryMetadataChange> changes;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(top: 8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(icon, size: 17, color: AppTheme.accent),
-              const SizedBox(width: 7),
-              Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
-            ],
-          ),
-          const SizedBox(height: 5),
-          for (final change in changes)
-            Padding(
-              padding: const EdgeInsets.only(left: 24, top: 3),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('+ ${change.label}'),
-                  if (change.note.isNotEmpty)
-                    Text(
-                      change.note,
-                      style: const TextStyle(color: AppTheme.muted, fontSize: 11),
-                    ),
-                ],
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
 class _PlanCard extends StatelessWidget {
   const _PlanCard({required this.plan, required this.bytes});
   final GallerySyncPlan plan;
@@ -1134,7 +880,6 @@ class _PlanCard extends StatelessWidget {
             line(Icons.download_rounded, 'Da copiare su Android', '${plan.toAndroid} · ${bytes(plan.bytesToAndroid)}'),
             line(Icons.upload_rounded, 'Da copiare su Windows', '${plan.toWindows} · ${bytes(plan.bytesToWindows)}'),
             line(Icons.done_all_rounded, 'Già presenti', '${plan.alreadyPresent}'),
-            line(Icons.sell_rounded, 'Media con metadata differenti', '${plan.metadataDifferences} · ${plan.metadataChangeCount} modifiche'),
           ],
         ),
       ),

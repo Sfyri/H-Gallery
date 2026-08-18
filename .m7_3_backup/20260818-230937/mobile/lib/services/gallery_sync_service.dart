@@ -44,102 +44,6 @@ class WindowsGalleryProfile {
   }
 }
 
-class GallerySyncStatus {
-  const GallerySyncStatus({
-    required this.lastSyncEpochMs,
-    required this.androidCount,
-    required this.windowsCount,
-    required this.windowsGalleryUuid,
-    required this.syncGroupUuid,
-    required this.verified,
-  });
-
-  final int lastSyncEpochMs;
-  final int androidCount;
-  final int windowsCount;
-  final String windowsGalleryUuid;
-  final String syncGroupUuid;
-  final bool verified;
-
-  bool get hasHistory => lastSyncEpochMs > 0;
-
-  factory GallerySyncStatus.fromPlatform(Map<Object?, Object?> value) {
-    int number(String key) => (value[key] as num?)?.toInt() ?? 0;
-    return GallerySyncStatus(
-      lastSyncEpochMs: number('lastSyncEpochMs'),
-      androidCount: number('androidCount'),
-      windowsCount: number('windowsCount'),
-      windowsGalleryUuid: value['windowsGalleryUuid']?.toString() ?? '',
-      syncGroupUuid: value['syncGroupUuid']?.toString() ?? '',
-      verified: value['verified'] == true,
-    );
-  }
-}
-
-class GalleryMetadataChange {
-  const GalleryMetadataChange({
-    required this.kind,
-    required this.value,
-    required this.note,
-  });
-
-  final String kind;
-  final String value;
-  final String note;
-
-  String get label => value.isEmpty ? kind : '$kind: $value';
-
-  factory GalleryMetadataChange.fromPlatform(Map<Object?, Object?> value) {
-    return GalleryMetadataChange(
-      kind: value['kind']?.toString() ?? 'Metadata',
-      value: value['value']?.toString() ?? '',
-      note: value['note']?.toString() ?? '',
-    );
-  }
-}
-
-class GalleryMetadataDifference {
-  const GalleryMetadataDifference({
-    required this.filename,
-    required this.relativePath,
-    required this.toAndroid,
-    required this.toWindows,
-    required this.typeConflict,
-    required this.changeCount,
-  });
-
-  final String filename;
-  final String relativePath;
-  final List<GalleryMetadataChange> toAndroid;
-  final List<GalleryMetadataChange> toWindows;
-  final bool typeConflict;
-  final int changeCount;
-
-  factory GalleryMetadataDifference.fromPlatform(Map<Object?, Object?> value) {
-    List<GalleryMetadataChange> changes(Object? raw) {
-      if (raw is! List) return const <GalleryMetadataChange>[];
-      return raw
-          .whereType<Map>()
-          .map(
-            (entry) => GalleryMetadataChange.fromPlatform(
-              Map<Object?, Object?>.from(entry),
-            ),
-          )
-          .toList(growable: false);
-    }
-
-    final rawCount = value['changeCount'];
-    return GalleryMetadataDifference(
-      filename: value['filename']?.toString() ?? '',
-      relativePath: value['relativePath']?.toString() ?? '',
-      toAndroid: changes(value['toAndroid']),
-      toWindows: changes(value['toWindows']),
-      typeConflict: value['typeConflict'] == true,
-      changeCount: rawCount is num ? rawCount.toInt() : int.tryParse('$rawCount') ?? 0,
-    );
-  }
-}
-
 class GallerySyncPlan {
   const GallerySyncPlan({
     required this.androidCount,
@@ -148,11 +52,6 @@ class GallerySyncPlan {
     required this.toWindows,
     required this.alreadyPresent,
     required this.pathConflicts,
-    required this.metadataDifferences,
-    required this.metadataTypeConflicts,
-    required this.metadataChangeCount,
-    required this.metadataDetails,
-    required this.metadataDetailsTruncated,
     required this.bytesToAndroid,
     required this.bytesToWindows,
     required this.windowsGalleryUuid,
@@ -165,32 +64,13 @@ class GallerySyncPlan {
   final int toWindows;
   final int alreadyPresent;
   final int pathConflicts;
-  final int metadataDifferences;
-  final int metadataTypeConflicts;
-  final int metadataChangeCount;
-  final List<GalleryMetadataDifference> metadataDetails;
-  final bool metadataDetailsTruncated;
   final int bytesToAndroid;
   final int bytesToWindows;
   final String windowsGalleryUuid;
   final String windowsGalleryName;
 
-  int get pendingChanges => toAndroid + toWindows + metadataDifferences;
-  bool get synchronized => toAndroid == 0 && toWindows == 0 && metadataDifferences == 0;
-
   factory GallerySyncPlan.fromPlatform(Map<Object?, Object?> value) {
     int number(String key) => (value[key] as num?)?.toInt() ?? 0;
-    final rawDetails = value['metadataDetails'];
-    final metadataDetails = rawDetails is List
-        ? rawDetails
-            .whereType<Map>()
-            .map(
-              (entry) => GalleryMetadataDifference.fromPlatform(
-                Map<Object?, Object?>.from(entry),
-              ),
-            )
-            .toList(growable: false)
-        : const <GalleryMetadataDifference>[];
     return GallerySyncPlan(
       androidCount: number('androidCount'),
       windowsCount: number('windowsCount'),
@@ -198,38 +78,10 @@ class GallerySyncPlan {
       toWindows: number('toWindows'),
       alreadyPresent: number('alreadyPresent'),
       pathConflicts: number('pathConflicts'),
-      metadataDifferences: number('metadataDifferences'),
-      metadataTypeConflicts: number('metadataTypeConflicts'),
-      metadataChangeCount: number('metadataChangeCount'),
-      metadataDetails: metadataDetails,
-      metadataDetailsTruncated: value['metadataDetailsTruncated'] == true,
       bytesToAndroid: number('bytesToAndroid'),
       bytesToWindows: number('bytesToWindows'),
       windowsGalleryUuid: value['windowsGalleryUuid']?.toString() ?? '',
       windowsGalleryName: value['windowsGalleryName']?.toString() ?? 'H-Gallery Windows',
-    );
-  }
-}
-
-class GallerySyncFailure {
-  const GallerySyncFailure({
-    required this.direction,
-    required this.filename,
-    required this.message,
-    required this.network,
-  });
-
-  final String direction;
-  final String filename;
-  final String message;
-  final bool network;
-
-  factory GallerySyncFailure.fromPlatform(Map<Object?, Object?> value) {
-    return GallerySyncFailure(
-      direction: value['direction']?.toString() ?? '',
-      filename: value['filename']?.toString() ?? '',
-      message: value['message']?.toString() ?? 'Errore non specificato.',
-      network: value['network'] == true,
     );
   }
 }
@@ -240,100 +92,35 @@ class GallerySyncResult {
     required this.uploaded,
     required this.alreadyPresent,
     required this.pathConflicts,
-    required this.metadataDifferencesBefore,
-    required this.metadataDifferencesAfter,
     required this.metadataMergedWindows,
-    required this.metadataChangedAndroid,
-    required this.metadataChangedWindows,
-    required this.createdFranchisesAndroid,
-    required this.createdCharactersAndroid,
-    required this.createdFranchisesWindows,
-    required this.createdCharactersWindows,
     required this.unresolvedWindowsCharacters,
-    required this.verifiedSynced,
     required this.androidCount,
     required this.windowsCount,
     required this.elapsedMs,
-    required this.complete,
-    required this.interrupted,
-    required this.cancelled,
-    required this.failedDownloads,
-    required this.failedUploads,
-    required this.pendingDownloads,
-    required this.pendingUploads,
-    required this.failures,
   });
 
   final int downloaded;
   final int uploaded;
   final int alreadyPresent;
   final int pathConflicts;
-  final int metadataDifferencesBefore;
-  final int metadataDifferencesAfter;
   final int metadataMergedWindows;
-  final int metadataChangedAndroid;
-  final int metadataChangedWindows;
-  final int createdFranchisesAndroid;
-  final int createdCharactersAndroid;
-  final int createdFranchisesWindows;
-  final int createdCharactersWindows;
   final int unresolvedWindowsCharacters;
-  final bool verifiedSynced;
   final int androidCount;
   final int windowsCount;
   final int elapsedMs;
-  final bool complete;
-  final bool interrupted;
-  final bool cancelled;
-  final int failedDownloads;
-  final int failedUploads;
-  final int pendingDownloads;
-  final int pendingUploads;
-  final List<GallerySyncFailure> failures;
-
-  int get failed => failedDownloads + failedUploads;
-  int get pending => pendingDownloads + pendingUploads;
 
   factory GallerySyncResult.fromPlatform(Map<Object?, Object?> value) {
     int number(String key) => (value[key] as num?)?.toInt() ?? 0;
-    final rawFailures = value['failures'];
-    final failures = rawFailures is List
-        ? rawFailures
-            .whereType<Map>()
-            .map(
-              (entry) => GallerySyncFailure.fromPlatform(
-                Map<Object?, Object?>.from(entry),
-              ),
-            )
-            .toList(growable: false)
-        : const <GallerySyncFailure>[];
     return GallerySyncResult(
       downloaded: number('downloaded'),
       uploaded: number('uploaded'),
       alreadyPresent: number('alreadyPresent'),
       pathConflicts: number('pathConflicts'),
-      metadataDifferencesBefore: number('metadataDifferencesBefore'),
-      metadataDifferencesAfter: number('metadataDifferencesAfter'),
       metadataMergedWindows: number('metadataMergedWindows'),
-      metadataChangedAndroid: number('metadataChangedAndroid'),
-      metadataChangedWindows: number('metadataChangedWindows'),
-      createdFranchisesAndroid: number('createdFranchisesAndroid'),
-      createdCharactersAndroid: number('createdCharactersAndroid'),
-      createdFranchisesWindows: number('createdFranchisesWindows'),
-      createdCharactersWindows: number('createdCharactersWindows'),
       unresolvedWindowsCharacters: number('unresolvedWindowsCharacters'),
-      verifiedSynced: value['verifiedSynced'] == true,
       androidCount: number('androidCount'),
       windowsCount: number('windowsCount'),
       elapsedMs: number('elapsedMs'),
-      complete: value['complete'] == true,
-      interrupted: value['interrupted'] == true,
-      cancelled: value['cancelled'] == true,
-      failedDownloads: number('failedDownloads'),
-      failedUploads: number('failedUploads'),
-      pendingDownloads: number('pendingDownloads'),
-      pendingUploads: number('pendingUploads'),
-      failures: failures,
     );
   }
 }
@@ -344,37 +131,21 @@ class GallerySyncProgress {
     required this.processed,
     required this.total,
     required this.current,
-    this.succeeded = 0,
-    this.failed = 0,
-    this.attempt = 1,
-    this.maxAttempts = 1,
   });
 
   final String phase;
   final int processed;
   final int total;
   final String current;
-  final int succeeded;
-  final int failed;
-  final int attempt;
-  final int maxAttempts;
 
-  double? get fraction => total <= 0
-      ? null
-      : (processed / total).clamp(0.0, 1.0).toDouble();
+  double? get fraction => total <= 0 ? null : (processed / total).clamp(0.0, 1.0).toDouble();
 
   factory GallerySyncProgress.fromPlatform(Map<Object?, Object?> value) {
-    int number(String key, [int fallback = 0]) =>
-        (value[key] as num?)?.toInt() ?? fallback;
     return GallerySyncProgress(
       phase: value['phase']?.toString() ?? '',
-      processed: number('processed'),
-      total: number('total'),
+      processed: (value['processed'] as num?)?.toInt() ?? 0,
+      total: (value['total'] as num?)?.toInt() ?? 0,
       current: value['current']?.toString() ?? '',
-      succeeded: number('succeeded'),
-      failed: number('failed'),
-      attempt: number('attempt', 1),
-      maxAttempts: number('maxAttempts', 1),
     );
   }
 }
@@ -499,14 +270,6 @@ class GallerySyncService {
     return value?.trim() ?? '';
   }
 
-  Future<GallerySyncStatus> getSyncStatus(String galleryUuid) async {
-    final value = await _channel.invokeMapMethod<Object?, Object?>(
-      'getSyncStatus',
-      <String, Object?>{'galleryUuid': galleryUuid},
-    );
-    return GallerySyncStatus.fromPlatform(value ?? const <Object?, Object?>{});
-  }
-
   Future<void> _setSyncGroupUuid(String galleryUuid, String groupUuid) {
     return _channel.invokeMethod<void>(
       'setSyncGroup',
@@ -581,10 +344,6 @@ class GallerySyncService {
       throw PlatformException(code: 'SYNC_EMPTY', message: 'Il PC non ha restituito un piano di merge.');
     }
     return GallerySyncPlan.fromPlatform(value);
-  }
-
-  Future<void> cancel() {
-    return _channel.invokeMethod<void>('cancelSync');
   }
 
   Future<GallerySyncResult> run(

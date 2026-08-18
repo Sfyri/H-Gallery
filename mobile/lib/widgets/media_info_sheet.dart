@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 
-import '../models/gallery_browse_models.dart';
 import '../models/media_item.dart';
+import '../screens/media_metadata_editor_page.dart';
 import '../services/gallery_browse_service.dart';
+import '../services/media_metadata_editor_service.dart';
 import '../theme/app_theme.dart';
 
 Future<void> showMediaInfoSheet({
@@ -12,10 +13,14 @@ Future<void> showMediaInfoSheet({
   required GalleryBrowseService browseService,
   Future<void> Function()? onTrash,
 }) async {
-  MediaMetadataInfo? metadata;
+  // browseService remains in the public signature so every existing caller keeps
+  // working. Metadata are intentionally read through the explicit editor API,
+  // which can distinguish legacy path-derived values from user-edited values.
+  final metadataService = const MediaMetadataEditorService();
+  EditableMediaMetadata? metadata;
   Object? metadataError;
   try {
-    metadata = await browseService.getMediaMetadata(galleryUuid, item.syncUuid);
+    metadata = await metadataService.getMetadata(galleryUuid, item.syncUuid);
   } catch (error) {
     metadataError = error;
   }
@@ -26,7 +31,7 @@ Future<void> showMediaInfoSheet({
     showDragHandle: true,
     isScrollControlled: true,
     backgroundColor: AppTheme.panel,
-    builder: (context) => SafeArea(
+    builder: (sheetContext) => SafeArea(
       child: SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(20, 4, 20, 28),
         child: Column(
@@ -70,13 +75,34 @@ Future<void> showMediaInfoSheet({
                   style: TextStyle(color: AppTheme.muted),
                 ),
               ),
+            const SizedBox(height: 18),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: () async {
+                  final updated = await Navigator.of(sheetContext).push<bool>(
+                    MaterialPageRoute<bool>(
+                      builder: (_) => MediaMetadataEditorPage(
+                        galleryUuid: galleryUuid,
+                        item: item,
+                      ),
+                    ),
+                  );
+                  if (updated == true && sheetContext.mounted) {
+                    Navigator.of(sheetContext).pop();
+                  }
+                },
+                icon: const Icon(Icons.edit_rounded),
+                label: const Text('Modifica metadata'),
+              ),
+            ),
             if (onTrash != null) ...[
-              const SizedBox(height: 18),
+              const SizedBox(height: 10),
               SizedBox(
                 width: double.infinity,
                 child: OutlinedButton.icon(
                   onPressed: () async {
-                    Navigator.of(context).pop();
+                    Navigator.of(sheetContext).pop();
                     await onTrash();
                   },
                   style: OutlinedButton.styleFrom(foregroundColor: AppTheme.error),

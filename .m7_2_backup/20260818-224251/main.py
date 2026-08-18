@@ -930,13 +930,12 @@ def get_trash_media(relative_path: str):
     return FileResponse(requested_file)
 
 # === M6 LOCAL CONNECTION BEGIN ===
-# M6 + M7.2: pairing dispositivo, collegamento esplicito delle gallerie e merge bidirezionale.
+# M6 + M7: associazione locale e merge bidirezionale delle gallerie.
 import base64 as _M7base64
 import json as _M7json
 
 from backend.mobile_link import MOBILE_LINK_SERVICE as _M6_MOBILE_LINK
 from backend.mobile_sync import MOBILE_SYNC_SERVICE as _M7_MOBILE_SYNC
-from backend.mobile_sync_groups import MOBILE_SYNC_GROUPS as _M7_SYNC_GROUPS
 from fastapi import Header as _M7Header
 from fastapi import Request as _M6Request
 from fastapi.responses import JSONResponse as _M6JSONResponse
@@ -955,21 +954,12 @@ class _M6StatusRequest(BaseModel):
     token: str = Field(min_length=16, max_length=256)
 
 
-class _M7LinkRequest(_M6StatusRequest):
+class _M7GalleryRequest(_M6StatusRequest):
     android_gallery_uuid: str = Field(min_length=1, max_length=160)
     android_gallery_name: str = Field(default="H-Gallery Android", max_length=160)
-    android_group_uuid: str = Field(default="", max_length=160)
-    windows_registry_id: str = Field(min_length=1, max_length=160)
 
 
-class _M7SyncRequest(_M6StatusRequest):
-    android_gallery_uuid: str = Field(min_length=1, max_length=160)
-    android_gallery_name: str = Field(default="H-Gallery Android", max_length=160)
-    sync_group_uuid: str = Field(min_length=16, max_length=160)
-    windows_gallery_uuid: str = Field(min_length=16, max_length=160)
-
-
-class _M7MetadataRequest(_M7SyncRequest):
+class _M7MetadataRequest(_M7GalleryRequest):
     items: list[dict] = Field(default_factory=list, max_length=250)
 
 
@@ -1041,64 +1031,20 @@ def _m7_authorize(device_id: str, token: str, *, touch: bool = False):
         raise HTTPException(status_code=401, detail=str(error)) from error
 
 
-def _m7_require_link(sync_group_uuid: str, windows_gallery_uuid: str):
-    try:
-        return _M7_SYNC_GROUPS.require_active_link(
-            sync_group_uuid=sync_group_uuid,
-            windows_gallery_uuid=windows_gallery_uuid,
-        )
-    except PermissionError as error:
-        raise HTTPException(status_code=403, detail=str(error)) from error
-    except RuntimeError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    except (FileNotFoundError, ValueError, OSError) as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-
-
-@app.post("/api/mobile/sync/windows-galleries")
-def _m7_windows_galleries(request: _M6StatusRequest):
-    _m7_authorize(request.device_id, request.token, touch=True)
-    try:
-        return _M7_SYNC_GROUPS.list_windows_galleries()
-    except (FileNotFoundError, ValueError, OSError) as error:
-        raise HTTPException(status_code=500, detail=str(error)) from error
-
-
-@app.post("/api/mobile/sync/link")
-def _m7_link_galleries(request: _M7LinkRequest):
-    _m7_authorize(request.device_id, request.token, touch=True)
-    try:
-        return _M7_SYNC_GROUPS.link(
-            windows_registry_id=request.windows_registry_id,
-            android_gallery_uuid=request.android_gallery_uuid,
-            android_gallery_name=request.android_gallery_name,
-            android_group_uuid=request.android_group_uuid,
-        )
-    except FileNotFoundError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
-    except ValueError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    except OSError as error:
-        raise HTTPException(status_code=500, detail=str(error)) from error
-
-
 @app.post("/api/mobile/sync/manifest")
-def _m7_manifest(request: _M7SyncRequest):
+def _m7_manifest(request: _M7GalleryRequest):
     _m7_authorize(request.device_id, request.token, touch=True)
-    active = _m7_require_link(request.sync_group_uuid, request.windows_gallery_uuid)
     try:
         result = _M7_MOBILE_SYNC.manifest()
-        result["galleryName"] = active.get("name", GALLERY_NAME)
-        result["syncGroupUuid"] = request.sync_group_uuid
+        result["galleryName"] = GALLERY_NAME
         return result
     except (FileNotFoundError, NotADirectoryError, ValueError, OSError) as error:
         raise HTTPException(status_code=500, detail=str(error)) from error
 
 
 @app.post("/api/mobile/sync/begin")
-def _m7_begin(request: _M7SyncRequest):
+def _m7_begin(request: _M7GalleryRequest):
     _m7_authorize(request.device_id, request.token, touch=True)
-    _m7_require_link(request.sync_group_uuid, request.windows_gallery_uuid)
     try:
         backup = create_automatic_backup("prima_del_merge_android")
         return {"status": "ready", "automaticBackup": backup["id"]}
@@ -1111,11 +1057,8 @@ def _m7_file(
     sync_uuid: str,
     x_hgallery_device: str = _M7Header(alias="X-HGallery-Device"),
     x_hgallery_token: str = _M7Header(alias="X-HGallery-Token"),
-    x_hgallery_group: str = _M7Header(alias="X-HGallery-Group"),
-    x_hgallery_windows_gallery: str = _M7Header(alias="X-HGallery-Windows-Gallery"),
 ):
     _m7_authorize(x_hgallery_device, x_hgallery_token)
-    _m7_require_link(x_hgallery_group, x_hgallery_windows_gallery)
     try:
         path = _M7_MOBILE_SYNC.file_path(sync_uuid)
         return FileResponse(path)
@@ -1130,12 +1073,9 @@ async def _m7_upload(
     request: _M6Request,
     x_hgallery_device: str = _M7Header(alias="X-HGallery-Device"),
     x_hgallery_token: str = _M7Header(alias="X-HGallery-Token"),
-    x_hgallery_group: str = _M7Header(alias="X-HGallery-Group"),
-    x_hgallery_windows_gallery: str = _M7Header(alias="X-HGallery-Windows-Gallery"),
     x_hgallery_media: str = _M7Header(alias="X-HGallery-Media"),
 ):
     _m7_authorize(x_hgallery_device, x_hgallery_token)
-    _m7_require_link(x_hgallery_group, x_hgallery_windows_gallery)
     try:
         padded = x_hgallery_media + "=" * (-len(x_hgallery_media) % 4)
         media = _M7json.loads(_M7base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
@@ -1160,9 +1100,8 @@ async def _m7_upload(
 
 
 @app.post("/api/mobile/sync/finalize")
-def _m7_finalize(request: _M7SyncRequest):
+def _m7_finalize(request: _M7GalleryRequest):
     _m7_authorize(request.device_id, request.token, touch=True)
-    _m7_require_link(request.sync_group_uuid, request.windows_gallery_uuid)
     try:
         return _M7_MOBILE_SYNC.finalize(
             device_id=request.device_id,
@@ -1176,7 +1115,6 @@ def _m7_finalize(request: _M7SyncRequest):
 @app.post("/api/mobile/sync/metadata")
 def _m7_metadata(request: _M7MetadataRequest):
     _m7_authorize(request.device_id, request.token)
-    _m7_require_link(request.sync_group_uuid, request.windows_gallery_uuid)
     try:
         return _M7_MOBILE_SYNC.merge_metadata(request.items)
     except (ValueError, OSError) as error:

@@ -83,28 +83,6 @@ internal class GallerySyncBridge(
         val failure: TransferFailure? = null,
     )
 
-    private data class MetadataMergeStats(
-        val changedFiles: Int = 0,
-        val aiUpdated: Int = 0,
-        val tagsAdded: Int = 0,
-        val artistsAdded: Int = 0,
-        val characterLinksAdded: Int = 0,
-        val createdFranchises: Int = 0,
-        val createdCharacters: Int = 0,
-    )
-
-    private data class TagEnsureResult(
-        val id: Long,
-        val created: Boolean = false,
-        val promoted: Boolean = false,
-    )
-
-    private data class CharacterEnsureResult(
-        val id: Long?,
-        val createdFranchise: Boolean = false,
-        val createdCharacter: Boolean = false,
-    )
-
     private class SyncCancelledException : RuntimeException()
 
     private val repository = GalleryMediaRepository(activity.applicationContext)
@@ -141,11 +119,6 @@ internal class GallerySyncBridge(
                 require(galleryUuid.isNotEmpty()) { "Galleria Android non valida." }
                 writeSyncGroup(galleryUuid, syncGroupUuid)
                 null
-            }
-            "getSyncStatus" -> runAsync(result, "SYNC_STATUS_READ_FAILED") {
-                val galleryUuid = call.argument<String>("galleryUuid")?.trim().orEmpty()
-                require(galleryUuid.isNotEmpty()) { "Galleria Android non valida." }
-                readSyncStatus(galleryUuid)
             }
             "cancelSync" -> {
                 cancelRequested = true
@@ -278,13 +251,10 @@ internal class GallerySyncBridge(
             remapDownloadedUuids(info.galleryUuid, downloaded)
         }
 
-        // Il manifest Windows contiene già i metadata: uniscili subito su Android.
-        // L'operazione è additiva e può essere completata anche se la rete cade
-        // dopo che il manifest è stato ricevuto.
-        val androidMetadataTotal = remote.size.coerceAtLeast(1)
-        progress("metadata_android", 0, androidMetadataTotal, "Merge metadata su Android")
-        val androidMetadata = mergeRemoteMetadata(info.galleryUuid, remote)
-        progress("metadata_android", androidMetadataTotal, androidMetadataTotal, "Metadata Android aggiornati")
+        // Il metadata già ottenuto dal manifest può essere unito localmente anche
+        // se la rete viene interrotta dopo alcuni download.
+        progress("metadata_android", 0, remote.size, "Merge metadata su Android")
+        mergeRemoteMetadata(info.galleryUuid, remote)
 
         if (!interrupted && !cancelled) {
             for (item in uploads) {
@@ -330,9 +300,6 @@ internal class GallerySyncBridge(
         }
 
         var metadataMergedWindows = 0
-        var metadataChangedWindows = 0
-        var windowsCreatedFranchises = 0
-        var windowsCreatedCharacters = 0
         var unresolvedWindows = 0
         var windowsCount = remote.size + successfulUploads
 
@@ -343,18 +310,17 @@ internal class GallerySyncBridge(
                 val finalize = postJson(info, "/api/mobile/sync/finalize", basePayload(info))
                 windowsCount = finalize.optInt("count", windowsCount)
 
-                // Dopo il merge Windows→Android, i metadata locali rappresentano
-                // già l'unione. Inviarli a Windows chiude il merge bidirezionale.
+                // Push di tutti i metadata locali: l'unione resta bidirezionale e
+                // i file assenti sul PC vengono semplicemente ignorati dal backend.
                 val localAfterFinalize = localItems(info.galleryUuid)
                 val uniqueLocal = localAfterFinalize.filter { it.sha256.isNotBlank() }
                     .associateBy { it.sha256.lowercase(Locale.ROOT) }.values.toList()
-                val chunks = uniqueLocal.chunked(100)
-                chunks.forEachIndexed { index, chunk ->
+                uniqueLocal.chunked(100).forEachIndexed { index, chunk ->
                     if (cancelRequested) throw SyncCancelledException()
                     progress(
                         "metadata_windows",
                         index,
-                        chunks.size.coerceAtLeast(1),
+                        (uniqueLocal.size + 99) / 100,
                         "Merge metadata su Windows",
                     )
                     val payload = basePayload(info).apply {
@@ -364,14 +330,11 @@ internal class GallerySyncBridge(
                     }
                     val response = postJson(info, "/api/mobile/sync/metadata", payload)
                     metadataMergedWindows += response.optInt("merged", 0)
-                    metadataChangedWindows += response.optInt("changedFiles", 0)
-                    windowsCreatedFranchises += response.optInt("createdFranchises", 0)
-                    windowsCreatedCharacters += response.optInt("createdCharacters", 0)
                     unresolvedWindows += response.optInt("unresolvedCharacters", 0)
                     progress(
                         "metadata_windows",
                         index + 1,
-                        chunks.size.coerceAtLeast(1),
+                        (uniqueLocal.size + 99) / 100,
                         "Merge metadata su Windows",
                     )
                 }
@@ -380,7 +343,7 @@ internal class GallerySyncBridge(
             } catch (error: Exception) {
                 val network = isNetworkFailure(error)
                 failures += TransferFailure(
-                    direction = "metadata",
+                    direction = "finalize",
                     filename = "Windows",
                     message = readableError(error),
                     network = network,
@@ -389,54 +352,7 @@ internal class GallerySyncBridge(
             }
         }
 
-        var verifiedSynced = false
-        var metadataDifferencesAfter = (initialPlan["metadataDifferences"] as? Int) ?: 0
-        var finalAndroidCount = localItems(info.galleryUuid).size
-
-        if (cancelRequested) cancelled = true
-        if (!interrupted && !cancelled) {
-            try {
-                progress("verify", 0, 1, "Verifica finale del gruppo")
-                // Non serve ricopiare file: un nuovo confronto hash+metadata deve
-                // risultare vuoto per dichiarare il gruppo realmente allineato.
-                val verifiedLocal = localItems(info.galleryUuid)
-                val verifiedRemoteManifest = fetchManifest(info)
-                val verifiedRemote = parseManifestItems(verifiedRemoteManifest)
-                val verifiedPlan = plan(verifiedLocal, verifiedRemote)
-                finalAndroidCount = verifiedLocal.size
-                windowsCount = verifiedRemote.size
-                metadataDifferencesAfter = (verifiedPlan["metadataDifferences"] as? Int) ?: 0
-                val remainingFiles = ((verifiedPlan["toAndroid"] as? Int) ?: 0) +
-                    ((verifiedPlan["toWindows"] as? Int) ?: 0)
-                verifiedSynced = remainingFiles == 0 && metadataDifferencesAfter == 0
-                if (!verifiedSynced) {
-                    failures += TransferFailure(
-                        direction = "verify",
-                        filename = "Gruppo",
-                        message = "La verifica finale rileva ancora $remainingFiles file e $metadataDifferencesAfter metadata da allineare.",
-                        network = false,
-                    )
-                } else {
-                    recordSuccessfulSync(
-                        info.galleryUuid,
-                        info,
-                        finalAndroidCount,
-                        windowsCount,
-                    )
-                }
-                progress("verify", 1, 1, if (verifiedSynced) "Gallerie verificate" else "Differenze residue")
-            } catch (error: Exception) {
-                val network = isNetworkFailure(error)
-                failures += TransferFailure(
-                    direction = "verify",
-                    filename = "Gruppo",
-                    message = readableError(error),
-                    network = network,
-                )
-                if (network) interrupted = true
-            }
-        }
-
+        val localAfter = localItems(info.galleryUuid)
         recordWindowsPeer(
             info.galleryUuid,
             remoteGalleryUuid,
@@ -446,7 +362,7 @@ internal class GallerySyncBridge(
         val pendingDownloads = (downloads.size - attemptedDownloads).coerceAtLeast(0)
         val pendingUploads = (uploads.size - attemptedUploads).coerceAtLeast(0)
         val complete = !interrupted && !cancelled && failures.isEmpty() &&
-            pendingDownloads == 0 && pendingUploads == 0 && verifiedSynced
+            pendingDownloads == 0 && pendingUploads == 0
         val finalPhase = when {
             cancelled -> "cancelled"
             interrupted -> "interrupted"
@@ -456,8 +372,8 @@ internal class GallerySyncBridge(
         val finalMessage = when {
             cancelled -> "Sincronizzazione interrotta. I file completati verranno saltati al prossimo avvio."
             interrupted -> "Connessione interrotta. Riavvia la sincronizzazione quando il PC è raggiungibile."
-            complete -> "Sincronizzazione completata e verificata"
-            else -> "Sincronizzazione parziale: restano differenze da riallineare."
+            complete -> "Sincronizzazione completata"
+            else -> "Sincronizzazione parziale: alcuni file richiedono un nuovo tentativo."
         }
         progress(finalPhase, 1, 1, finalMessage, successfulDownloads + successfulUploads, failures.size)
 
@@ -466,18 +382,9 @@ internal class GallerySyncBridge(
             "uploaded" to successfulUploads,
             "alreadyPresent" to (initialPlan["alreadyPresent"] ?: 0),
             "pathConflicts" to (initialPlan["pathConflicts"] ?: 0),
-            "metadataDifferencesBefore" to (initialPlan["metadataDifferences"] ?: 0),
-            "metadataDifferencesAfter" to metadataDifferencesAfter,
             "metadataMergedWindows" to metadataMergedWindows,
-            "metadataChangedWindows" to metadataChangedWindows,
-            "metadataChangedAndroid" to androidMetadata.changedFiles,
-            "createdFranchisesAndroid" to androidMetadata.createdFranchises,
-            "createdCharactersAndroid" to androidMetadata.createdCharacters,
-            "createdFranchisesWindows" to windowsCreatedFranchises,
-            "createdCharactersWindows" to windowsCreatedCharacters,
             "unresolvedWindowsCharacters" to unresolvedWindows,
-            "verifiedSynced" to verifiedSynced,
-            "androidCount" to finalAndroidCount,
+            "androidCount" to localAfter.size,
             "windowsCount" to windowsCount,
             "elapsedMs" to (System.currentTimeMillis() - started),
             "complete" to complete,
@@ -591,155 +498,21 @@ internal class GallerySyncBridge(
         return (message.ifBlank { error.javaClass.simpleName }).take(400)
     }
 
-    private fun normalizeMetadataName(value: String): String =
-        value.trim().split(Regex("\\s+")).filter(String::isNotBlank).joinToString(" ").lowercase(Locale.ROOT)
-
-    private fun metadataNames(values: List<String>): Set<String> =
-        values.map(::normalizeMetadataName).filter(String::isNotBlank).toSet()
-
-    private fun metadataNameMap(values: List<String>): Map<String, String> {
-        val result = linkedMapOf<String, String>()
-        for (value in values) {
-            val key = normalizeMetadataName(value)
-            if (key.isNotBlank()) result.putIfAbsent(key, value.trim())
-        }
-        return result
-    }
-
-    private fun characterKeys(values: List<Map<String, String>>): Set<String> =
-        characterNameMap(values).keys
-
-    private fun characterNameMap(values: List<Map<String, String>>): Map<String, String> {
-        val result = linkedMapOf<String, String>()
-        for (character in values) {
-            val franchiseRaw = character["franchiseName"].orEmpty().trim()
-            val nameRaw = character["name"].orEmpty().trim()
-            val franchise = normalizeMetadataName(franchiseRaw)
-            val name = normalizeMetadataName(nameRaw)
-            if (franchise.isBlank() || name.isBlank()) continue
-            result.putIfAbsent("$franchise\u0000$name", "$franchiseRaw · $nameRaw")
-        }
-        return result
-    }
-
-    private fun metadataDiffers(left: SyncItem, right: SyncItem): Boolean =
-        left.aiGenerated != right.aiGenerated ||
-            metadataNames(left.tags) != metadataNames(right.tags) ||
-            metadataNames(left.artists) != metadataNames(right.artists) ||
-            characterKeys(left.characters) != characterKeys(right.characters)
-
-    private fun metadataTypeConflict(left: SyncItem, right: SyncItem): Boolean {
-        val leftTags = metadataNames(left.tags)
-        val leftArtists = metadataNames(left.artists)
-        val rightTags = metadataNames(right.tags)
-        val rightArtists = metadataNames(right.artists)
-        return leftTags.intersect(rightArtists).isNotEmpty() ||
-            leftArtists.intersect(rightTags).isNotEmpty()
-    }
-
-    private fun change(kind: String, value: String, note: String = ""): Map<String, String> =
-        linkedMapOf<String, String>("kind" to kind, "value" to value).apply {
-            if (note.isNotBlank()) put("note", note)
-        }
-
-    private fun metadataDetail(local: SyncItem, remote: SyncItem): Map<String, Any> {
-        val toAndroid = mutableListOf<Map<String, String>>()
-        val toWindows = mutableListOf<Map<String, String>>()
-
-        val localTags = metadataNameMap(local.tags)
-        val localArtists = metadataNameMap(local.artists)
-        val remoteTags = metadataNameMap(remote.tags)
-        val remoteArtists = metadataNameMap(remote.artists)
-        val allNames = (localTags.keys + localArtists.keys + remoteTags.keys + remoteArtists.keys).toSortedSet()
-
-        for (key in allNames) {
-            val localType = when {
-                key in localArtists -> "artist"
-                key in localTags -> "tag"
-                else -> ""
-            }
-            val remoteType = when {
-                key in remoteArtists -> "artist"
-                key in remoteTags -> "tag"
-                else -> ""
-            }
-            val finalType = if (localType == "artist" || remoteType == "artist") "artist" else "tag"
-            val display = remoteArtists[key] ?: localArtists[key] ?: remoteTags[key] ?: localTags[key] ?: key
-            val note = if ((localType == "tag" || remoteType == "tag") && finalType == "artist") {
-                "La classificazione Artista prevale sul tag generale."
-            } else {
-                ""
-            }
-            if (localType != finalType) {
-                toAndroid += change(if (finalType == "artist") "Artista" else "Tag", display, note)
-            }
-            if (remoteType != finalType) {
-                toWindows += change(if (finalType == "artist") "Artista" else "Tag", display, note)
-            }
-        }
-
-        val localCharacters = characterNameMap(local.characters)
-        val remoteCharacters = characterNameMap(remote.characters)
-        for ((key, label) in remoteCharacters) {
-            if (key !in localCharacters) toAndroid += change("Personaggio", label)
-        }
-        for ((key, label) in localCharacters) {
-            if (key !in remoteCharacters) toWindows += change("Personaggio", label)
-        }
-
-        if (remote.aiGenerated && !local.aiGenerated) {
-            toAndroid += change("IA", "Contenuto IA")
-        }
-        if (local.aiGenerated && !remote.aiGenerated) {
-            toWindows += change("IA", "Contenuto IA")
-        }
-
-        return mapOf(
-            "filename" to local.filename.ifBlank { remote.filename },
-            "relativePath" to local.relativePath.ifBlank { remote.relativePath },
-            "toAndroid" to toAndroid,
-            "toWindows" to toWindows,
-            "typeConflict" to metadataTypeConflict(local, remote),
-            "changeCount" to (toAndroid.size + toWindows.size),
-        )
-    }
-
     private fun plan(local: List<SyncItem>, remote: List<SyncItem>): Map<String, Any> {
         val localByHash = local.filter { it.sha256.isNotBlank() }.associateBy { it.sha256.lowercase(Locale.ROOT) }
         val remoteByHash = remote.filter { it.sha256.isNotBlank() }.associateBy { it.sha256.lowercase(Locale.ROOT) }
         val toAndroid = remoteByHash.filterKeys { it !in localByHash }.values
         val toWindows = localByHash.filterKeys { it !in remoteByHash }.values
-        val commonHashes = localByHash.keys.intersect(remoteByHash.keys)
         val localPaths = local.associateBy { it.relativePath.lowercase(Locale.ROOT) }
         val pathConflicts = remote.count { remoteItem ->
             val localItem = localPaths[remoteItem.relativePath.lowercase(Locale.ROOT)]
             localItem != null && !localItem.sha256.equals(remoteItem.sha256, ignoreCase = true)
         }
-        var metadataDifferences = 0
-        var metadataTypeConflicts = 0
-        var metadataChangeCount = 0
-        val metadataDetails = mutableListOf<Map<String, Any>>()
-        val metadataDetailLimit = 200
-        for (hash in commonHashes.sorted()) {
-            val localItem = localByHash[hash] ?: continue
-            val remoteItem = remoteByHash[hash] ?: continue
-            if (!metadataDiffers(localItem, remoteItem)) continue
-            metadataDifferences += 1
-            if (metadataTypeConflict(localItem, remoteItem)) metadataTypeConflicts += 1
-            val detail = metadataDetail(localItem, remoteItem)
-            metadataChangeCount += (detail["changeCount"] as? Int) ?: 0
-            if (metadataDetails.size < metadataDetailLimit) metadataDetails += detail
-        }
         return mapOf(
             "toAndroid" to toAndroid.size,
             "toWindows" to toWindows.size,
-            "alreadyPresent" to commonHashes.size,
+            "alreadyPresent" to localByHash.keys.intersect(remoteByHash.keys).size,
             "pathConflicts" to pathConflicts,
-            "metadataDifferences" to metadataDifferences,
-            "metadataTypeConflicts" to metadataTypeConflicts,
-            "metadataChangeCount" to metadataChangeCount,
-            "metadataDetails" to metadataDetails,
-            "metadataDetailsTruncated" to (metadataDifferences > metadataDetails.size),
             "bytesToAndroid" to toAndroid.sumOf { it.sizeBytes.coerceAtLeast(0L) },
             "bytesToWindows" to toWindows.sumOf { it.sizeBytes.coerceAtLeast(0L) },
         )
@@ -809,7 +582,7 @@ internal class GallerySyncBridge(
                 """
                 SELECT sync_uuid, relative_path, filename, extension, media_type,
                        mime_type, size_bytes, modified_epoch_ms, sha256,
-                       document_uri, ai_generated, metadata_updated_epoch_ms
+                       document_uri, ai_generated
                 FROM media
                 WHERE is_present = 1
                 ORDER BY relative_path COLLATE NOCASE
@@ -818,13 +591,10 @@ internal class GallerySyncBridge(
             ).use { cursor ->
                 while (cursor.moveToNext()) {
                     val syncUuid = cursor.getString(0)
-                    val relativePath = cursor.getString(1)
-                    val metadataExplicit = cursor.getLong(11) > 0L
-                    val metadata = localMetadata(db, syncUuid, relativePath, metadataExplicit)
-                    val pathAi = !metadataExplicit && relativePath.split('/').any { it.equals(".AI", ignoreCase = true) }
+                    val metadata = localMetadata(db, syncUuid)
                     items += SyncItem(
                         syncUuid = syncUuid,
-                        relativePath = relativePath,
+                        relativePath = cursor.getString(1),
                         filename = cursor.getString(2),
                         extension = cursor.getString(3),
                         mediaType = cursor.getString(4),
@@ -833,7 +603,7 @@ internal class GallerySyncBridge(
                         modifiedEpochMs = cursor.getLong(7),
                         sha256 = cursor.getString(8),
                         documentUri = cursor.getString(9),
-                        aiGenerated = cursor.getInt(10) != 0 || pathAi,
+                        aiGenerated = cursor.getInt(10) != 0,
                         characters = metadata.first,
                         tags = metadata.second,
                         artists = metadata.third,
@@ -846,12 +616,7 @@ internal class GallerySyncBridge(
         }
     }
 
-    private fun localMetadata(
-        db: SQLiteDatabase,
-        syncUuid: String,
-        relativePath: String,
-        metadataExplicit: Boolean,
-    ): Triple<List<Map<String, String>>, List<String>, List<String>> {
+    private fun localMetadata(db: SQLiteDatabase, syncUuid: String): Triple<List<Map<String, String>>, List<String>, List<String>> {
         val characters = mutableListOf<Map<String, String>>()
         db.rawQuery(
             """
@@ -874,10 +639,6 @@ internal class GallerySyncBridge(
                 )
             }
         }
-        if (!metadataExplicit && characters.isEmpty()) {
-            inferLegacyCharacter(relativePath)?.let { characters += it }
-        }
-
         val tags = mutableListOf<String>()
         val artists = mutableListOf<String>()
         db.rawQuery(
@@ -897,25 +658,6 @@ internal class GallerySyncBridge(
             }
         }
         return Triple(characters, tags, artists)
-    }
-
-    private fun inferLegacyCharacter(relativePath: String): Map<String, String>? {
-        val segments = relativePath.split('/').filter { it.isNotBlank() }
-        if (segments.size < 3) return null
-        val franchise = segments[0]
-        val character = segments[1]
-        if (franchise.startsWith('!') || franchise.startsWith('.') ||
-            character.startsWith('!') || character.startsWith('.')
-        ) {
-            return null
-        }
-        return mapOf(
-            "name" to character,
-            "relativePath" to "$franchise/$character",
-            "franchiseName" to franchise,
-            "franchiseCode" to "",
-            "franchiseRelativePath" to franchise,
-        )
     }
 
     private fun downloadItem(info: ConnectionInfo, item: SyncItem): DownloadedItem {
@@ -1079,85 +821,37 @@ internal class GallerySyncBridge(
         }
     }
 
-    private fun mergeRemoteMetadata(galleryUuid: String, remote: List<SyncItem>): MetadataMergeStats {
+    private fun mergeRemoteMetadata(galleryUuid: String, remote: List<SyncItem>) {
         val database = GalleryIndexDatabase(activity.applicationContext, galleryUuid)
-        var changedFiles = 0
-        var aiUpdated = 0
-        var tagsAdded = 0
-        var artistsAdded = 0
-        var characterLinksAdded = 0
-        var createdFranchises = 0
-        var createdCharacters = 0
         try {
             val db = database.writableDatabase
             db.beginTransaction()
             try {
                 for (item in remote) {
-                    val localRow = db.rawQuery(
-                        "SELECT sync_uuid, ai_generated FROM media WHERE sha256 = ? AND is_present = 1 LIMIT 1",
+                    val localUuid = db.rawQuery(
+                        "SELECT sync_uuid FROM media WHERE sha256 = ? AND is_present = 1 LIMIT 1",
                         arrayOf(item.sha256),
-                    ).use { cursor ->
-                        if (cursor.moveToFirst()) cursor.getString(0) to (cursor.getInt(1) != 0) else null
-                    } ?: continue
-                    val localUuid = localRow.first
-                    var changed = false
-
-                    if (item.aiGenerated && !localRow.second) {
-                        val values = ContentValues().apply { put("ai_generated", 1) }
-                        db.update("media", values, "sync_uuid = ?", arrayOf(localUuid))
-                        aiUpdated += 1
-                        changed = true
-                    }
+                    ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null } ?: continue
                     if (item.aiGenerated) {
-                        val ensured = ensureTag(db, "AI", "system")
-                        if (linkTag(db, localUuid, ensured.id)) {
-                            tagsAdded += 1
-                            changed = true
-                        }
-                    }
-                    item.tags.forEach { tag ->
-                        if (tag.isBlank() || tag.equals("AI", true)) return@forEach
-                        val ensured = ensureTag(db, tag, "general")
-                        if (linkTag(db, localUuid, ensured.id)) {
-                            tagsAdded += 1
-                            changed = true
-                        }
-                    }
-                    item.artists.forEach { artist ->
-                        if (artist.isBlank() || artist.equals("AI", true)) return@forEach
-                        val ensured = ensureTag(db, artist, "artist")
-                        if (ensured.promoted) changed = true
-                        if (linkTag(db, localUuid, ensured.id)) {
-                            artistsAdded += 1
-                            changed = true
-                        }
-                    }
-                    item.characters.forEach { character ->
-                        val ensured = ensureCharacter(db, character)
-                        if (ensured.createdFranchise) createdFranchises += 1
-                        if (ensured.createdCharacter) createdCharacters += 1
-                        val characterId = ensured.id ?: return@forEach
                         val values = ContentValues().apply {
-                            put("media_sync_uuid", localUuid)
-                            put("character_id", characterId)
-                        }
-                        val inserted = db.insertWithOnConflict(
-                            "media_characters",
-                            null,
-                            values,
-                            SQLiteDatabase.CONFLICT_IGNORE,
-                        )
-                        if (inserted != -1L) {
-                            characterLinksAdded += 1
-                            changed = true
-                        }
-                    }
-                    if (changed) {
-                        val values = ContentValues().apply {
+                            put("ai_generated", 1)
                             put("metadata_updated_epoch_ms", System.currentTimeMillis())
                         }
                         db.update("media", values, "sync_uuid = ?", arrayOf(localUuid))
-                        changedFiles += 1
+                        val aiId = ensureTag(db, "AI", "system")
+                        linkTag(db, localUuid, aiId)
+                    }
+                    item.tags.forEach { tag -> if (tag.isNotBlank()) linkTag(db, localUuid, ensureTag(db, tag, "general")) }
+                    item.artists.forEach { artist -> if (artist.isNotBlank()) linkTag(db, localUuid, ensureTag(db, artist, "artist")) }
+                    item.characters.forEach { character ->
+                        val characterId = ensureCharacter(db, character)
+                        if (characterId != null) {
+                            val values = ContentValues().apply {
+                                put("media_sync_uuid", localUuid)
+                                put("character_id", characterId)
+                            }
+                            db.insertWithOnConflict("media_characters", null, values, SQLiteDatabase.CONFLICT_IGNORE)
+                        }
                     }
                 }
                 db.setTransactionSuccessful()
@@ -1167,33 +861,19 @@ internal class GallerySyncBridge(
         } finally {
             database.close()
         }
-        return MetadataMergeStats(
-            changedFiles = changedFiles,
-            aiUpdated = aiUpdated,
-            tagsAdded = tagsAdded,
-            artistsAdded = artistsAdded,
-            characterLinksAdded = characterLinksAdded,
-            createdFranchises = createdFranchises,
-            createdCharacters = createdCharacters,
-        )
     }
 
-    private fun ensureTag(db: SQLiteDatabase, rawName: String, requestedType: String): TagEnsureResult {
+    private fun ensureTag(db: SQLiteDatabase, rawName: String, requestedType: String): Long {
         val name = rawName.trim().split(Regex("\\s+")).filter(String::isNotBlank).joinToString(" ")
-        require(name.isNotBlank()) { "Tag non valido." }
         db.rawQuery("SELECT id, type FROM tags WHERE name = ? COLLATE NOCASE LIMIT 1", arrayOf(name)).use { cursor ->
             if (cursor.moveToFirst()) {
                 val id = cursor.getLong(0)
                 val current = cursor.getString(1)
                 if (current == "general" && requestedType == "artist") {
-                    val values = ContentValues().apply {
-                        put("type", "artist")
-                        put("updated_at_epoch_ms", System.currentTimeMillis())
-                    }
+                    val values = ContentValues().apply { put("type", "artist"); put("updated_at_epoch_ms", System.currentTimeMillis()) }
                     db.update("tags", values, "id = ?", arrayOf(id.toString()))
-                    return TagEnsureResult(id = id, promoted = true)
                 }
-                return TagEnsureResult(id = id)
+                return id
             }
         }
         val now = System.currentTimeMillis()
@@ -1204,90 +884,53 @@ internal class GallerySyncBridge(
             put("created_at_epoch_ms", now)
             put("updated_at_epoch_ms", now)
         }
-        return TagEnsureResult(id = db.insertOrThrow("tags", null, values), created = true)
+        return db.insertOrThrow("tags", null, values)
     }
 
-    private fun linkTag(db: SQLiteDatabase, mediaUuid: String, tagId: Long): Boolean {
+    private fun linkTag(db: SQLiteDatabase, mediaUuid: String, tagId: Long) {
         val values = ContentValues().apply { put("media_sync_uuid", mediaUuid); put("tag_id", tagId) }
-        return db.insertWithOnConflict("media_tags", null, values, SQLiteDatabase.CONFLICT_IGNORE) != -1L
+        db.insertWithOnConflict("media_tags", null, values, SQLiteDatabase.CONFLICT_IGNORE)
     }
 
-    private fun ensureCharacter(db: SQLiteDatabase, value: Map<String, String>): CharacterEnsureResult {
+    private fun ensureCharacter(db: SQLiteDatabase, value: Map<String, String>): Long? {
         val name = value["name"].orEmpty().trim()
         val franchiseName = value["franchiseName"].orEmpty().trim()
-        if (name.isEmpty() || franchiseName.isEmpty()) return CharacterEnsureResult(id = null)
-        var createdFranchise = false
+        if (name.isEmpty() || franchiseName.isEmpty()) return null
         var franchiseId = db.rawQuery(
             "SELECT id FROM franchises WHERE name = ? COLLATE NOCASE LIMIT 1",
             arrayOf(franchiseName),
         ).use { cursor -> if (cursor.moveToFirst()) cursor.getLong(0) else null }
         if (franchiseId == null) {
             val now = System.currentTimeMillis()
-            var code = value["franchiseCode"].orEmpty().trim().filter(Char::isLetterOrDigit).uppercase(Locale.ROOT).take(10).ifBlank {
+            var code = value["franchiseCode"].orEmpty().trim().ifBlank {
                 franchiseName.filter(Char::isLetterOrDigit).uppercase(Locale.ROOT).take(8).ifBlank { "SERIE" }
             }
-            val baseCode = code
             var suffix = 1
             while (db.rawQuery("SELECT 1 FROM franchises WHERE code = ? COLLATE NOCASE LIMIT 1", arrayOf(code)).use { it.moveToFirst() }) {
-                val tail = suffix.toString()
-                code = (baseCode.take((10 - tail.length).coerceAtLeast(1)) + tail).take(10)
+                code = (code.take(6) + suffix.toString()).take(10)
                 suffix += 1
             }
-            var path = value["franchiseRelativePath"].orEmpty().trim().ifBlank { franchiseName }
-            var pathSuffix = 1
-            val basePath = path
-            while (db.rawQuery("SELECT 1 FROM franchises WHERE relative_path = ? COLLATE NOCASE LIMIT 1", arrayOf(path)).use { it.moveToFirst() }) {
-                path = "${basePath}_sync_$pathSuffix"
-                pathSuffix += 1
-            }
+            val path = value["franchiseRelativePath"].orEmpty().trim().ifBlank { franchiseName }
             val values = ContentValues().apply {
-                put("sync_uuid", UUID.randomUUID().toString())
-                put("name", franchiseName)
-                put("code", code)
-                put("relative_path", path)
-                put("is_active", 1)
-                put("created_at_epoch_ms", now)
-                put("updated_at_epoch_ms", now)
+                put("sync_uuid", UUID.randomUUID().toString()); put("name", franchiseName); put("code", code)
+                put("relative_path", path); put("is_active", 1); put("created_at_epoch_ms", now); put("updated_at_epoch_ms", now)
             }
             franchiseId = db.insertOrThrow("franchises", null, values)
-            createdFranchise = true
         }
         db.rawQuery(
             "SELECT id FROM characters WHERE franchise_id = ? AND name = ? COLLATE NOCASE LIMIT 1",
             arrayOf(franchiseId.toString(), name),
-        ).use { cursor ->
-            if (cursor.moveToFirst()) return CharacterEnsureResult(cursor.getLong(0), createdFranchise = createdFranchise)
-        }
+        ).use { cursor -> if (cursor.moveToFirst()) return cursor.getLong(0) }
         val now = System.currentTimeMillis()
-        val franchisePath = db.rawQuery(
-            "SELECT relative_path FROM franchises WHERE id = ? LIMIT 1",
-            arrayOf(franchiseId.toString()),
-        ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else franchiseName }
-        var characterPath = value["relativePath"].orEmpty().trim().ifBlank { "$franchisePath/$name" }
-        var pathSuffix = 1
-        val basePath = characterPath
-        while (db.rawQuery("SELECT 1 FROM characters WHERE relative_path = ? COLLATE NOCASE LIMIT 1", arrayOf(characterPath)).use { it.moveToFirst() }) {
-            characterPath = "${basePath}_sync_$pathSuffix"
-            pathSuffix += 1
+        val characterPath = value["relativePath"].orEmpty().trim().ifBlank {
+            val franchisePath = value["franchiseRelativePath"].orEmpty().trim().ifBlank { franchiseName }
+            "$franchisePath/$name"
         }
         val values = ContentValues().apply {
-            put("sync_uuid", UUID.randomUUID().toString())
-            put("franchise_id", franchiseId)
-            put("name", name)
-            put("relative_path", characterPath)
-            put("is_active", 1)
-            put("created_at_epoch_ms", now)
-            put("updated_at_epoch_ms", now)
+            put("sync_uuid", UUID.randomUUID().toString()); put("franchise_id", franchiseId); put("name", name)
+            put("relative_path", characterPath); put("is_active", 1); put("created_at_epoch_ms", now); put("updated_at_epoch_ms", now)
         }
-        return try {
-            CharacterEnsureResult(
-                id = db.insertOrThrow("characters", null, values),
-                createdFranchise = createdFranchise,
-                createdCharacter = true,
-            )
-        } catch (_: Exception) {
-            CharacterEnsureResult(id = null, createdFranchise = createdFranchise)
-        }
+        return try { db.insertOrThrow("characters", null, values) } catch (_: Exception) { null }
     }
 
     private fun readSyncGroup(galleryUuid: String): String {
@@ -1303,79 +946,23 @@ internal class GallerySyncBridge(
         }
     }
 
-    private fun readSyncStatus(galleryUuid: String): Map<String, Any> {
-        val database = GalleryIndexDatabase(activity.applicationContext, galleryUuid)
-        try {
-            val db = database.readableDatabase
-            val values = mutableMapOf<String, String>()
-            db.rawQuery(
-                "SELECT key, value FROM sync_state WHERE key LIKE 'last_sync_%'",
-                null,
-            ).use { cursor ->
-                while (cursor.moveToNext()) values[cursor.getString(0)] = cursor.getString(1)
-            }
-            return mapOf(
-                "lastSyncEpochMs" to (values["last_sync_epoch_ms"]?.toLongOrNull() ?: 0L),
-                "androidCount" to (values["last_sync_android_count"]?.toIntOrNull() ?: 0),
-                "windowsCount" to (values["last_sync_windows_count"]?.toIntOrNull() ?: 0),
-                "windowsGalleryUuid" to values["last_sync_windows_gallery_uuid"].orEmpty(),
-                "syncGroupUuid" to values["last_sync_group_uuid"].orEmpty(),
-                "verified" to (values["last_sync_verified"] == "1"),
-            )
-        } finally {
-            database.close()
-        }
-    }
-
-    private fun putSyncState(db: SQLiteDatabase, key: String, value: String) {
-        db.execSQL(
-            """
-            INSERT INTO sync_state(key, value, updated_at)
-            VALUES (?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(key) DO UPDATE SET
-                value = excluded.value,
-                updated_at = CURRENT_TIMESTAMP
-            """.trimIndent(),
-            arrayOf(key, value),
-        )
-    }
-
-    private fun recordSuccessfulSync(
-        galleryUuid: String,
-        info: ConnectionInfo,
-        androidCount: Int,
-        windowsCount: Int,
-    ) {
-        val database = GalleryIndexDatabase(activity.applicationContext, galleryUuid)
-        try {
-            val db = database.writableDatabase
-            val now = System.currentTimeMillis().toString()
-            db.beginTransaction()
-            try {
-                putSyncState(db, "last_sync_epoch_ms", now)
-                putSyncState(db, "last_sync_android_count", androidCount.toString())
-                putSyncState(db, "last_sync_windows_count", windowsCount.toString())
-                putSyncState(db, "last_sync_windows_gallery_uuid", info.windowsGalleryUuid)
-                putSyncState(db, "last_sync_group_uuid", info.syncGroupUuid)
-                putSyncState(db, "last_sync_verified", "1")
-                db.setTransactionSuccessful()
-            } finally {
-                db.endTransaction()
-            }
-        } finally {
-            database.close()
-        }
-    }
-
     private fun writeSyncGroup(galleryUuid: String, syncGroupUuid: String) {
         val database = GalleryIndexDatabase(activity.applicationContext, galleryUuid)
         try {
             val db = database.writableDatabase
             if (syncGroupUuid.isBlank()) {
                 db.delete("sync_state", "key = ?", arrayOf("sync_group_uuid"))
-                db.delete("sync_state", "key LIKE ?", arrayOf("last_sync_%"))
             } else {
-                putSyncState(db, "sync_group_uuid", syncGroupUuid.trim())
+                db.execSQL(
+                    """
+                    INSERT INTO sync_state(key, value, updated_at)
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(key) DO UPDATE SET
+                        value = excluded.value,
+                        updated_at = CURRENT_TIMESTAMP
+                    """.trimIndent(),
+                    arrayOf("sync_group_uuid", syncGroupUuid.trim()),
+                )
             }
         } finally {
             database.close()

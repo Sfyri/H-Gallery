@@ -14,7 +14,7 @@ from typing import Any, Iterable
 from backend.database import ensure_tag, get_connection
 from backend.indexer import synchronize_archive
 from backend.paths import DATA_ROOT
-from backend.scanner import create_character, create_franchise, load_config, sync_characters
+from backend.scanner import load_config, sync_characters
 from backend.sync_foundation import get_sync_foundation_status
 
 _BLOCKED_ROOTS = {".user", ".todo", ".trash", ".script"}
@@ -201,24 +201,6 @@ class MobileSyncService:
                 return candidate, candidate_rel, False
         raise FileExistsError("Impossibile trovare un nome libero per il media sincronizzato.")
 
-    def _live_hash_row(self, root: Path, sha256: str):
-        with get_connection() as connection:
-            row = connection.execute(
-                "SELECT id, sync_uuid, relative_path FROM files WHERE sha256 = ? AND is_trashed = 0 LIMIT 1",
-                (sha256,),
-            ).fetchone()
-        if row is None:
-            return None
-        try:
-            relative = self._safe_relative_path(str(row["relative_path"]))
-            path = (root / relative).resolve()
-            path.relative_to(root)
-            if path.is_file() and self._sha256(path) == sha256:
-                return row
-        except (OSError, ValueError):
-            pass
-        return None
-
     def import_uploaded_file(self, temporary_path: Path, media: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             relative_path = self._safe_relative_path(str(media.get("relativePath", "")))
@@ -228,44 +210,15 @@ class MobileSyncService:
             actual_hash = self._sha256(temporary_path)
             if actual_hash != expected_hash:
                 raise ValueError("Il file ricevuto non corrisponde all'hash dichiarato.")
-
-            root = self._gallery_root()
-            # Prima di toccare il filesystem controlla un duplicato realmente
-            # presente su disco. Una riga DB stale non deve far perdere il file
-            # che Android sta tentando di ripristinare.
-            existing_hash = self._live_hash_row(root, expected_hash)
-            if existing_hash is not None:
-                temporary_path.unlink(missing_ok=True)
-                return {
-                    "status": "duplicate",
-                    "syncUuid": str(existing_hash["sync_uuid"]),
-                    "relativePath": str(existing_hash["relative_path"]),
-                }
-
             sync_uuid = str(media.get("syncUuid", "")).strip()
             if not _SAFE_UUID.match(sync_uuid):
                 sync_uuid = str(uuid.uuid4())
+            root = self._gallery_root()
             target, final_relative, duplicate_on_disk = self._collision_path(
                 root, relative_path, sync_uuid, expected_hash
             )
-
             if duplicate_on_disk:
                 temporary_path.unlink(missing_ok=True)
-                # Il file fisico esiste già ma il DB può essere rimasto indietro
-                # dopo un arresto improvviso. Ricostruisci l'indice prima di creare
-                # manualmente una nuova riga.
-                synchronize_archive()
-                with get_connection() as connection:
-                    row = connection.execute(
-                        "SELECT id, sync_uuid, relative_path FROM files WHERE sha256 = ? AND is_trashed = 0 LIMIT 1",
-                        (expected_hash,),
-                    ).fetchone()
-                if row is not None:
-                    return {
-                        "status": "duplicate",
-                        "syncUuid": str(row["sync_uuid"]),
-                        "relativePath": str(row["relative_path"]),
-                    }
             else:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(temporary_path), str(target))
@@ -276,23 +229,32 @@ class MobileSyncService:
                     except OSError:
                         pass
 
-            # Un secondo controllo chiude la finestra tra il primo lookup e
-            # l'import fisico (utile se in futuro più peer sincronizzano insieme).
-            existing_hash = self._live_hash_row(root, expected_hash)
-            if existing_hash is not None:
-                if not duplicate_on_disk:
-                    try:
-                        if target.is_file() and self._sha256(target) == expected_hash:
-                            target.unlink(missing_ok=True)
-                    except OSError:
-                        pass
-                return {
-                    "status": "duplicate",
-                    "syncUuid": str(existing_hash["sync_uuid"]),
-                    "relativePath": str(existing_hash["relative_path"]),
-                }
-
+            # If a previous interrupted M7 run already registered the hash, keep it.
             with get_connection() as connection:
+                existing_hash = connection.execute(
+                    "SELECT id, sync_uuid, relative_path FROM files WHERE sha256 = ? AND is_trashed = 0 LIMIT 1",
+                    (expected_hash,),
+                ).fetchone()
+                if existing_hash is not None:
+                    return {
+                        "status": "duplicate",
+                        "syncUuid": str(existing_hash["sync_uuid"]),
+                        "relativePath": str(existing_hash["relative_path"]),
+                    }
+                if duplicate_on_disk:
+                    # The file exists physically but the DB is stale. Let the indexer create it.
+                    synchronize_archive()
+                    row = connection.execute(
+                        "SELECT id, sync_uuid, relative_path FROM files WHERE sha256 = ? AND is_trashed = 0 LIMIT 1",
+                        (expected_hash,),
+                    ).fetchone()
+                    if row is not None:
+                        return {
+                            "status": "duplicate",
+                            "syncUuid": str(row["sync_uuid"]),
+                            "relativePath": str(row["relative_path"]),
+                        }
+
                 final_sync_uuid = sync_uuid
                 uuid_collision = connection.execute(
                     "SELECT 1 FROM files WHERE sync_uuid = ? LIMIT 1",
@@ -345,98 +307,14 @@ class MobileSyncService:
         ).fetchone()
         return int(row["id"]) if row is not None else None
 
-    def _ensure_character_catalog(self, items: Iterable[dict[str, Any]]) -> dict[str, int]:
-        """Crea su Windows serie/personaggi metadata che esistono solo su Android.
-
-        Le entità vengono create tramite le API del normale scanner H-Gallery, così
-        database e struttura di cartelle restano coerenti. Il merge dei file resta
-        comunque additivo: nessuna entità esistente viene rinominata o rimossa.
-        """
-        unique: dict[tuple[str, str], dict[str, Any]] = {}
-        for item in items:
-            for raw in item.get("characters") or []:
-                if not isinstance(raw, dict):
-                    continue
-                name = " ".join(str(raw.get("name") or "").split())
-                franchise = " ".join(str(raw.get("franchiseName") or "").split())
-                if not name or not franchise:
-                    continue
-                unique[(franchise.casefold(), name.casefold())] = dict(raw)
-
-        created_franchises = 0
-        created_characters = 0
-        unresolved = 0
-        if not unique:
-            return {
-                "createdFranchises": 0,
-                "createdCharacters": 0,
-                "unresolvedCatalogCharacters": 0,
-            }
-
-        sync_characters()
-        for character in unique.values():
-            name = " ".join(str(character.get("name") or "").split())
-            franchise_name = " ".join(str(character.get("franchiseName") or "").split())
-            with get_connection() as connection:
-                if self._find_character_id(connection, character) is not None:
-                    continue
-                franchise_row = connection.execute(
-                    "SELECT id FROM franchises WHERE name = ? COLLATE NOCASE AND is_active = 1 LIMIT 1",
-                    (franchise_name,),
-                ).fetchone()
-                franchise_id = int(franchise_row["id"]) if franchise_row is not None else None
-
-            if franchise_id is None:
-                requested_code = "".join(str(character.get("franchiseCode") or "").split()) or None
-                try:
-                    created = create_franchise(franchise_name, requested_code)
-                    franchise_id = int(created["id"])
-                    created_franchises += 1
-                except Exception:
-                    # Può esistere già per una differenza di maiuscole oppure per
-                    # una creazione concorrente: rileggi prima di dichiarare errore.
-                    with get_connection() as connection:
-                        row = connection.execute(
-                            "SELECT id FROM franchises WHERE name = ? COLLATE NOCASE AND is_active = 1 LIMIT 1",
-                            (franchise_name,),
-                        ).fetchone()
-                    franchise_id = int(row["id"]) if row is not None else None
-
-            if franchise_id is None:
-                unresolved += 1
-                continue
-
-            try:
-                create_character(franchise_id, name)
-                created_characters += 1
-            except Exception:
-                with get_connection() as connection:
-                    if self._find_character_id(connection, character) is None:
-                        unresolved += 1
-
-        return {
-            "createdFranchises": created_franchises,
-            "createdCharacters": created_characters,
-            "unresolvedCatalogCharacters": unresolved,
-        }
-
     def merge_metadata(self, items: Iterable[dict[str, Any]]) -> dict[str, int]:
-        item_list = [dict(item) for item in items if isinstance(item, dict)]
         merged = 0
-        changed_files = 0
-        ai_updated = 0
-        tags_added = 0
-        artists_added = 0
-        character_links_added = 0
         unresolved_characters = 0
-
         with self._lock:
-            catalog = self._ensure_character_catalog(item_list)
-            # create_franchise/create_character aggiornano già il DB; non rilanciare
-            # qui lo scanner, perché le nuove cartelle possono essere ancora vuote
-            # finché non vengono aggiunte le associazioni del media.
+            # New incoming directories may introduce franchises/characters.
+            sync_characters()
             with get_connection() as connection:
-                for item in item_list:
+                for item in items:
                     sha256 = str(item.get("sha256") or "").strip().lower()
                     if len(sha256) != 64:
                         continue
@@ -447,46 +325,31 @@ class MobileSyncService:
                     if file_row is None:
                         continue
                     file_id = int(file_row["id"])
-                    changed = False
-
                     if bool(item.get("aiGenerated")) and not bool(file_row["ai_generated"]):
                         connection.execute("UPDATE files SET ai_generated = 1 WHERE id = ?", (file_id,))
                         ai_id, _, _ = ensure_tag(connection, "AI", "system")
-                        cursor = connection.execute(
+                        connection.execute(
                             "INSERT OR IGNORE INTO file_tags(file_id, tag_id) VALUES (?, ?)",
                             (file_id, ai_id),
                         )
-                        ai_updated += 1
-                        changed = True
-                        if cursor.rowcount > 0:
-                            tags_added += 1
-
                     for tag in item.get("tags") or []:
                         name = " ".join(str(tag).split())
                         if not name or name.casefold() == "ai":
                             continue
                         tag_id, _, _ = ensure_tag(connection, name, "general")
-                        cursor = connection.execute(
+                        connection.execute(
                             "INSERT OR IGNORE INTO file_tags(file_id, tag_id) VALUES (?, ?)",
                             (file_id, tag_id),
                         )
-                        if cursor.rowcount > 0:
-                            tags_added += 1
-                            changed = True
-
                     for artist in item.get("artists") or []:
                         name = " ".join(str(artist).split())
                         if not name or name.casefold() == "ai":
                             continue
                         tag_id, _, _ = ensure_tag(connection, name, "artist")
-                        cursor = connection.execute(
+                        connection.execute(
                             "INSERT OR IGNORE INTO file_tags(file_id, tag_id) VALUES (?, ?)",
                             (file_id, tag_id),
                         )
-                        if cursor.rowcount > 0:
-                            artists_added += 1
-                            changed = True
-
                     for character in item.get("characters") or []:
                         if not isinstance(character, dict):
                             continue
@@ -494,29 +357,12 @@ class MobileSyncService:
                         if character_id is None:
                             unresolved_characters += 1
                             continue
-                        cursor = connection.execute(
+                        connection.execute(
                             "INSERT OR IGNORE INTO file_characters(file_id, character_id) VALUES (?, ?)",
                             (file_id, character_id),
                         )
-                        if cursor.rowcount > 0:
-                            character_links_added += 1
-                            changed = True
-
-                    if changed:
-                        changed_files += 1
                     merged += 1
-
-        return {
-            "merged": merged,
-            "changedFiles": changed_files,
-            "aiUpdated": ai_updated,
-            "tagsAdded": tags_added,
-            "artistsAdded": artists_added,
-            "characterLinksAdded": character_links_added,
-            "createdFranchises": int(catalog["createdFranchises"]),
-            "createdCharacters": int(catalog["createdCharacters"]),
-            "unresolvedCharacters": unresolved_characters + int(catalog["unresolvedCatalogCharacters"]),
-        }
+        return {"merged": merged, "unresolvedCharacters": unresolved_characters}
 
     def finalize(self, *, device_id: str, android_gallery_uuid: str, android_gallery_name: str) -> dict[str, Any]:
         with self._lock:
@@ -558,16 +404,6 @@ class MobileSyncService:
     def new_temporary_upload() -> Path:
         directory = DATA_ROOT / "sync_tmp"
         directory.mkdir(parents=True, exist_ok=True)
-        # Un arresto forzato di Windows può lasciare un .part senza che FastAPI
-        # abbia il tempo di eseguire il cleanup dell'eccezione. Elimina soltanto
-        # temporanei M7 vecchi, così non interferiamo con upload contemporanei.
-        cutoff = time.time() - (12 * 60 * 60)
-        for candidate in directory.glob("m7_*.part"):
-            try:
-                if candidate.stat().st_mtime < cutoff:
-                    candidate.unlink(missing_ok=True)
-            except OSError:
-                pass
         handle, name = tempfile.mkstemp(prefix="m7_", suffix=".part", dir=directory)
         os.close(handle)
         return Path(name)

@@ -163,8 +163,8 @@ class _DeviceConnectionPageState extends State<DeviceConnectionPage> {
                                 ),
                               );
                             },
-                            icon: const Icon(Icons.hub_rounded),
-                            label: const Text('Gallerie collegate'),
+                            icon: const Icon(Icons.sync_rounded),
+                            label: const Text('Sincronizza'),
                           ),
                         TextButton(onPressed: _forget, child: const Text('Dimentica')),
                       ],

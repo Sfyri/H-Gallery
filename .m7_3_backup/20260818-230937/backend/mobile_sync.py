@@ -14,7 +14,7 @@ from typing import Any, Iterable
 from backend.database import ensure_tag, get_connection
 from backend.indexer import synchronize_archive
 from backend.paths import DATA_ROOT
-from backend.scanner import create_character, create_franchise, load_config, sync_characters
+from backend.scanner import load_config, sync_characters
 from backend.sync_foundation import get_sync_foundation_status
 
 _BLOCKED_ROOTS = {".user", ".todo", ".trash", ".script"}
@@ -345,98 +345,14 @@ class MobileSyncService:
         ).fetchone()
         return int(row["id"]) if row is not None else None
 
-    def _ensure_character_catalog(self, items: Iterable[dict[str, Any]]) -> dict[str, int]:
-        """Crea su Windows serie/personaggi metadata che esistono solo su Android.
-
-        Le entità vengono create tramite le API del normale scanner H-Gallery, così
-        database e struttura di cartelle restano coerenti. Il merge dei file resta
-        comunque additivo: nessuna entità esistente viene rinominata o rimossa.
-        """
-        unique: dict[tuple[str, str], dict[str, Any]] = {}
-        for item in items:
-            for raw in item.get("characters") or []:
-                if not isinstance(raw, dict):
-                    continue
-                name = " ".join(str(raw.get("name") or "").split())
-                franchise = " ".join(str(raw.get("franchiseName") or "").split())
-                if not name or not franchise:
-                    continue
-                unique[(franchise.casefold(), name.casefold())] = dict(raw)
-
-        created_franchises = 0
-        created_characters = 0
-        unresolved = 0
-        if not unique:
-            return {
-                "createdFranchises": 0,
-                "createdCharacters": 0,
-                "unresolvedCatalogCharacters": 0,
-            }
-
-        sync_characters()
-        for character in unique.values():
-            name = " ".join(str(character.get("name") or "").split())
-            franchise_name = " ".join(str(character.get("franchiseName") or "").split())
-            with get_connection() as connection:
-                if self._find_character_id(connection, character) is not None:
-                    continue
-                franchise_row = connection.execute(
-                    "SELECT id FROM franchises WHERE name = ? COLLATE NOCASE AND is_active = 1 LIMIT 1",
-                    (franchise_name,),
-                ).fetchone()
-                franchise_id = int(franchise_row["id"]) if franchise_row is not None else None
-
-            if franchise_id is None:
-                requested_code = "".join(str(character.get("franchiseCode") or "").split()) or None
-                try:
-                    created = create_franchise(franchise_name, requested_code)
-                    franchise_id = int(created["id"])
-                    created_franchises += 1
-                except Exception:
-                    # Può esistere già per una differenza di maiuscole oppure per
-                    # una creazione concorrente: rileggi prima di dichiarare errore.
-                    with get_connection() as connection:
-                        row = connection.execute(
-                            "SELECT id FROM franchises WHERE name = ? COLLATE NOCASE AND is_active = 1 LIMIT 1",
-                            (franchise_name,),
-                        ).fetchone()
-                    franchise_id = int(row["id"]) if row is not None else None
-
-            if franchise_id is None:
-                unresolved += 1
-                continue
-
-            try:
-                create_character(franchise_id, name)
-                created_characters += 1
-            except Exception:
-                with get_connection() as connection:
-                    if self._find_character_id(connection, character) is None:
-                        unresolved += 1
-
-        return {
-            "createdFranchises": created_franchises,
-            "createdCharacters": created_characters,
-            "unresolvedCatalogCharacters": unresolved,
-        }
-
     def merge_metadata(self, items: Iterable[dict[str, Any]]) -> dict[str, int]:
-        item_list = [dict(item) for item in items if isinstance(item, dict)]
         merged = 0
-        changed_files = 0
-        ai_updated = 0
-        tags_added = 0
-        artists_added = 0
-        character_links_added = 0
         unresolved_characters = 0
-
         with self._lock:
-            catalog = self._ensure_character_catalog(item_list)
-            # create_franchise/create_character aggiornano già il DB; non rilanciare
-            # qui lo scanner, perché le nuove cartelle possono essere ancora vuote
-            # finché non vengono aggiunte le associazioni del media.
+            # New incoming directories may introduce franchises/characters.
+            sync_characters()
             with get_connection() as connection:
-                for item in item_list:
+                for item in items:
                     sha256 = str(item.get("sha256") or "").strip().lower()
                     if len(sha256) != 64:
                         continue
@@ -447,46 +363,31 @@ class MobileSyncService:
                     if file_row is None:
                         continue
                     file_id = int(file_row["id"])
-                    changed = False
-
                     if bool(item.get("aiGenerated")) and not bool(file_row["ai_generated"]):
                         connection.execute("UPDATE files SET ai_generated = 1 WHERE id = ?", (file_id,))
                         ai_id, _, _ = ensure_tag(connection, "AI", "system")
-                        cursor = connection.execute(
+                        connection.execute(
                             "INSERT OR IGNORE INTO file_tags(file_id, tag_id) VALUES (?, ?)",
                             (file_id, ai_id),
                         )
-                        ai_updated += 1
-                        changed = True
-                        if cursor.rowcount > 0:
-                            tags_added += 1
-
                     for tag in item.get("tags") or []:
                         name = " ".join(str(tag).split())
                         if not name or name.casefold() == "ai":
                             continue
                         tag_id, _, _ = ensure_tag(connection, name, "general")
-                        cursor = connection.execute(
+                        connection.execute(
                             "INSERT OR IGNORE INTO file_tags(file_id, tag_id) VALUES (?, ?)",
                             (file_id, tag_id),
                         )
-                        if cursor.rowcount > 0:
-                            tags_added += 1
-                            changed = True
-
                     for artist in item.get("artists") or []:
                         name = " ".join(str(artist).split())
                         if not name or name.casefold() == "ai":
                             continue
                         tag_id, _, _ = ensure_tag(connection, name, "artist")
-                        cursor = connection.execute(
+                        connection.execute(
                             "INSERT OR IGNORE INTO file_tags(file_id, tag_id) VALUES (?, ?)",
                             (file_id, tag_id),
                         )
-                        if cursor.rowcount > 0:
-                            artists_added += 1
-                            changed = True
-
                     for character in item.get("characters") or []:
                         if not isinstance(character, dict):
                             continue
@@ -494,29 +395,12 @@ class MobileSyncService:
                         if character_id is None:
                             unresolved_characters += 1
                             continue
-                        cursor = connection.execute(
+                        connection.execute(
                             "INSERT OR IGNORE INTO file_characters(file_id, character_id) VALUES (?, ?)",
                             (file_id, character_id),
                         )
-                        if cursor.rowcount > 0:
-                            character_links_added += 1
-                            changed = True
-
-                    if changed:
-                        changed_files += 1
                     merged += 1
-
-        return {
-            "merged": merged,
-            "changedFiles": changed_files,
-            "aiUpdated": ai_updated,
-            "tagsAdded": tags_added,
-            "artistsAdded": artists_added,
-            "characterLinksAdded": character_links_added,
-            "createdFranchises": int(catalog["createdFranchises"]),
-            "createdCharacters": int(catalog["createdCharacters"]),
-            "unresolvedCharacters": unresolved_characters + int(catalog["unresolvedCatalogCharacters"]),
-        }
+        return {"merged": merged, "unresolvedCharacters": unresolved_characters}
 
     def finalize(self, *, device_id: str, android_gallery_uuid: str, android_gallery_name: str) -> dict[str, Any]:
         with self._lock:
