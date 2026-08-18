@@ -28,6 +28,9 @@ internal class GalleryMediaBridge(
     private val todoThumbnails = GalleryTodoThumbnailProvider(activity.applicationContext)
     private val todoViewerSources = GalleryTodoViewerSourceProvider(activity.applicationContext)
     private val organization = GalleryOrganizationRepository(activity.applicationContext)
+    private val trash = GalleryTrashRepository(activity.applicationContext)
+    private val trashThumbnails = GalleryTrashThumbnailProvider(activity.applicationContext, trash)
+    private val trashViewerSources = GalleryTrashViewerSourceProvider(activity.applicationContext, trash)
 
     private val executor = Executors.newFixedThreadPool(3)
     private val channel = MethodChannel(messenger, CHANNEL).apply {
@@ -40,6 +43,8 @@ internal class GalleryMediaBridge(
         todoThumbnails.clear()
         viewerSources.clearAll()
         todoViewerSources.clearAll()
+        trashThumbnails.clear()
+        trashViewerSources.clearAll()
         executor.shutdownNow()
     }
 
@@ -262,6 +267,83 @@ internal class GalleryMediaBridge(
                 }
             }
 
+            "trashMedia" -> {
+                val galleryUuid = requiredGalleryUuid(call, result) ?: return
+                val treeUri = resolveTreeUri(galleryUuid, result) ?: return
+                val syncUuid = requiredMediaId(call, result) ?: return
+                runAsync(result, "TRASH_FAILED") {
+                    trash.moveToTrash(galleryUuid, treeUri, syncUuid)
+                    clearGalleryCaches(galleryUuid)
+                    null
+                }
+            }
+
+            "getTrashStats", "getTrashMediaStats" -> {
+                val galleryUuid = requiredGalleryUuid(call, result) ?: return
+                resolveTreeUri(galleryUuid, result) ?: return
+                runAsync(result, "TRASH_STATS_FAILED") { trash.stats(galleryUuid) }
+            }
+
+            "listTrashItems" -> {
+                val galleryUuid = requiredGalleryUuid(call, result) ?: return
+                resolveTreeUri(galleryUuid, result) ?: return
+                val limit = call.argument<Int>("limit") ?: 120
+                val offset = call.argument<Int>("offset") ?: 0
+                runAsync(result, "TRASH_LIST_FAILED") { trash.listItems(galleryUuid, limit, offset) }
+            }
+
+            "loadTrashThumbnail" -> {
+                val galleryUuid = requiredGalleryUuid(call, result) ?: return
+                resolveTreeUri(galleryUuid, result) ?: return
+                val syncUuid = requiredMediaId(call, result) ?: return
+                val maxPx = call.argument<Int>("maxPx") ?: 360
+                runAsync(result, "TRASH_THUMBNAIL_FAILED") {
+                    trashThumbnails.loadThumbnail(galleryUuid, syncUuid, maxPx)
+                }
+            }
+
+            "prepareTrashViewerSource" -> {
+                val galleryUuid = requiredGalleryUuid(call, result) ?: return
+                resolveTreeUri(galleryUuid, result) ?: return
+                val syncUuid = requiredMediaId(call, result) ?: return
+                runAsync(result, "TRASH_VIEWER_SOURCE_FAILED") {
+                    trashViewerSources.prepare(galleryUuid, syncUuid)
+                }
+            }
+
+            "restoreTrashItem" -> {
+                val galleryUuid = requiredGalleryUuid(call, result) ?: return
+                val treeUri = resolveTreeUri(galleryUuid, result) ?: return
+                val trashId = requiredTrashId(call, result) ?: return
+                val autoRename = call.argument<Boolean>("autoRename") ?: false
+                runAsync(result, "TRASH_RESTORE_FAILED") {
+                    val value = trash.restore(galleryUuid, treeUri, trashId, autoRename)
+                    clearGalleryCaches(galleryUuid)
+                    value
+                }
+            }
+
+            "permanentlyDeleteTrashItem" -> {
+                val galleryUuid = requiredGalleryUuid(call, result) ?: return
+                resolveTreeUri(galleryUuid, result) ?: return
+                val trashId = requiredTrashId(call, result) ?: return
+                runAsync(result, "TRASH_DELETE_FAILED") {
+                    trash.permanentlyDelete(galleryUuid, trashId)
+                    clearGalleryCaches(galleryUuid)
+                    null
+                }
+            }
+
+            "emptyTrash" -> {
+                val galleryUuid = requiredGalleryUuid(call, result) ?: return
+                resolveTreeUri(galleryUuid, result) ?: return
+                runAsync(result, "TRASH_EMPTY_FAILED") {
+                    val value = trash.emptyTrash(galleryUuid)
+                    clearGalleryCaches(galleryUuid)
+                    value
+                }
+            }
+
             else -> result.notImplemented()
         }
     }
@@ -276,6 +358,18 @@ internal class GalleryMediaBridge(
             return null
         }
         return galleryUuid
+    }
+
+    private fun requiredTrashId(
+        call: MethodCall,
+        result: MethodChannel.Result,
+    ): Long? {
+        val value = numberArgument(call.arguments, "trashId")
+        if (value == null || value <= 0L) {
+            result.error("INVALID_TRASH_ITEM", "Elemento del cestino non valido.", null)
+            return null
+        }
+        return value
     }
 
     private fun requiredMediaId(
@@ -357,6 +451,15 @@ internal class GalleryMediaBridge(
         return values.mapNotNull { value ->
             value?.toString()?.trim()?.takeIf { it.isNotEmpty() }
         }
+    }
+
+    private fun clearGalleryCaches(galleryUuid: String) {
+        thumbnails.clear()
+        todoThumbnails.clear()
+        trashThumbnails.clear()
+        viewerSources.clearGallery(galleryUuid)
+        todoViewerSources.clearGallery(galleryUuid)
+        trashViewerSources.clearGallery(galleryUuid)
     }
 
     private fun runAsync(

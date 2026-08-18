@@ -5,6 +5,7 @@ import '../theme/app_theme.dart';
 import 'gallery_media_tab.dart';
 import 'new_media_tab.dart';
 import 'search_media_tab.dart';
+import 'trash_media_tab.dart';
 
 class GalleryReadyPage extends StatefulWidget {
   const GalleryReadyPage({required this.gallery, super.key});
@@ -25,6 +26,8 @@ class _GalleryReadyPageState extends State<GalleryReadyPage> {
         return 'New · .toDo';
       case 2:
         return 'Cerca e filtra';
+      case 3:
+        return 'Cestino';
       default:
         return 'Gallery';
     }
@@ -55,6 +58,7 @@ class _GalleryReadyPageState extends State<GalleryReadyPage> {
           GalleryMediaTab(
             gallery: widget.gallery,
             refreshToken: _galleryRevision,
+            onChanged: () => setState(() => _galleryRevision += 1),
           ),
           NewMediaTab(
             gallery: widget.gallery,
@@ -63,6 +67,14 @@ class _GalleryReadyPageState extends State<GalleryReadyPage> {
           SearchMediaTab(
             gallery: widget.gallery,
             refreshToken: _galleryRevision,
+            onChanged: () async {
+              if (mounted) setState(() => _galleryRevision += 1);
+            },
+          ),
+          TrashMediaTab(
+            gallery: widget.gallery,
+            refreshToken: _galleryRevision,
+            onChanged: () => setState(() => _galleryRevision += 1),
           ),
         ],
       ),
@@ -84,6 +96,11 @@ class _GalleryReadyPageState extends State<GalleryReadyPage> {
             icon: Icon(Icons.search_outlined),
             selectedIcon: Icon(Icons.search_rounded),
             label: 'Search',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.delete_outline_rounded),
+            selectedIcon: Icon(Icons.delete_rounded),
+            label: 'Trash',
           ),
         ],
       ),

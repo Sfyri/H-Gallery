@@ -14,6 +14,7 @@ class SeriesBrowserPage extends StatefulWidget {
     required this.series,
     this.mediaService = const PlatformMediaService(),
     this.browseService = const PlatformGalleryBrowseService(),
+    this.onChanged,
     super.key,
   });
 
@@ -21,6 +22,7 @@ class SeriesBrowserPage extends StatefulWidget {
   final GalleryCollection series;
   final MediaService mediaService;
   final GalleryBrowseService browseService;
+  final Future<void> Function()? onChanged;
 
   @override
   State<SeriesBrowserPage> createState() => _SeriesBrowserPageState();
@@ -70,6 +72,12 @@ class _SeriesBrowserPageState extends State<SeriesBrowserPage> {
     );
   }
 
+  Future<void> _handleChanged() async {
+    await widget.onChanged?.call();
+    _coverFutures.clear();
+    await _load();
+  }
+
   void _openCollection(String title, String relativePath) {
     Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
@@ -79,6 +87,7 @@ class _SeriesBrowserPageState extends State<SeriesBrowserPage> {
           query: MediaQuerySpec(relativePrefix: relativePath),
           mediaService: widget.mediaService,
           browseService: widget.browseService,
+          onChanged: _handleChanged,
         ),
       ),
     );

@@ -8,6 +8,7 @@ import '../models/gallery_profile.dart';
 import '../models/media_item.dart';
 import '../services/gallery_browse_service.dart';
 import '../services/media_bridge.dart';
+import '../services/trash_service.dart';
 import '../theme/app_theme.dart';
 import '../screens/media_viewer_page.dart';
 import 'media_info_sheet.dart';
@@ -20,6 +21,8 @@ class MediaQueryGrid extends StatefulWidget {
     this.refreshToken = 0,
     this.mediaService = const PlatformMediaService(),
     this.browseService = const PlatformGalleryBrowseService(),
+    this.trashService = const PlatformTrashService(),
+    this.onChanged,
     this.emptyTitle = 'Nessun risultato',
     this.emptyMessage = 'Nessun media corrisponde ai filtri selezionati.',
     this.onTotalChanged,
@@ -31,6 +34,8 @@ class MediaQueryGrid extends StatefulWidget {
   final int refreshToken;
   final MediaService mediaService;
   final GalleryBrowseService browseService;
+  final TrashService trashService;
+  final Future<void> Function()? onChanged;
   final String emptyTitle;
   final String emptyMessage;
   final ValueChanged<int>? onTotalChanged;
@@ -137,6 +142,45 @@ class _MediaQueryGridState extends State<MediaQueryGrid> {
     }
   }
 
+  Future<void> _moveToTrash(MediaItem item) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Spostare nel cestino?'),
+        content: Text(item.filename),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Annulla'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Sposta'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await widget.trashService.moveMediaToTrash(
+        widget.gallery.galleryUuid,
+        item.syncUuid,
+      );
+      if (!mounted) return;
+      await _loadFirstPage();
+      await widget.onChanged?.call();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Media spostato nel cestino.')),
+      );
+    } on PlatformException catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(error.message ?? 'Operazione non riuscita.')),
+      );
+    }
+  }
+
   Future<void> _openViewer(int index) async {
     final filteredService = FilteredMediaService(
       base: widget.mediaService,
@@ -197,6 +241,7 @@ class _MediaQueryGridState extends State<MediaQueryGrid> {
                       galleryUuid: widget.gallery.galleryUuid,
                       item: item,
                       browseService: widget.browseService,
+                      onTrash: () => _moveToTrash(item),
                     ),
                   );
                 },

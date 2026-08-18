@@ -8,6 +8,7 @@ import '../models/media_item.dart';
 import '../models/scan_result.dart';
 import '../services/gallery_browse_service.dart';
 import '../services/media_bridge.dart';
+import '../services/trash_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/media_info_sheet.dart';
 import '../widgets/media_thumbnail_tile.dart';
@@ -23,6 +24,8 @@ class GalleryMediaTab extends StatefulWidget {
     this.refreshToken = 0,
     this.mediaService = const PlatformMediaService(),
     this.browseService = const PlatformGalleryBrowseService(),
+    this.trashService = const PlatformTrashService(),
+    this.onChanged,
     super.key,
   });
 
@@ -30,6 +33,8 @@ class GalleryMediaTab extends StatefulWidget {
   final int refreshToken;
   final MediaService mediaService;
   final GalleryBrowseService browseService;
+  final TrashService trashService;
+  final VoidCallback? onChanged;
 
   @override
   State<GalleryMediaTab> createState() => _GalleryMediaTabState();
@@ -190,6 +195,50 @@ class _GalleryMediaTabState extends State<GalleryMediaTab> {
     }
   }
 
+  Future<void> _moveToTrash(MediaItem item) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Spostare nel cestino?'),
+        content: Text(item.filename),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Annulla'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Sposta'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await widget.trashService.moveMediaToTrash(
+        widget.gallery.galleryUuid,
+        item.syncUuid,
+      );
+      if (!mounted) return;
+      await _refreshFromDatabase();
+      widget.onChanged?.call();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Media spostato nel cestino.')),
+      );
+    } on PlatformException catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(error.message ?? 'Operazione non riuscita.')),
+      );
+    }
+  }
+
+  Future<void> _handleNestedChange() async {
+    widget.onChanged?.call();
+    await _refreshFromDatabase();
+  }
+
   Future<void> _openViewer(int index) async {
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
@@ -225,6 +274,7 @@ class _GalleryMediaTabState extends State<GalleryMediaTab> {
             series: collection,
             mediaService: widget.mediaService,
             browseService: widget.browseService,
+            onChanged: _handleNestedChange,
           ),
         ),
       );
@@ -239,6 +289,7 @@ class _GalleryMediaTabState extends State<GalleryMediaTab> {
           query: MediaQuerySpec(relativePrefix: collection.relativePath),
           mediaService: widget.mediaService,
           browseService: widget.browseService,
+          onChanged: _handleNestedChange,
         ),
       ),
     );
@@ -380,6 +431,7 @@ class _GalleryMediaTabState extends State<GalleryMediaTab> {
                   galleryUuid: widget.gallery.galleryUuid,
                   item: item,
                   browseService: widget.browseService,
+                  onTrash: () => _moveToTrash(item),
                 ),
               );
             },

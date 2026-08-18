@@ -92,6 +92,39 @@ internal data class OrganizedMediaRecord(
     val aiGenerated: Boolean,
 )
 
+internal data class TrashSourceRecord(
+    val syncUuid: String,
+    val relativePath: String,
+    val filename: String,
+    val extension: String,
+    val mediaType: String,
+    val isAnimated: Boolean,
+    val mimeType: String,
+    val sizeBytes: Long,
+    val modifiedEpochMs: Long,
+    val documentUri: String,
+    val documentId: String,
+    val sha256: String,
+)
+
+internal data class TrashDatabaseRecord(
+    val trashId: Long,
+    val mediaSyncUuid: String,
+    val originalRelativePath: String,
+    val trashRelativePath: String,
+    val trashDocumentUri: String,
+    val trashDocumentId: String,
+    val trashFilename: String,
+    val deletedEpochMs: Long,
+    val extension: String,
+    val mediaType: String,
+    val isAnimated: Boolean,
+    val mimeType: String,
+    val sizeBytes: Long,
+    val modifiedEpochMs: Long,
+    val sha256: String,
+)
+
 internal class GalleryIndexDatabase(
     context: Context,
     galleryUuid: String,
@@ -102,7 +135,7 @@ internal class GalleryIndexDatabase(
     DATABASE_VERSION,
 ) {
     companion object {
-        private const val DATABASE_VERSION = 3
+        private const val DATABASE_VERSION = 4
     }
 
     override fun onConfigure(db: SQLiteDatabase) {
@@ -138,6 +171,7 @@ internal class GalleryIndexDatabase(
         createMediaIndexes(db)
         createMetadataSchema(db)
         createBrowseIndexes(db)
+        createTrashAndSyncSchema(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -157,6 +191,84 @@ internal class GalleryIndexDatabase(
         }
         createMediaIndexes(db)
         createBrowseIndexes(db)
+        if (oldVersion < 4) {
+            createTrashAndSyncSchema(db)
+        }
+    }
+
+    private fun createTrashAndSyncSchema(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS trash_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                media_sync_uuid TEXT NOT NULL UNIQUE,
+                original_relative_path TEXT NOT NULL,
+                trash_relative_path TEXT NOT NULL UNIQUE,
+                trash_document_uri TEXT NOT NULL,
+                trash_document_id TEXT NOT NULL,
+                trash_filename TEXT NOT NULL,
+                deleted_epoch_ms INTEGER NOT NULL,
+                FOREIGN KEY(media_sync_uuid) REFERENCES media(sync_uuid) ON DELETE CASCADE
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_trash_deleted ON trash_items(deleted_epoch_ms DESC)",
+        )
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS sync_peers (
+                peer_uuid TEXT PRIMARY KEY,
+                peer_gallery_uuid TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                platform TEXT NOT NULL DEFAULT 'unknown'
+                    CHECK(platform IN ('windows', 'android', 'unknown')),
+                paired_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                last_seen_at TEXT,
+                is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)),
+                UNIQUE(peer_gallery_uuid)
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_sync_peers_active ON sync_peers(is_active, display_name)",
+        )
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS sync_tombstones (
+                file_uuid TEXT PRIMARY KEY,
+                sha256 TEXT NOT NULL,
+                media_type TEXT NOT NULL,
+                last_relative_path TEXT NOT NULL,
+                deleted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                origin_peer_uuid TEXT,
+                created_locally INTEGER NOT NULL DEFAULT 1 CHECK(created_locally IN (0, 1))
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_sync_tombstones_deleted ON sync_tombstones(deleted_at)",
+        )
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS sync_tombstone_acks (
+                file_uuid TEXT NOT NULL,
+                peer_uuid TEXT NOT NULL,
+                acknowledged_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(file_uuid, peer_uuid),
+                FOREIGN KEY(file_uuid) REFERENCES sync_tombstones(file_uuid) ON DELETE CASCADE
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS sync_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """.trimIndent(),
+        )
     }
 
     private fun createMediaIndexes(db: SQLiteDatabase) {
@@ -277,6 +389,7 @@ internal class GalleryIndexDatabase(
     fun reconcile(scanned: List<IndexedMediaDocument>): ReconcileResult {
         val db = writableDatabase
         val existing = readAllRows(db)
+        val trashedUuids = readTrashedMediaUuids(db)
         val byPath = existing.filter { it.isPresent }.associateBy { it.relativePath }
         val byPathAll = existing.groupBy { it.relativePath }
         val byDocumentId = existing.groupBy { it.documentId }
@@ -300,6 +413,7 @@ internal class GalleryIndexDatabase(
                         .orEmpty()
                         .filter {
                             !it.isPresent &&
+                                it.syncUuid !in trashedUuids &&
                                 it.sha256 == document.sha256 &&
                                 it.syncUuid !in claimedUuids
                         }
@@ -312,7 +426,9 @@ internal class GalleryIndexDatabase(
                     val documentCandidates = byDocumentId[document.documentId]
                         .orEmpty()
                         .filter {
-                            it.syncUuid !in claimedUuids && it.relativePath !in scannedPaths
+                            it.syncUuid !in claimedUuids &&
+                                it.syncUuid !in trashedUuids &&
+                                it.relativePath !in scannedPaths
                         }
                     if (documentCandidates.size == 1) {
                         matched = documentCandidates.single()
@@ -323,7 +439,9 @@ internal class GalleryIndexDatabase(
                     val hashCandidates = byHash[document.sha256]
                         .orEmpty()
                         .filter {
-                            it.syncUuid !in claimedUuids && it.relativePath !in scannedPaths
+                            it.syncUuid !in claimedUuids &&
+                                it.syncUuid !in trashedUuids &&
+                                it.relativePath !in scannedPaths
                         }
                     if (hashCandidates.size == 1) {
                         matched = hashCandidates.single()
@@ -1229,6 +1347,334 @@ internal class GalleryIndexDatabase(
         }
     }
 
+    fun trashSource(syncUuid: String): TrashSourceRecord? {
+        readableDatabase.rawQuery(
+            """
+            SELECT sync_uuid, relative_path, filename, extension, media_type,
+                   is_animated, mime_type, size_bytes, modified_epoch_ms,
+                   document_uri, document_id, sha256
+            FROM media
+            WHERE sync_uuid = ? AND is_present = 1
+            LIMIT 1
+            """.trimIndent(),
+            arrayOf(syncUuid),
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) return null
+            return TrashSourceRecord(
+                syncUuid = cursor.getString(0),
+                relativePath = cursor.getString(1),
+                filename = cursor.getString(2),
+                extension = cursor.getString(3),
+                mediaType = cursor.getString(4),
+                isAnimated = cursor.getInt(5) != 0,
+                mimeType = cursor.getString(6),
+                sizeBytes = cursor.getLong(7),
+                modifiedEpochMs = cursor.getLong(8),
+                documentUri = cursor.getString(9),
+                documentId = cursor.getString(10),
+                sha256 = cursor.getString(11),
+            )
+        }
+    }
+
+    fun markTrashed(
+        mediaSyncUuid: String,
+        originalRelativePath: String,
+        trashRelativePath: String,
+        trashDocumentUri: String,
+        trashDocumentId: String,
+        trashFilename: String,
+        sizeBytes: Long,
+        modifiedEpochMs: Long,
+    ) {
+        val db = writableDatabase
+        val now = System.currentTimeMillis()
+        db.beginTransaction()
+        try {
+            db.rawQuery(
+                "SELECT 1 FROM trash_items WHERE media_sync_uuid = ? LIMIT 1",
+                arrayOf(mediaSyncUuid),
+            ).use { cursor ->
+                if (cursor.moveToFirst()) throw IllegalStateException("Il media è già nel cestino.")
+            }
+            val trash = ContentValues().apply {
+                put("media_sync_uuid", mediaSyncUuid)
+                put("original_relative_path", originalRelativePath)
+                put("trash_relative_path", trashRelativePath)
+                put("trash_document_uri", trashDocumentUri)
+                put("trash_document_id", trashDocumentId)
+                put("trash_filename", trashFilename)
+                put("deleted_epoch_ms", now)
+            }
+            db.insertOrThrow("trash_items", null, trash)
+            val media = ContentValues().apply {
+                put("is_present", 0)
+                put("size_bytes", sizeBytes)
+                put("modified_epoch_ms", modifiedEpochMs)
+                put("updated_at_epoch_ms", now)
+            }
+            if (db.update("media", media, "sync_uuid = ?", arrayOf(mediaSyncUuid)) != 1) {
+                throw IllegalStateException("Il database non ha aggiornato il media nel cestino.")
+            }
+            val operation = ContentValues().apply {
+                put("operation_type", "trash")
+                put("source_relative_path", originalRelativePath)
+                put("destination_relative_path", trashRelativePath)
+                put("created_at_epoch_ms", now)
+            }
+            db.insertOrThrow("operations", null, operation)
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun rollbackTrash(mediaSyncUuid: String) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val original = db.rawQuery(
+                "SELECT original_relative_path, trash_relative_path FROM trash_items WHERE media_sync_uuid = ?",
+                arrayOf(mediaSyncUuid),
+            ).use { cursor ->
+                if (!cursor.moveToFirst()) null else cursor.getString(0) to cursor.getString(1)
+            }
+            if (original != null) {
+                db.delete("trash_items", "media_sync_uuid = ?", arrayOf(mediaSyncUuid))
+                db.delete(
+                    "operations",
+                    "operation_type = 'trash' AND source_relative_path = ? AND destination_relative_path = ?",
+                    arrayOf(original.first, original.second),
+                )
+                val values = ContentValues().apply {
+                    put("is_present", 1)
+                    put("updated_at_epoch_ms", System.currentTimeMillis())
+                }
+                db.update("media", values, "sync_uuid = ?", arrayOf(mediaSyncUuid))
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun trashStats(): Map<String, Any> {
+        readableDatabase.rawQuery(
+            """
+            SELECT COUNT(*), COALESCE(SUM(m.size_bytes), 0),
+                   COALESCE(SUM(CASE WHEN m.media_type = 'image' AND m.is_animated = 0 THEN 1 ELSE 0 END), 0),
+                   COALESCE(SUM(CASE WHEN m.media_type = 'image' AND m.is_animated = 1 THEN 1 ELSE 0 END), 0),
+                   COALESCE(SUM(CASE WHEN m.media_type = 'video' THEN 1 ELSE 0 END), 0)
+            FROM trash_items t
+            JOIN media m ON m.sync_uuid = t.media_sync_uuid
+            """.trimIndent(),
+            null,
+        ).use { cursor ->
+            cursor.moveToFirst()
+            return mapOf(
+                "total" to cursor.getInt(0),
+                "totalBytes" to cursor.getLong(1),
+                "photos" to cursor.getInt(2),
+                "animated" to cursor.getInt(3),
+                "videos" to cursor.getInt(4),
+            )
+        }
+    }
+
+    fun listTrashItems(limit: Int, offset: Int): List<Map<String, Any>> {
+        val safeLimit = limit.coerceIn(1, 500)
+        val safeOffset = offset.coerceAtLeast(0)
+        val values = mutableListOf<Map<String, Any>>()
+        readableDatabase.rawQuery(
+            """
+            SELECT t.id, t.original_relative_path, t.trash_relative_path, t.deleted_epoch_ms,
+                   m.sync_uuid, t.trash_filename, m.extension, m.media_type, m.is_animated,
+                   m.mime_type, m.size_bytes, m.modified_epoch_ms, m.sha256
+            FROM trash_items t
+            JOIN media m ON m.sync_uuid = t.media_sync_uuid
+            ORDER BY t.deleted_epoch_ms DESC, t.id DESC
+            LIMIT ? OFFSET ?
+            """.trimIndent(),
+            arrayOf(safeLimit.toString(), safeOffset.toString()),
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                values += mapOf(
+                    "trashId" to cursor.getLong(0),
+                    "originalRelativePath" to cursor.getString(1),
+                    "trashRelativePath" to cursor.getString(2),
+                    "deletedAtEpochMs" to cursor.getLong(3),
+                    "syncUuid" to cursor.getString(4),
+                    "relativePath" to cursor.getString(2),
+                    "filename" to cursor.getString(5),
+                    "extension" to cursor.getString(6),
+                    "mediaType" to cursor.getString(7),
+                    "isAnimated" to (cursor.getInt(8) != 0),
+                    "mimeType" to cursor.getString(9),
+                    "sizeBytes" to cursor.getLong(10),
+                    "modifiedEpochMs" to cursor.getLong(11),
+                    "sha256" to cursor.getString(12),
+                )
+            }
+        }
+        return values
+    }
+
+    fun trashRecord(trashId: Long): TrashDatabaseRecord? {
+        readableDatabase.rawQuery(
+            """
+            SELECT t.id, t.media_sync_uuid, t.original_relative_path, t.trash_relative_path,
+                   t.trash_document_uri, t.trash_document_id, t.trash_filename, t.deleted_epoch_ms,
+                   m.extension, m.media_type, m.is_animated, m.mime_type, m.size_bytes,
+                   m.modified_epoch_ms, m.sha256
+            FROM trash_items t
+            JOIN media m ON m.sync_uuid = t.media_sync_uuid
+            WHERE t.id = ? LIMIT 1
+            """.trimIndent(),
+            arrayOf(trashId.toString()),
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) return null
+            return TrashDatabaseRecord(
+                trashId = cursor.getLong(0),
+                mediaSyncUuid = cursor.getString(1),
+                originalRelativePath = cursor.getString(2),
+                trashRelativePath = cursor.getString(3),
+                trashDocumentUri = cursor.getString(4),
+                trashDocumentId = cursor.getString(5),
+                trashFilename = cursor.getString(6),
+                deletedEpochMs = cursor.getLong(7),
+                extension = cursor.getString(8),
+                mediaType = cursor.getString(9),
+                isAnimated = cursor.getInt(10) != 0,
+                mimeType = cursor.getString(11),
+                sizeBytes = cursor.getLong(12),
+                modifiedEpochMs = cursor.getLong(13),
+                sha256 = cursor.getString(14),
+            )
+        }
+    }
+
+    fun allTrashRecords(): List<TrashDatabaseRecord> {
+        val ids = mutableListOf<Long>()
+        readableDatabase.rawQuery("SELECT id FROM trash_items ORDER BY id", null).use { cursor ->
+            while (cursor.moveToNext()) ids += cursor.getLong(0)
+        }
+        return ids.mapNotNull(::trashRecord)
+    }
+
+    fun trashMediaForThumbnail(syncUuid: String): Pair<String, String>? {
+        readableDatabase.rawQuery(
+            """
+            SELECT t.trash_document_uri, m.media_type
+            FROM trash_items t JOIN media m ON m.sync_uuid = t.media_sync_uuid
+            WHERE t.media_sync_uuid = ? LIMIT 1
+            """.trimIndent(),
+            arrayOf(syncUuid),
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) return null
+            return cursor.getString(0) to cursor.getString(1)
+        }
+    }
+
+    fun trashMediaForViewer(syncUuid: String): ViewerMediaRecord? {
+        readableDatabase.rawQuery(
+            """
+            SELECT t.trash_document_uri, m.media_type, m.extension, m.sha256
+            FROM trash_items t JOIN media m ON m.sync_uuid = t.media_sync_uuid
+            WHERE t.media_sync_uuid = ? LIMIT 1
+            """.trimIndent(),
+            arrayOf(syncUuid),
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) return null
+            return ViewerMediaRecord(
+                documentUri = cursor.getString(0),
+                mediaType = cursor.getString(1),
+                extension = cursor.getString(2),
+                sha256 = cursor.getString(3),
+            )
+        }
+    }
+
+    fun restoreTrash(
+        trashId: Long,
+        relativePath: String,
+        filename: String,
+        documentUri: String,
+        documentId: String,
+        sizeBytes: Long,
+        modifiedEpochMs: Long,
+    ) {
+        val db = writableDatabase
+        val now = System.currentTimeMillis()
+        db.beginTransaction()
+        try {
+            val record = trashRecord(trashId)
+                ?: throw IllegalStateException("Elemento del cestino non trovato.")
+            db.rawQuery(
+                "SELECT 1 FROM media WHERE relative_path = ? AND is_present = 1 LIMIT 1",
+                arrayOf(relativePath),
+            ).use { cursor ->
+                if (cursor.moveToFirst()) throw IllegalStateException("Esiste già un media nella destinazione.")
+            }
+            val media = ContentValues().apply {
+                put("relative_path", relativePath)
+                put("filename", filename)
+                put("document_uri", documentUri)
+                put("document_id", documentId)
+                put("size_bytes", sizeBytes)
+                put("modified_epoch_ms", modifiedEpochMs)
+                put("is_present", 1)
+                put("updated_at_epoch_ms", now)
+            }
+            db.update("media", media, "sync_uuid = ?", arrayOf(record.mediaSyncUuid))
+            db.delete("trash_items", "id = ?", arrayOf(trashId.toString()))
+            val operation = ContentValues().apply {
+                put("operation_type", "restore")
+                put("source_relative_path", record.trashRelativePath)
+                put("destination_relative_path", relativePath)
+                put("created_at_epoch_ms", now)
+            }
+            db.insertOrThrow("operations", null, operation)
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun permanentlyDeleteTrash(trashId: Long) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val record = trashRecord(trashId) ?: run {
+                db.setTransactionSuccessful()
+                return
+            }
+            val tombstone = ContentValues().apply {
+                put("file_uuid", record.mediaSyncUuid)
+                put("sha256", record.sha256)
+                put("media_type", record.mediaType)
+                put("last_relative_path", record.originalRelativePath)
+                put("created_locally", 1)
+            }
+            db.insertWithOnConflict(
+                "sync_tombstones",
+                null,
+                tombstone,
+                SQLiteDatabase.CONFLICT_REPLACE,
+            )
+            val operation = ContentValues().apply {
+                put("operation_type", "permanent_delete")
+                put("source_relative_path", record.trashRelativePath)
+                put("destination_relative_path", "")
+                put("created_at_epoch_ms", System.currentTimeMillis())
+            }
+            db.insertOrThrow("operations", null, operation)
+            db.delete("media", "sync_uuid = ?", arrayOf(record.mediaSyncUuid))
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
     private fun characterById(id: Long): CharacterRecord? {
         readableDatabase.rawQuery(
             """
@@ -1397,6 +1843,14 @@ internal class GalleryIndexDatabase(
             .replace("\\", "\\\\")
             .replace("%", "\\%")
             .replace("_", "\\_")
+    }
+
+    private fun readTrashedMediaUuids(db: SQLiteDatabase): Set<String> {
+        val values = hashSetOf<String>()
+        db.rawQuery("SELECT media_sync_uuid FROM trash_items", null).use { cursor ->
+            while (cursor.moveToNext()) values += cursor.getString(0)
+        }
+        return values
     }
 
     private fun readAllRows(db: SQLiteDatabase): List<MediaDatabaseRow> {

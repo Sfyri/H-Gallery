@@ -13,6 +13,7 @@ class FilteredMediaPage extends StatelessWidget {
     required this.query,
     this.mediaService = const PlatformMediaService(),
     this.browseService = const PlatformGalleryBrowseService(),
+    this.onChanged,
     super.key,
   });
 
@@ -21,6 +22,7 @@ class FilteredMediaPage extends StatelessWidget {
   final MediaQuerySpec query;
   final MediaService mediaService;
   final GalleryBrowseService browseService;
+  final Future<void> Function()? onChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -31,6 +33,7 @@ class FilteredMediaPage extends StatelessWidget {
         query: query,
         mediaService: mediaService,
         browseService: browseService,
+        onChanged: onChanged,
         emptyTitle: 'Cartella vuota',
         emptyMessage: 'Non ci sono media indicizzati in questa raccolta.',
       ),

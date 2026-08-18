@@ -14,6 +14,7 @@ class SearchMediaTab extends StatefulWidget {
     this.refreshToken = 0,
     this.mediaService = const PlatformMediaService(),
     this.browseService = const PlatformGalleryBrowseService(),
+    this.onChanged,
     super.key,
   });
 
@@ -21,6 +22,7 @@ class SearchMediaTab extends StatefulWidget {
   final int refreshToken;
   final MediaService mediaService;
   final GalleryBrowseService browseService;
+  final Future<void> Function()? onChanged;
 
   @override
   State<SearchMediaTab> createState() => _SearchMediaTabState();
@@ -353,6 +355,7 @@ class _SearchMediaTabState extends State<SearchMediaTab> {
             refreshToken: widget.refreshToken,
             mediaService: widget.mediaService,
             browseService: widget.browseService,
+            onChanged: widget.onChanged,
             onTotalChanged: (value) {
               if (mounted && value != _resultCount) {
                 setState(() => _resultCount = value);

@@ -10,6 +10,7 @@ Future<void> showMediaInfoSheet({
   required String galleryUuid,
   required MediaItem item,
   required GalleryBrowseService browseService,
+  Future<void> Function()? onTrash,
 }) async {
   MediaMetadataInfo? metadata;
   Object? metadataError;
@@ -69,6 +70,21 @@ Future<void> showMediaInfoSheet({
                   style: TextStyle(color: AppTheme.muted),
                 ),
               ),
+            if (onTrash != null) ...[
+              const SizedBox(height: 18),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: () async {
+                    Navigator.of(context).pop();
+                    await onTrash();
+                  },
+                  style: OutlinedButton.styleFrom(foregroundColor: AppTheme.error),
+                  icon: const Icon(Icons.delete_outline_rounded),
+                  label: const Text('Sposta nel cestino'),
+                ),
+              ),
+            ],
           ],
         ),
       ),
