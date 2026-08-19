@@ -7,6 +7,14 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/gallery_profile.dart';
 
+String _friendlyNetworkFailure(String message) {
+  final lower = message.trim().toLowerCase();
+  if (lower.contains('timed out') || lower.contains('timeout')) {
+    return 'Il PC non ha risposto in tempo. Controlla la rete e riprova.';
+  }
+  return 'Connessione al PC interrotta. Controlla che PC e telefono siano sulla stessa rete e che H-Gallery Windows sia aperto. Puoi riprovare la sincronizzazione senza perdere i file già completati.';
+}
+
 class WindowsGalleryProfile {
   const WindowsGalleryProfile({
     required this.registryId,
@@ -18,7 +26,6 @@ class WindowsGalleryProfile {
     required this.active,
     required this.syncReady,
   });
-
   final String registryId;
   final String galleryUuid;
   final String name;
@@ -29,7 +36,6 @@ class WindowsGalleryProfile {
   final bool syncReady;
 
   bool get linked => syncGroupUuid.isNotEmpty;
-
   factory WindowsGalleryProfile.fromJson(Map<String, dynamic> value) {
     return WindowsGalleryProfile(
       registryId: value['registryId']?.toString() ?? '',
@@ -43,7 +49,6 @@ class WindowsGalleryProfile {
     );
   }
 }
-
 class GallerySyncStatus {
   const GallerySyncStatus({
     required this.lastSyncEpochMs,
@@ -62,7 +67,6 @@ class GallerySyncStatus {
   final bool verified;
 
   bool get hasHistory => lastSyncEpochMs > 0;
-
   factory GallerySyncStatus.fromPlatform(Map<Object?, Object?> value) {
     int number(String key) => (value[key] as num?)?.toInt() ?? 0;
     return GallerySyncStatus(
@@ -75,7 +79,6 @@ class GallerySyncStatus {
     );
   }
 }
-
 class GalleryMetadataChange {
   const GalleryMetadataChange({
     required this.kind,
@@ -93,7 +96,6 @@ class GalleryMetadataChange {
   bool get removes => action == 'remove';
   bool get changesType => action == 'set';
   String get symbol => removes ? '−' : (changesType ? '↔' : '+');
-
   factory GalleryMetadataChange.fromPlatform(Map<Object?, Object?> value) {
     return GalleryMetadataChange(
       kind: value['kind']?.toString() ?? 'Metadata',
@@ -103,7 +105,6 @@ class GalleryMetadataChange {
     );
   }
 }
-
 class GalleryMetadataDifference {
   const GalleryMetadataDifference({
     required this.filename,
@@ -120,7 +121,6 @@ class GalleryMetadataDifference {
   final List<GalleryMetadataChange> toWindows;
   final bool typeConflict;
   final int changeCount;
-
   factory GalleryMetadataDifference.fromPlatform(Map<Object?, Object?> value) {
     List<GalleryMetadataChange> changes(Object? raw) {
       if (raw is! List) return const <GalleryMetadataChange>[];
@@ -133,7 +133,6 @@ class GalleryMetadataDifference {
           )
           .toList(growable: false);
     }
-
     final rawCount = value['changeCount'];
     return GalleryMetadataDifference(
       filename: value['filename']?.toString() ?? '',
@@ -145,7 +144,6 @@ class GalleryMetadataDifference {
     );
   }
 }
-
 class GalleryMetadataConflict {
   const GalleryMetadataConflict({
     required this.filename,
@@ -156,7 +154,6 @@ class GalleryMetadataConflict {
   final String filename;
   final String relativePath;
   final String message;
-
   factory GalleryMetadataConflict.fromPlatform(Map<Object?, Object?> value) {
     return GalleryMetadataConflict(
       filename: value['filename']?.toString() ?? '',
@@ -165,7 +162,6 @@ class GalleryMetadataConflict {
     );
   }
 }
-
 class GalleryDeletionDetail {
   const GalleryDeletionDetail({
     required this.direction,
@@ -183,7 +179,6 @@ class GalleryDeletionDetail {
 
   bool get onAndroid => direction == 'android';
   String get targetLabel => onAndroid ? 'Android' : 'Windows';
-
   factory GalleryDeletionDetail.fromPlatform(Map<Object?, Object?> value) {
     return GalleryDeletionDetail(
       direction: value['direction']?.toString() ?? '',
@@ -194,7 +189,6 @@ class GalleryDeletionDetail {
     );
   }
 }
-
 class GalleryDeletionConflict {
   const GalleryDeletionConflict({
     required this.direction,
@@ -209,7 +203,6 @@ class GalleryDeletionConflict {
   final String message;
 
   String get targetLabel => direction == 'android' ? 'Android' : 'Windows';
-
   factory GalleryDeletionConflict.fromPlatform(Map<Object?, Object?> value) {
     return GalleryDeletionConflict(
       direction: value['direction']?.toString() ?? '',
@@ -219,7 +212,6 @@ class GalleryDeletionConflict {
     );
   }
 }
-
 class GallerySyncPlan {
   const GallerySyncPlan({
     required this.androidCount,
@@ -249,7 +241,6 @@ class GallerySyncPlan {
     required this.windowsGalleryUuid,
     required this.windowsGalleryName,
   });
-
   final int androidCount;
   final int windowsCount;
   final int toAndroid;
@@ -276,7 +267,6 @@ class GallerySyncPlan {
   final int bytesToWindows;
   final String windowsGalleryUuid;
   final String windowsGalleryName;
-
   int get pendingDeletions => deletionPendingAndroid + deletionPendingWindows;
   int get pendingChanges =>
       toAndroid + toWindows + metadataDifferences + pendingDeletions + metadataBaselinePending;
@@ -290,7 +280,6 @@ class GallerySyncPlan {
       metadataResolutionConflicts == 0 &&
       pendingDeletions == 0 &&
       deletionConflicts == 0;
-
   factory GallerySyncPlan.fromPlatform(Map<Object?, Object?> value) {
     int number(String key) => (value[key] as num?)?.toInt() ?? 0;
     final rawDetails = value['metadataDetails'];
@@ -367,7 +356,6 @@ class GallerySyncPlan {
     );
   }
 }
-
 class GallerySyncFailure {
   const GallerySyncFailure({
     required this.direction,
@@ -380,17 +368,17 @@ class GallerySyncFailure {
   final String filename;
   final String message;
   final bool network;
-
   factory GallerySyncFailure.fromPlatform(Map<Object?, Object?> value) {
+    final network = value['network'] == true;
+    final rawMessage = value['message']?.toString() ?? 'Errore non specificato.';
     return GallerySyncFailure(
       direction: value['direction']?.toString() ?? '',
       filename: value['filename']?.toString() ?? '',
-      message: value['message']?.toString() ?? 'Errore non specificato.',
-      network: value['network'] == true,
+      message: network ? _friendlyNetworkFailure(rawMessage) : rawMessage,
+      network: network,
     );
   }
 }
-
 class GallerySyncResult {
   const GallerySyncResult({
     required this.downloaded,
@@ -431,7 +419,6 @@ class GallerySyncResult {
     required this.pendingUploads,
     required this.failures,
   });
-
   final int downloaded;
   final int uploaded;
   final int deletedOnAndroid;
@@ -469,10 +456,8 @@ class GallerySyncResult {
   final int pendingDownloads;
   final int pendingUploads;
   final List<GallerySyncFailure> failures;
-
   int get failed => failedDownloads + failedUploads;
   int get pending => pendingDownloads + pendingUploads;
-
   factory GallerySyncResult.fromPlatform(Map<Object?, Object?> value) {
     int number(String key) => (value[key] as num?)?.toInt() ?? 0;
     final rawFailures = value['failures'];
@@ -527,7 +512,6 @@ class GallerySyncResult {
     );
   }
 }
-
 class GallerySyncProgress {
   const GallerySyncProgress({
     required this.phase,
@@ -548,11 +532,9 @@ class GallerySyncProgress {
   final int failed;
   final int attempt;
   final int maxAttempts;
-
   double? get fraction => total <= 0
       ? null
       : (processed / total).clamp(0.0, 1.0).toDouble();
-
   factory GallerySyncProgress.fromPlatform(Map<Object?, Object?> value) {
     int number(String key, [int fallback = 0]) =>
         (value[key] as num?)?.toInt() ?? fallback;
@@ -568,7 +550,6 @@ class GallerySyncProgress {
     );
   }
 }
-
 class _ConnectionInfo {
   const _ConnectionInfo({
     required this.address,
@@ -591,17 +572,61 @@ class GallerySyncService {
   static const MethodChannel _channel = MethodChannel(
     'com.sfyri.h_gallery_mobile/sync',
   );
-
   final StreamController<GallerySyncProgress> _progressController =
       StreamController<GallerySyncProgress>.broadcast();
 
   Stream<GallerySyncProgress> get progress => _progressController.stream;
 
+  PlatformException _friendlyPlatformException(PlatformException error) {
+    final raw = (error.message ?? '').trim();
+    final lower = raw.toLowerCase();
+    final code = error.code.toUpperCase();
+
+    if (code == 'M6_NOT_PAIRED') {
+      return PlatformException(
+        code: error.code,
+        message: 'Il PC non è associato. Torna a “Collega PC” e associa nuovamente il dispositivo.',
+        details: error.details,
+      );
+    }
+
+    final timeout = code == 'NETWORK_TIMEOUT' ||
+        lower.contains('timed out') ||
+        lower.contains('timeout');
+    if (timeout) {
+      return PlatformException(
+        code: 'NETWORK_TIMEOUT',
+        message: _friendlyNetworkFailure('timeout'),
+        details: error.details,
+      );
+    }
+
+    final network = code == 'NETWORK' ||
+        code.contains('SOCKET') ||
+        lower.contains('software caused connection abort') ||
+        lower.contains('connection reset') ||
+        lower.contains('broken pipe') ||
+        lower.contains('socketexception') ||
+        lower.contains('connection refused') ||
+        lower.contains('failed host lookup') ||
+        lower.contains('network is unreachable') ||
+        lower.contains('no route to host') ||
+        lower.contains('pc non raggiungibile');
+    if (network) {
+      return PlatformException(
+        code: 'NETWORK',
+        message: _friendlyNetworkFailure(raw),
+        details: error.details,
+      );
+    }
+
+    return error;
+  }
+
   Future<void> dispose() async {
     _channel.setMethodCallHandler(null);
     await _progressController.close();
   }
-
   Future<void> _handleNativeCall(MethodCall call) async {
     if (call.method != 'syncProgress') return;
     final arguments = call.arguments;
@@ -609,7 +634,6 @@ class GallerySyncService {
       _progressController.add(GallerySyncProgress.fromPlatform(arguments));
     }
   }
-
   Future<_ConnectionInfo> _connection() async {
     final prefs = await SharedPreferences.getInstance();
     final address = prefs.getString('m6_pc_address');
@@ -619,7 +643,7 @@ class GallerySyncService {
     if (address == null || port == null || token == null || deviceId == null) {
       throw PlatformException(
         code: 'M6_NOT_PAIRED',
-        message: 'Il PC non è associato. Torna a “Collega PC” e ripeti il pairing.',
+        message: 'Il PC non è associato. Torna a “Collega PC” e associa nuovamente il dispositivo.',
       );
     }
     return _ConnectionInfo(
@@ -629,7 +653,6 @@ class GallerySyncService {
       token: token,
     );
   }
-
   Future<Map<String, dynamic>> _postJson(
     String path,
     Map<String, Object?> body,
@@ -662,15 +685,20 @@ class GallerySyncService {
         );
       }
       return decoded;
-    } on SocketException catch (error) {
-      throw PlatformException(code: 'NETWORK', message: 'PC non raggiungibile: ${error.message}');
+    } on SocketException {
+      throw PlatformException(
+        code: 'NETWORK',
+        message: _friendlyNetworkFailure(''),
+      );
     } on TimeoutException {
-      throw PlatformException(code: 'NETWORK_TIMEOUT', message: 'Il PC non ha risposto in tempo.');
+      throw PlatformException(
+        code: 'NETWORK_TIMEOUT',
+        message: _friendlyNetworkFailure('timeout'),
+      );
     } finally {
       client.close(force: true);
     }
   }
-
   Future<List<WindowsGalleryProfile>> listWindowsGalleries() async {
     final response = await _postJson('/api/mobile/sync/windows-galleries', const {});
     final raw = response['galleries'];
@@ -680,7 +708,6 @@ class GallerySyncService {
         .map((value) => WindowsGalleryProfile.fromJson(Map<String, dynamic>.from(value)))
         .toList(growable: false);
   }
-
   Future<String> getSyncGroupUuid(String galleryUuid) async {
     final value = await _channel.invokeMethod<String>(
       'getSyncGroup',
@@ -688,7 +715,6 @@ class GallerySyncService {
     );
     return value?.trim() ?? '';
   }
-
   Future<GallerySyncStatus> getSyncStatus(String galleryUuid) async {
     final value = await _channel.invokeMapMethod<Object?, Object?>(
       'getSyncStatus',
@@ -696,7 +722,6 @@ class GallerySyncService {
     );
     return GallerySyncStatus.fromPlatform(value ?? const <Object?, Object?>{});
   }
-
   Future<void> _setSyncGroupUuid(String galleryUuid, String groupUuid) {
     return _channel.invokeMethod<void>(
       'setSyncGroup',
@@ -706,7 +731,6 @@ class GallerySyncService {
       },
     );
   }
-
   Future<String> linkGalleries(
     GalleryProfile androidGallery,
     WindowsGalleryProfile windowsGallery,
@@ -728,11 +752,9 @@ class GallerySyncService {
     await _setSyncGroupUuid(androidGallery.galleryUuid, groupUuid);
     return groupUuid;
   }
-
   Future<void> unlinkAndroidGallery(GalleryProfile gallery) {
     return _setSyncGroupUuid(gallery.galleryUuid, '');
   }
-
   Future<Map<String, Object?>> _arguments(
     GalleryProfile gallery,
     WindowsGalleryProfile windowsGallery,
@@ -757,38 +779,53 @@ class GallerySyncService {
       'windowsGalleryUuid': windowsGallery.galleryUuid,
     };
   }
-
   Future<GallerySyncPlan> analyze(
     GalleryProfile gallery,
     WindowsGalleryProfile windowsGallery,
     String syncGroupUuid,
   ) async {
-    final value = await _channel.invokeMapMethod<Object?, Object?>(
-      'analyzeSync',
-      await _arguments(gallery, windowsGallery, syncGroupUuid),
-    );
-    if (value == null) {
-      throw PlatformException(code: 'SYNC_EMPTY', message: 'Il PC non ha restituito un piano di merge.');
+    try {
+      final value = await _channel.invokeMapMethod<Object?, Object?>(
+        'analyzeSync',
+        await _arguments(gallery, windowsGallery, syncGroupUuid),
+      );
+      if (value == null) {
+        throw PlatformException(
+          code: 'SYNC_EMPTY',
+          message: 'Il PC non ha restituito un piano di sincronizzazione.',
+        );
+      }
+      return GallerySyncPlan.fromPlatform(value);
+    } on PlatformException catch (error) {
+      throw _friendlyPlatformException(error);
     }
-    return GallerySyncPlan.fromPlatform(value);
   }
-
-  Future<void> cancel() {
-    return _channel.invokeMethod<void>('cancelSync');
+  Future<void> cancel() async {
+    try {
+      await _channel.invokeMethod<void>('cancelSync');
+    } on PlatformException catch (error) {
+      throw _friendlyPlatformException(error);
+    }
   }
-
   Future<GallerySyncResult> run(
     GalleryProfile gallery,
     WindowsGalleryProfile windowsGallery,
     String syncGroupUuid,
   ) async {
-    final value = await _channel.invokeMapMethod<Object?, Object?>(
-      'runSync',
-      await _arguments(gallery, windowsGallery, syncGroupUuid),
-    );
-    if (value == null) {
-      throw PlatformException(code: 'SYNC_EMPTY', message: 'La sincronizzazione non ha restituito un risultato.');
+    try {
+      final value = await _channel.invokeMapMethod<Object?, Object?>(
+        'runSync',
+        await _arguments(gallery, windowsGallery, syncGroupUuid),
+      );
+      if (value == null) {
+        throw PlatformException(
+          code: 'SYNC_EMPTY',
+          message: 'La sincronizzazione non ha restituito un risultato.',
+        );
+      }
+      return GallerySyncResult.fromPlatform(value);
+    } on PlatformException catch (error) {
+      throw _friendlyPlatformException(error);
     }
-    return GallerySyncResult.fromPlatform(value);
   }
 }

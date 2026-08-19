@@ -5,7 +5,10 @@ import uuid
 from typing import Any
 
 
-SYNC_SCHEMA_VERSION = 1
+# v1: identita galleria/file, peer, tombstone e stato sync di base.
+# v2: tombstone isolate per gruppo di sincronizzazione (M7.5).
+# v3: baseline metadata verificate per il merge a tre vie (M7.6).
+SYNC_SCHEMA_VERSION = 3
 
 
 def _column_names(connection: sqlite3.Connection, table_name: str) -> set[str]:
@@ -20,17 +23,15 @@ def _new_uuid() -> str:
 
 
 def _ensure_file_sync_ids(connection: sqlite3.Connection) -> None:
-    """Aggiunge un'identità persistente a ogni media già indicizzato.
+    """Aggiunge un'identita persistente a ogni media gia indicizzato.
 
     ``files.id`` resta l'ID locale SQLite e continua a essere usato dal codice
-    esistente. ``sync_uuid`` è invece l'identità portabile che in futuro verrà
-    usata per riconoscere lo stesso media tra Windows e Android.
+    esistente. ``sync_uuid`` e invece l'identita portabile usata per riconoscere
+    lo stesso media tra Windows e Android.
     """
-
     columns = _column_names(connection, "files")
     if "sync_uuid" not in columns:
         connection.execute("ALTER TABLE files ADD COLUMN sync_uuid TEXT")
-
     missing_rows = connection.execute(
         """
         SELECT id
@@ -44,7 +45,6 @@ def _ensure_file_sync_ids(connection: sqlite3.Connection) -> None:
             "UPDATE files SET sync_uuid = ? WHERE id = ?",
             (_new_uuid(), int(row["id"])),
         )
-
     duplicate_rows = connection.execute(
         """
         SELECT sync_uuid
@@ -60,19 +60,17 @@ def _ensure_file_sync_ids(connection: sqlite3.Connection) -> None:
             "SELECT id FROM files WHERE sync_uuid = ? ORDER BY id",
             (duplicate_uuid,),
         ).fetchall()
-        # Conserva l'identità del record più vecchio e rigenera solo i duplicati.
+        # Conserva l'identita del record piu vecchio e rigenera solo i duplicati.
         for row in rows[1:]:
             connection.execute(
                 "UPDATE files SET sync_uuid = ? WHERE id = ?",
                 (_new_uuid(), int(row["id"])),
             )
-
     connection.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_files_sync_uuid ON files(sync_uuid)"
     )
-
-    # Il codice desktop esistente non conosce ancora sync_uuid. Questo trigger
-    # garantisce che ogni futuro INSERT riceva comunque un'identità persistente
+    # Il codice desktop esistente non conosce sempre sync_uuid. Questo trigger
+    # garantisce che ogni futuro INSERT riceva comunque un'identita persistente
     # senza dover modificare tutti i punti che creano record media.
     connection.executescript(
         """
@@ -124,6 +122,42 @@ def _ensure_gallery_identity(connection: sqlite3.Connection) -> None:
         )
 
 
+def _ensure_sync_tombstone_group(connection: sqlite3.Connection) -> None:
+    """Porta le tombstone pre-M7.5 al formato con isolamento per gruppo.
+
+    Le righe storiche ricevono il gruppo vuoto e non vengono adottate
+    automaticamente: e il comportamento conservativo gia previsto dal sync.
+    """
+    columns = _column_names(connection, "sync_tombstones")
+    if "sync_group_uuid" not in columns:
+        connection.execute(
+            "ALTER TABLE sync_tombstones "
+            "ADD COLUMN sync_group_uuid TEXT NOT NULL DEFAULT ''"
+        )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sync_tombstones_group_deleted "
+        "ON sync_tombstones(sync_group_uuid, deleted_at)"
+    )
+
+
+def _ensure_metadata_baseline_schema(connection: sqlite3.Connection) -> None:
+    """Installa lo storage Windows delle baseline metadata M7.6."""
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS sync_metadata_baselines (
+            sync_group_uuid TEXT NOT NULL,
+            peer_gallery_uuid TEXT NOT NULL,
+            media_sha256 TEXT NOT NULL,
+            snapshot_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(sync_group_uuid, peer_gallery_uuid, media_sha256)
+        );
+        CREATE INDEX IF NOT EXISTS idx_sync_metadata_baselines_pair
+        ON sync_metadata_baselines(sync_group_uuid, peer_gallery_uuid);
+        """
+    )
+
+
 def _ensure_sync_tables(connection: sqlite3.Connection) -> None:
     connection.executescript(
         """
@@ -137,7 +171,6 @@ def _ensure_sync_tables(connection: sqlite3.Connection) -> None:
             is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)),
             UNIQUE(peer_gallery_uuid)
         );
-
         CREATE INDEX IF NOT EXISTS idx_sync_peers_active
         ON sync_peers(is_active, display_name);
 
@@ -148,9 +181,9 @@ def _ensure_sync_tables(connection: sqlite3.Connection) -> None:
             last_relative_path TEXT NOT NULL,
             deleted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             origin_peer_uuid TEXT,
-            created_locally INTEGER NOT NULL DEFAULT 1 CHECK(created_locally IN (0, 1))
+            created_locally INTEGER NOT NULL DEFAULT 1 CHECK(created_locally IN (0, 1)),
+            sync_group_uuid TEXT NOT NULL DEFAULT ''
         );
-
         CREATE INDEX IF NOT EXISTS idx_sync_tombstones_deleted
         ON sync_tombstones(deleted_at);
 
@@ -169,23 +202,25 @@ def _ensure_sync_tables(connection: sqlite3.Connection) -> None:
         );
         """
     )
+    # CREATE TABLE IF NOT EXISTS non modifica tabelle gia presenti: queste due
+    # routine eseguono le migrazioni incrementali necessarie sui DB precedenti.
+    _ensure_sync_tombstone_group(connection)
+    _ensure_metadata_baseline_schema(connection)
 
 
 def initialize_sync_schema(connection: sqlite3.Connection) -> None:
-    """Installa le fondamenta DB del sync in modo non distruttivo e idempotente.
+    """Installa e aggiorna le fondamenta DB del sync in modo non distruttivo.
 
-    Questa funzione NON abilita alcun trasferimento di rete. Prepara solamente
-    identità e tabelle che verranno usate dalle future versioni Windows/Android.
+    La funzione e idempotente: puo essere eseguita a ogni avvio e porta anche
+    database creati prima di M7.5/M7.6 allo schema richiesto dal codice corrente.
     """
-
     _ensure_file_sync_ids(connection)
-    _ensure_gallery_identity(connection)
     _ensure_sync_tables(connection)
+    _ensure_gallery_identity(connection)
 
 
 def get_sync_foundation_status(connection: sqlite3.Connection) -> dict[str, Any]:
     """Restituisce un riepilogo diagnostico, utile durante i test su PC."""
-
     gallery = connection.execute(
         """
         SELECT gallery_uuid, schema_version, created_at
@@ -229,6 +264,21 @@ def get_sync_foundation_status(connection: sqlite3.Connection) -> dict[str, Any]
             "count"
         ]
     )
+    baselines = int(
+        connection.execute(
+            "SELECT COUNT(*) AS count FROM sync_metadata_baselines"
+        ).fetchone()["count"]
+    )
+    tombstone_columns = _column_names(connection, "sync_tombstones")
+    schema_ready = (
+        "sync_group_uuid" in tombstone_columns
+        and bool(
+            connection.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'sync_metadata_baselines' LIMIT 1"
+            ).fetchone()
+        )
+    )
     return {
         "schema_version": int(gallery["schema_version"]) if gallery else 0,
         "gallery_uuid": str(gallery["gallery_uuid"]) if gallery else "",
@@ -237,5 +287,6 @@ def get_sync_foundation_status(connection: sqlite3.Connection) -> dict[str, Any]
         "duplicate_file_sync_ids": duplicate_ids,
         "active_peers": peers,
         "pending_tombstones": tombstones,
-        "ready": bool(gallery) and missing_ids == 0 and duplicate_ids == 0,
+        "metadata_baselines": baselines,
+        "ready": bool(gallery) and missing_ids == 0 and duplicate_ids == 0 and schema_ready,
     }

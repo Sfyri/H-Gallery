@@ -20,11 +20,9 @@ class SavedDesktopConnection {
   final String galleryName;
   final String version;
 }
-
 class LocalConnectionService {
   static const int discoveryPort = 47851;
   static const String protocol = 'h-gallery-m6';
-
   Future<String> _deviceId() async {
     final prefs = await SharedPreferences.getInstance();
     final existing = prefs.getString('m6_device_id');
@@ -35,14 +33,12 @@ class LocalConnectionService {
     await prefs.setString('m6_device_id', value);
     return value;
   }
-
   Future<List<DesktopDevice>> discover({Duration timeout = const Duration(seconds: 3)}) async {
     final socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
     socket.broadcastEnabled = true;
     final devices = <String, DesktopDevice>{};
     final completer = Completer<List<DesktopDevice>>();
     late final StreamSubscription<RawSocketEvent> subscription;
-
     subscription = socket.listen((event) {
       if (event != RawSocketEvent.read) return;
       final datagram = socket.receive();
@@ -67,13 +63,11 @@ class LocalConnectionService {
         // Pacchetto UDP non appartenente a H-Gallery.
       }
     });
-
     final packet = utf8.encode(jsonEncode(<String, Object>{
       'protocol': protocol,
       'action': 'discover',
     }));
     socket.send(packet, InternetAddress('255.255.255.255'), discoveryPort);
-
     Timer(timeout, () async {
       await subscription.cancel();
       socket.close();
@@ -85,7 +79,6 @@ class LocalConnectionService {
     });
     return completer.future;
   }
-
   Future<SavedDesktopConnection> pair(DesktopDevice device, String code) async {
     final deviceId = await _deviceId();
     final response = await _postJson(
@@ -121,7 +114,6 @@ class LocalConnectionService {
       version: (response['version'] as String?) ?? device.version,
     );
   }
-
   Future<SavedDesktopConnection?> checkSavedConnection() async {
     final prefs = await SharedPreferences.getInstance();
     final address = prefs.getString('m6_pc_address');
@@ -154,7 +146,6 @@ class LocalConnectionService {
       return SavedDesktopConnection(device: device, connected: false);
     }
   }
-
   Future<void> forgetSavedConnection() async {
     final prefs = await SharedPreferences.getInstance();
     for (final key in <String>[
@@ -168,7 +159,6 @@ class LocalConnectionService {
       await prefs.remove(key);
     }
   }
-
   Future<Map<String, dynamic>> _postJson(
     DesktopDevice device,
     String path,
@@ -191,6 +181,14 @@ class LocalConnectionService {
         throw HttpException(detail is String ? detail : 'Errore HTTP ${response.statusCode}.');
       }
       return decoded;
+    } on SocketException {
+      throw const HttpException(
+        'PC non raggiungibile. Controlla che H-Gallery Windows sia aperto e che entrambi i dispositivi siano sulla stessa rete.',
+      );
+    } on TimeoutException {
+      throw const HttpException(
+        'Il PC non ha risposto in tempo. Controlla la rete e riprova.',
+      );
     } finally {
       client.close(force: true);
     }

@@ -13,7 +13,6 @@ class DeviceConnectionPage extends StatefulWidget {
   @override
   State<DeviceConnectionPage> createState() => _DeviceConnectionPageState();
 }
-
 class _DeviceConnectionPageState extends State<DeviceConnectionPage> {
   final LocalConnectionService _service = LocalConnectionService();
   List<DesktopDevice> _devices = const [];
@@ -31,7 +30,6 @@ class _DeviceConnectionPageState extends State<DeviceConnectionPage> {
     final saved = await _service.checkSavedConnection();
     if (mounted) setState(() => _saved = saved);
   }
-
   Future<void> _scan() async {
     if (_scanning) return;
     setState(() {
@@ -41,13 +39,14 @@ class _DeviceConnectionPageState extends State<DeviceConnectionPage> {
     try {
       final devices = await _service.discover();
       if (mounted) setState(() => _devices = devices);
-    } on SocketException catch (error) {
-      _error('Ricerca di rete non disponibile: ${error.message}');
+    } on SocketException {
+      _error(
+        'Ricerca di rete non disponibile. Controlla che Wi-Fi/LAN sia attivo e riprova.',
+      );
     } finally {
       if (mounted) setState(() => _scanning = false);
     }
   }
-
   Future<void> _pair(DesktopDevice device) async {
     var enteredCode = '';
     final code = await showDialog<String>(
@@ -85,13 +84,14 @@ class _DeviceConnectionPageState extends State<DeviceConnectionPage> {
       );
     } on HttpException catch (error) {
       _error(error.message);
-    } catch (error) {
-      _error('Connessione non riuscita: $error');
+    } catch (_) {
+      _error(
+        'Connessione non riuscita. Controlla la rete e che H-Gallery Windows sia aperto, quindi riprova.',
+      );
     } finally {
       if (mounted) setState(() => _pairing = false);
     }
   }
-
   Future<void> _forget() async {
     await _service.forgetSavedConnection();
     if (mounted) setState(() => _saved = null);
@@ -101,7 +101,6 @@ class _DeviceConnectionPageState extends State<DeviceConnectionPage> {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
-
   @override
   Widget build(BuildContext context) {
     final saved = _saved;
