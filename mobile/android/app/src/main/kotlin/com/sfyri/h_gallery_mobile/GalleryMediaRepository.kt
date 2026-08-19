@@ -32,11 +32,18 @@ internal class GalleryMediaRepository(private val context: Context) {
         val uri: Uri,
     )
 
+    private data class CachedMediaFingerprint(
+        val sizeBytes: Long,
+        val modifiedEpochMs: Long,
+        val sha256: String,
+    )
+
     fun scanGallery(galleryUuid: String, treeUri: Uri): Map<String, Any> {
         val startedAt = System.currentTimeMillis()
         val database = GalleryIndexDatabase(context, galleryUuid)
         try {
-            val scanned = scanDocuments(treeUri)
+            val scanCache = loadScanCache(database)
+            val scanned = scanDocuments(treeUri, scanCache)
             val changes = database.reconcile(scanned)
             val stats = database.stats().toMutableMap()
             stats["added"] = changes.added
@@ -86,7 +93,10 @@ internal class GalleryMediaRepository(private val context: Context) {
         }
     }
 
-    private fun scanDocuments(treeUri: Uri): List<IndexedMediaDocument> {
+    private fun scanDocuments(
+        treeUri: Uri,
+        scanCache: Map<String, CachedMediaFingerprint>,
+    ): List<IndexedMediaDocument> {
         val rootDocumentId = DocumentsContract.getTreeDocumentId(treeUri)
         val rootUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, rootDocumentId)
         val stack = ArrayDeque<DirectoryNode>()
@@ -115,7 +125,21 @@ internal class GalleryMediaRepository(private val context: Context) {
                 } ?: continue
 
                 val relativePath = joinRelative(directory.relativePrefix, child.displayName)
-                val sha256 = calculateSha256(child.uri)
+                val sizeBytes = child.sizeBytes.coerceAtLeast(0L)
+                val modifiedEpochMs = child.modifiedEpochMs.coerceAtLeast(0L)
+                val cached = scanCache[relativePath]
+                val sha256 = if (
+                    cached != null &&
+                    sizeBytes > 0L &&
+                    modifiedEpochMs > 0L &&
+                    cached.sizeBytes == sizeBytes &&
+                    cached.modifiedEpochMs == modifiedEpochMs &&
+                    isValidSha256(cached.sha256)
+                ) {
+                    cached.sha256
+                } else {
+                    calculateSha256(child.uri)
+                }
                 media += IndexedMediaDocument(
                     relativePath = relativePath,
                     filename = child.displayName,
@@ -125,8 +149,8 @@ internal class GalleryMediaRepository(private val context: Context) {
                     mimeType = child.mimeType.takeUnless {
                         it == "application/octet-stream"
                     }.orEmpty(),
-                    sizeBytes = child.sizeBytes.coerceAtLeast(0L),
-                    modifiedEpochMs = child.modifiedEpochMs.coerceAtLeast(0L),
+                    sizeBytes = sizeBytes,
+                    modifiedEpochMs = modifiedEpochMs,
                     documentUri = child.uri.toString(),
                     documentId = child.documentId,
                     sha256 = sha256,
@@ -135,6 +159,44 @@ internal class GalleryMediaRepository(private val context: Context) {
         }
 
         return media.sortedBy { it.relativePath.lowercase(Locale.ROOT) }
+    }
+
+    private fun loadScanCache(database: GalleryIndexDatabase): Map<String, CachedMediaFingerprint> {
+        val cache = HashMap<String, CachedMediaFingerprint>()
+        val pageSize = 500
+        var offset = 0
+
+        while (true) {
+            val rows = database.listMedia(pageSize, offset)
+            for (row in rows) {
+                val relativePath = (row["relativePath"] as? String)?.trim().orEmpty()
+                val sizeBytes = (row["sizeBytes"] as? Number)?.toLong() ?: continue
+                val modifiedEpochMs = (row["modifiedEpochMs"] as? Number)?.toLong() ?: continue
+                val sha256 = (row["sha256"] as? String)?.trim()?.lowercase(Locale.ROOT).orEmpty()
+
+                // Do not trust incomplete provider metadata. In those cases the scanner
+                // deliberately falls back to reading the file and recalculating SHA-256.
+                if (relativePath.isEmpty() || sizeBytes <= 0L || modifiedEpochMs <= 0L) continue
+                if (!isValidSha256(sha256)) continue
+
+                cache[relativePath] = CachedMediaFingerprint(
+                    sizeBytes = sizeBytes,
+                    modifiedEpochMs = modifiedEpochMs,
+                    sha256 = sha256,
+                )
+            }
+
+            if (rows.size < pageSize) break
+            offset += rows.size
+        }
+
+        return cache
+    }
+
+    private fun isValidSha256(value: String): Boolean {
+        return value.length == 64 && value.all { character ->
+            character in '0'..'9' || character in 'a'..'f' || character in 'A'..'F'
+        }
     }
 
     private fun queryChildren(parent: Uri): List<ChildEntry> {
