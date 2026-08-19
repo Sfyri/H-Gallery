@@ -24,7 +24,6 @@ def ensure_tag(
     tag_type: str = "general",
 ) -> tuple[int, str, str]:
     """Restituisce un tag esistente ignorando maiuscole/minuscole o lo crea.
-
     I tipi ammessi sono ``general``, ``artist`` e ``system``. Un tag già
     classificato come artista o di sistema non viene retrocesso a generale.
     Se un tag generale viene inserito nel campo Artista, viene promosso ad
@@ -33,7 +32,6 @@ def ensure_tag(
     cleaned = normalize_tag_name(name)
     if not cleaned:
         raise ValueError("Il nome del tag non può essere vuoto.")
-
     normalized_type = str(tag_type or "general").strip().casefold()
     if normalized_type not in {"general", "artist", "system"}:
         raise ValueError("Tipo di tag non valido.")
@@ -44,7 +42,6 @@ def ensure_tag(
         "SELECT id, name, type FROM tags WHERE name = ? COLLATE NOCASE",
         (cleaned,),
     ).fetchone()
-
     if row is None:
         cursor = connection.execute(
             "INSERT INTO tags(name, type) VALUES (?, ?)",
@@ -59,7 +56,6 @@ def ensure_tag(
             "UPDATE tags SET type = ? WHERE id = ?",
             (final_type, int(row["id"])),
         )
-
     return int(row["id"]), str(row["name"]), final_type
 
 
@@ -70,7 +66,6 @@ def get_connection() -> Iterator[sqlite3.Connection]:
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute("PRAGMA journal_mode = WAL")
-
     try:
         yield connection
         connection.commit()
@@ -90,7 +85,6 @@ def _column_names(connection: sqlite3.Connection, table_name: str) -> set[str]:
 
 def init_database() -> None:
     """Crea il database e applica le migrazioni non distruttive.
-
     La funzione è compatibile con i database creati dalle versioni 0.3 e 0.4.
     """
     with get_connection() as connection:
@@ -103,7 +97,6 @@ def init_database() -> None:
                 relative_path TEXT NOT NULL UNIQUE,
                 is_active INTEGER NOT NULL DEFAULT 1
             );
-
             CREATE INDEX IF NOT EXISTS idx_franchises_code
             ON franchises(code);
             CREATE TABLE IF NOT EXISTS characters (
@@ -133,10 +126,8 @@ def init_database() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_files_sha256
             ON files(sha256);
-
             CREATE INDEX IF NOT EXISTS idx_files_type_ai
             ON files(media_type, ai_generated);
-
             CREATE TABLE IF NOT EXISTS tags (
                 id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -150,7 +141,6 @@ def init_database() -> None:
                 FOREIGN KEY(character_id) REFERENCES characters(id) ON DELETE CASCADE,
                 UNIQUE(character_id, alias)
             );
-
             CREATE INDEX IF NOT EXISTS idx_character_aliases_alias
             ON character_aliases(alias);
             CREATE TABLE IF NOT EXISTS file_characters (
@@ -160,7 +150,6 @@ def init_database() -> None:
                 FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE,
                 FOREIGN KEY(character_id) REFERENCES characters(id)
             );
-
             CREATE INDEX IF NOT EXISTS idx_file_characters_character
             ON file_characters(character_id, file_id);
             CREATE TABLE IF NOT EXISTS file_tags (
@@ -170,7 +159,6 @@ def init_database() -> None:
                 FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE,
                 FOREIGN KEY(tag_id) REFERENCES tags(id)
             );
-
             CREATE INDEX IF NOT EXISTS idx_file_tags_tag
             ON file_tags(tag_id, file_id);
             CREATE TABLE IF NOT EXISTS stories (
@@ -200,7 +188,6 @@ def init_database() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_story_pages_file
             ON story_pages(file_id);
-
             CREATE TABLE IF NOT EXISTS story_characters (
                 story_id INTEGER NOT NULL,
                 character_id INTEGER NOT NULL,
@@ -210,7 +197,6 @@ def init_database() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_story_characters_character
             ON story_characters(character_id, story_id);
-
             CREATE TABLE IF NOT EXISTS story_tags (
                 story_id INTEGER NOT NULL,
                 tag_id INTEGER NOT NULL,
@@ -220,7 +206,6 @@ def init_database() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_story_tags_tag
             ON story_tags(tag_id, story_id);
-
             CREATE TABLE IF NOT EXISTS operations (
                 id INTEGER PRIMARY KEY,
                 operation_type TEXT NOT NULL,
@@ -260,7 +245,6 @@ def init_database() -> None:
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_files_modified ON files(modified_at DESC)"
         )
-
         story_columns = _column_names(connection, "stories")
         if "metadata_mode" not in story_columns:
             connection.execute(
@@ -271,7 +255,6 @@ def init_database() -> None:
             connection.execute(
                 "ALTER TABLE tags ADD COLUMN type TEXT NOT NULL DEFAULT 'general'"
             )
-
         connection.execute(
             "UPDATE tags SET type = 'system' WHERE name = 'AI' COLLATE NOCASE"
         )
@@ -282,3 +265,91 @@ def init_database() -> None:
         # Fondamenta della sincronizzazione multi-device. La migrazione è
         # non distruttiva e non abilita ancora alcun trasferimento di rete.
         initialize_sync_schema(connection)
+
+        # M7.5: le tombstone sono legate al gruppo di sincronizzazione attivo.
+        # Le righe storiche create prima di M7.5 restano con gruppo vuoto e
+        # NON vengono propagate: è una scelta conservativa per evitare che una
+        # vecchia cancellazione colpisca una galleria collegata in seguito.
+        tombstone_columns = _column_names(connection, "sync_tombstones")
+        if "sync_group_uuid" not in tombstone_columns:
+            connection.execute(
+                "ALTER TABLE sync_tombstones "
+                "ADD COLUMN sync_group_uuid TEXT NOT NULL DEFAULT ''"
+            )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sync_tombstones_group_deleted "
+            "ON sync_tombstones(sync_group_uuid, deleted_at)"
+        )
+
+        # M7.6: baseline metadata per coppia di gallerie. Il baseline viene
+        # scritto soltanto dopo una sincronizzazione verificata e permette un
+        # three-way merge sicuro: una semplice assenza non viene mai trattata
+        # come rimozione finché entrambi i peer non condividono lo stesso
+        # snapshot precedente.
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS sync_metadata_baselines (
+                sync_group_uuid TEXT NOT NULL,
+                peer_gallery_uuid TEXT NOT NULL,
+                media_sha256 TEXT NOT NULL,
+                snapshot_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(sync_group_uuid, peer_gallery_uuid, media_sha256)
+            );
+            CREATE INDEX IF NOT EXISTS idx_sync_metadata_baselines_pair
+            ON sync_metadata_baselines(sync_group_uuid, peer_gallery_uuid);
+            """
+        )
+
+        # Registra una tombstone solo quando un media già nel cestino viene
+        # eliminato definitivamente E la galleria appartiene in quel momento a
+        # un gruppo. La condizione is_trashed=1 evita di trasformare file
+        # mancanti/scansioni esterne in cancellazioni sincronizzate.
+        # Il trigger è BEFORE DELETE così può ancora leggere trash_items prima
+        # del CASCADE. INSERT OR IGNORE conserva un'eventuale tombstone remota
+        # già ricevuta per lo stesso UUID, senza cambiarne il gruppo/origine.
+        connection.executescript(
+            """
+            DROP TRIGGER IF EXISTS trg_m75_file_permanent_delete_tombstone;
+            CREATE TRIGGER trg_m75_file_permanent_delete_tombstone
+            BEFORE DELETE ON files
+            WHEN OLD.is_trashed = 1
+                 AND OLD.sync_uuid IS NOT NULL
+                 AND length(trim(OLD.sync_uuid)) > 0
+                 AND OLD.sha256 IS NOT NULL
+                 AND length(trim(OLD.sha256)) = 64
+                 AND COALESCE(
+                     (SELECT value FROM sync_state
+                      WHERE key = 'sync_group_uuid' LIMIT 1),
+                     ''
+                 ) <> ''
+            BEGIN
+                INSERT OR IGNORE INTO sync_tombstones(
+                    file_uuid,
+                    sha256,
+                    media_type,
+                    last_relative_path,
+                    deleted_at,
+                    origin_peer_uuid,
+                    created_locally,
+                    sync_group_uuid
+                ) VALUES (
+                    OLD.sync_uuid,
+                    lower(OLD.sha256),
+                    OLD.media_type,
+                    COALESCE(
+                        (SELECT original_relative_path
+                         FROM trash_items
+                         WHERE file_id = OLD.id
+                         LIMIT 1),
+                        OLD.relative_path
+                    ),
+                    CURRENT_TIMESTAMP,
+                    NULL,
+                    1,
+                    (SELECT value FROM sync_state
+                     WHERE key = 'sync_group_uuid' LIMIT 1)
+                );
+            END;
+            """
+        )

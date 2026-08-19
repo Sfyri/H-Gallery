@@ -66,6 +66,34 @@ internal class GallerySyncBridge(
         val artists: List<String> = emptyList(),
     )
 
+    private data class SyncTombstone(
+        val fileUuid: String,
+        val sha256: String,
+        val mediaType: String,
+        val lastRelativePath: String,
+        val deletedAt: String = "",
+        val originPeerUuid: String = "",
+        val createdLocally: Boolean = false,
+        val syncGroupUuid: String = "",
+    )
+
+    private data class TombstoneMatch(
+        val item: SyncItem? = null,
+        val conflict: String? = null,
+        val matchKind: String = "",
+    )
+
+    private data class DeletionApplyStats(
+        val movedToTrash: Int = 0,
+        val alreadyAbsent: Int = 0,
+        val conflicts: List<Map<String, String>> = emptyList(),
+    )
+
+    private data class AndroidDeletionPreflight(
+        val resolved: List<Pair<SyncTombstone, TombstoneMatch>>,
+        val conflicts: List<Map<String, String>>,
+    )
+
     private data class DownloadedItem(
         val remote: SyncItem,
         val actualRelativePath: String,
@@ -108,6 +136,8 @@ internal class GallerySyncBridge(
     private class SyncCancelledException : RuntimeException()
 
     private val repository = GalleryMediaRepository(activity.applicationContext)
+    private val trashRepository = GalleryTrashRepository(activity.applicationContext)
+    private val metadataBaselineStore = GalleryMetadataBaselineStore(activity.applicationContext)
     private val executor = Executors.newSingleThreadExecutor()
     private val channel = MethodChannel(messenger, CHANNEL).apply {
         setMethodCallHandler(::handleMethodCall)
@@ -189,10 +219,25 @@ internal class GallerySyncBridge(
         progress("scan", 0, 1, "Indicizzazione galleria Android")
         repository.scanGallery(info.galleryUuid, info.treeUri)
         val local = localItems(info.galleryUuid)
+        val localTombstones = localTombstones(info.galleryUuid, info.syncGroupUuid)
         progress("compare", 0, 1, "Confronto con Windows")
         val remoteManifest = fetchManifest(info)
         val remote = parseManifestItems(remoteManifest)
-        return plan(local, remote).toMutableMap().apply {
+        val remoteTombstones = parseManifestTombstones(remoteManifest, info.syncGroupUuid)
+        val localBaselines = metadataBaselineStore.read(
+            info.galleryUuid,
+            info.syncGroupUuid,
+            info.windowsGalleryUuid,
+        )
+        val remoteBaselines = parseManifestBaselines(remoteManifest, info.galleryUuid)
+        return plan(
+            local,
+            remote,
+            localTombstones,
+            remoteTombstones,
+            localBaselines,
+            remoteBaselines,
+        ).toMutableMap().apply {
             put("androidCount", local.size)
             put("windowsCount", remote.size)
             put("windowsGalleryUuid", remoteManifest.optString("galleryUuid"))
@@ -205,19 +250,95 @@ internal class GallerySyncBridge(
         cancelRequested = false
         progress("scan", 0, 1, "Aggiornamento indice Android")
         repository.scanGallery(info.galleryUuid, info.treeUri)
-        val localBefore = localItems(info.galleryUuid)
-        val remoteManifest = fetchManifest(info)
-        val remote = parseManifestItems(remoteManifest)
+        val initialLocal = localItems(info.galleryUuid)
+        val initialLocalTombstones = localTombstones(info.galleryUuid, info.syncGroupUuid)
+        var remoteManifest = fetchManifest(info)
+        var remote = parseManifestItems(remoteManifest)
+        var remoteTombstones = parseManifestTombstones(remoteManifest, info.syncGroupUuid)
         val remoteGalleryUuid = remoteManifest.optString("galleryUuid")
-        val initialPlan = plan(localBefore, remote)
+        var localBaselines = metadataBaselineStore.read(
+            info.galleryUuid,
+            info.syncGroupUuid,
+            info.windowsGalleryUuid,
+        )
+        var remoteBaselines = parseManifestBaselines(remoteManifest, info.galleryUuid)
+        val initialPlan = plan(
+            initialLocal,
+            remote,
+            initialLocalTombstones,
+            remoteTombstones,
+            localBaselines,
+            remoteBaselines,
+        )
+        val initialDeletionConflicts = (initialPlan["deletionConflicts"] as? Int) ?: 0
+        val initialMetadataResolutionConflicts =
+            (initialPlan["metadataResolutionConflicts"] as? Int) ?: 0
+        if (initialDeletionConflicts > 0) {
+            throw IllegalStateException(
+                "M7.5 ha rilevato $initialDeletionConflicts cancellazioni ambigue. " +
+                    "Nessun file è stato modificato: risolvi i conflitti indicati e analizza di nuovo.",
+            )
+        }
+        if (initialMetadataResolutionConflicts > 0) {
+            throw IllegalStateException(
+                "M7.6 ha rilevato $initialMetadataResolutionConflicts modifiche metadata concorrenti. " +
+                    "Nessun merge viene avviato: risolvi manualmente il conflitto indicato e analizza di nuovo.",
+            )
+        }
 
-        // Il backup Windows resta il punto di ingresso della sessione. Se il PC non
-        // è raggiungibile qui, nessun file è ancora stato modificato.
+        // Preflight incrociato PRIMA di qualsiasi mutazione. Entrambi i lati
+        // devono dimostrare che ogni tombstone ha un bersaglio non ambiguo.
+        // La validazione viene ripetuta anche durante l'applicazione per
+        // proteggere da cambiamenti avvenuti tra preflight e commit.
+        progress("deletions", 0, 2, "Verifica eliminazioni su entrambi i dispositivi")
+        val windowsPreflightConflicts = validateLocalTombstonesOnWindows(info, initialLocalTombstones)
+        val androidPreflightConflicts = preflightRemoteTombstones(info, remoteTombstones).conflicts
+        val crossPreflightConflicts = windowsPreflightConflicts + androidPreflightConflicts
+        if (crossPreflightConflicts.isNotEmpty()) {
+            throw IllegalStateException(
+                "M7.5 ha bloccato ${crossPreflightConflicts.size} cancellazioni prima di modificare i file. " +
+                    crossPreflightConflicts.first()["message"].orEmpty(),
+            )
+        }
+
+        // Il backup Windows resta il punto di ingresso della sessione. Le
+        // cancellazioni vengono applicate solo dopo preflight completo e backup.
         postJson(info, "/api/mobile/sync/begin", basePayload(info))
 
-        val localByHash = localBefore.filter { it.sha256.isNotBlank() }
+        val windowsDeletion = sendLocalTombstonesToWindows(info, initialLocalTombstones)
+        if (windowsDeletion.conflicts.isNotEmpty()) {
+            throw IllegalStateException(
+                "Windows ha bloccato ${windowsDeletion.conflicts.size} cancellazioni per sicurezza. " +
+                    windowsDeletion.conflicts.first()["message"].orEmpty(),
+            )
+        }
+        progress("deletions", 1, 2, "Applicazione eliminazioni su Android")
+        val androidDeletion = applyRemoteTombstones(info, remoteTombstones)
+        if (androidDeletion.conflicts.isNotEmpty()) {
+            throw IllegalStateException(
+                "Android ha bloccato ${androidDeletion.conflicts.size} cancellazioni per sicurezza. " +
+                    androidDeletion.conflicts.first()["message"].orEmpty(),
+            )
+        }
+        progress("deletions", 2, 2, "Eliminazioni allineate")
+
+        // Ricalcola entrambi gli inventari dopo la fase distruttiva. In questo
+        // modo nessun media appena eliminato può rientrare nei trasferimenti.
+        repository.scanGallery(info.galleryUuid, info.treeUri)
+        var localBefore = localItems(info.galleryUuid)
+        var localTombstonesNow = localTombstones(info.galleryUuid, info.syncGroupUuid)
+        remoteManifest = fetchManifest(info)
+        remote = parseManifestItems(remoteManifest)
+        remoteTombstones = parseManifestTombstones(remoteManifest, info.syncGroupUuid)
+        val blockedHashes = (localTombstonesNow + remoteTombstones)
+            .map { it.sha256.lowercase(Locale.ROOT) }
+            .filter(String::isNotBlank)
+            .toSet()
+        val liveLocal = localBefore.filter { it.sha256.lowercase(Locale.ROOT) !in blockedHashes }
+        val liveRemote = remote.filter { it.sha256.lowercase(Locale.ROOT) !in blockedHashes }
+        val localByHash = liveLocal.filter { it.sha256.isNotBlank() }
             .associateBy { it.sha256.lowercase(Locale.ROOT) }
-        val remoteByHash = remote.filter { it.sha256.isNotBlank() }
+        val remoteByHash = liveRemote.filter { it.sha256.isNotBlank() }
             .associateBy { it.sha256.lowercase(Locale.ROOT) }
         val downloads = remoteByHash.filterKeys { it !in localByHash }.values.toList()
         val uploads = localByHash.filterKeys { it !in remoteByHash }.values.toList()
@@ -278,12 +399,27 @@ internal class GallerySyncBridge(
             remapDownloadedUuids(info.galleryUuid, downloaded)
         }
 
-        // Il manifest Windows contiene già i metadata: uniscili subito su Android.
-        // L'operazione è additiva e può essere completata anche se la rete cade
-        // dopo che il manifest è stato ricevuto.
-        val androidMetadataTotal = remote.size.coerceAtLeast(1)
-        progress("metadata_android", 0, androidMetadataTotal, "Merge metadata su Android")
-        val androidMetadata = mergeRemoteMetadata(info.galleryUuid, remote)
+        // M7.6 calcola lo stato metadata desiderato con un three-way merge.
+        // Se il baseline non è condiviso il resolver resta deliberatamente
+        // additivo; una rimozione viene applicata solo con baseline verificato.
+        val remoteForMetadata = remote.filter { it.sha256.lowercase(Locale.ROOT) !in blockedHashes }
+        val localForMetadata = localItems(info.galleryUuid)
+            .filter { it.sha256.lowercase(Locale.ROOT) !in blockedHashes }
+        localBaselines = metadataBaselineStore.read(
+            info.galleryUuid,
+            info.syncGroupUuid,
+            info.windowsGalleryUuid,
+        )
+        remoteBaselines = parseManifestBaselines(remoteManifest, info.galleryUuid)
+        val desiredAndroidMetadata = resolvedMetadataItems(
+            localForMetadata,
+            remoteForMetadata,
+            localBaselines,
+            remoteBaselines,
+        )
+        val androidMetadataTotal = desiredAndroidMetadata.size.coerceAtLeast(1)
+        progress("metadata_android", 0, androidMetadataTotal, "Allineamento metadata su Android")
+        val androidMetadata = mergeRemoteMetadata(info.galleryUuid, desiredAndroidMetadata)
         progress("metadata_android", androidMetadataTotal, androidMetadataTotal, "Metadata Android aggiornati")
 
         if (!interrupted && !cancelled) {
@@ -334,7 +470,7 @@ internal class GallerySyncBridge(
         var windowsCreatedFranchises = 0
         var windowsCreatedCharacters = 0
         var unresolvedWindows = 0
-        var windowsCount = remote.size + successfulUploads
+        var windowsCount = remote.size + successfulUploads - windowsDeletion.movedToTrash
 
         if (cancelRequested) cancelled = true
         if (!interrupted && !cancelled) {
@@ -343,23 +479,45 @@ internal class GallerySyncBridge(
                 val finalize = postJson(info, "/api/mobile/sync/finalize", basePayload(info))
                 windowsCount = finalize.optInt("count", windowsCount)
 
-                // Dopo il merge Windows→Android, i metadata locali rappresentano
-                // già l'unione. Inviarli a Windows chiude il merge bidirezionale.
+                val metadataRemoteManifest = fetchManifest(info)
+                val currentTombstoneHashes = (
+                    localTombstones(info.galleryUuid, info.syncGroupUuid) +
+                        parseManifestTombstones(metadataRemoteManifest, info.syncGroupUuid)
+                    )
+                    .map { it.sha256.lowercase(Locale.ROOT) }
+                    .toSet()
                 val localAfterFinalize = localItems(info.galleryUuid)
-                val uniqueLocal = localAfterFinalize.filter { it.sha256.isNotBlank() }
-                    .associateBy { it.sha256.lowercase(Locale.ROOT) }.values.toList()
-                val chunks = uniqueLocal.chunked(100)
+                    .filter { it.sha256.isNotBlank() && it.sha256.lowercase(Locale.ROOT) !in currentTombstoneHashes }
+                val remoteAfterFinalize = parseManifestItems(metadataRemoteManifest)
+                    .filter { it.sha256.isNotBlank() && it.sha256.lowercase(Locale.ROOT) !in currentTombstoneHashes }
+                localBaselines = metadataBaselineStore.read(
+                    info.galleryUuid,
+                    info.syncGroupUuid,
+                    info.windowsGalleryUuid,
+                )
+                remoteBaselines = parseManifestBaselines(metadataRemoteManifest, info.galleryUuid)
+                val desiredWindowsMetadata = resolvedMetadataItems(
+                    localAfterFinalize,
+                    remoteAfterFinalize,
+                    localBaselines,
+                    remoteBaselines,
+                )
+                val chunks = desiredWindowsMetadata.chunked(100)
                 chunks.forEachIndexed { index, chunk ->
                     if (cancelRequested) throw SyncCancelledException()
                     progress(
                         "metadata_windows",
                         index,
                         chunks.size.coerceAtLeast(1),
-                        "Merge metadata su Windows",
+                        "Allineamento metadata su Windows",
                     )
                     val payload = basePayload(info).apply {
                         put("items", JSONArray().apply {
-                            chunk.forEach { put(itemJson(it, includeDocument = false)) }
+                            chunk.forEach {
+                                put(itemJson(it, includeDocument = false).apply {
+                                    put("replaceMetadata", true)
+                                })
+                            }
                         })
                     }
                     val response = postJson(info, "/api/mobile/sync/metadata", payload)
@@ -368,11 +526,14 @@ internal class GallerySyncBridge(
                     windowsCreatedFranchises += response.optInt("createdFranchises", 0)
                     windowsCreatedCharacters += response.optInt("createdCharacters", 0)
                     unresolvedWindows += response.optInt("unresolvedCharacters", 0)
+                    if (response.optInt("deletionConflicts", 0) > 0) {
+                        throw IllegalStateException("Windows ha rilevato un conflitto di cancellazione durante il merge metadata.")
+                    }
                     progress(
                         "metadata_windows",
                         index + 1,
                         chunks.size.coerceAtLeast(1),
-                        "Merge metadata su Windows",
+                        "Metadata Windows aggiornati",
                     )
                 }
             } catch (_: SyncCancelledException) {
@@ -391,29 +552,111 @@ internal class GallerySyncBridge(
 
         var verifiedSynced = false
         var metadataDifferencesAfter = (initialPlan["metadataDifferences"] as? Int) ?: 0
+        var metadataBaselinePendingAfter = (initialPlan["metadataBaselinePending"] as? Int) ?: 0
+        var metadataResolutionConflictsAfter = initialMetadataResolutionConflicts
+        var deletionPendingAfter = ((initialPlan["deletionPendingAndroid"] as? Int) ?: 0) +
+            ((initialPlan["deletionPendingWindows"] as? Int) ?: 0)
+        var deletionConflictsAfter = initialDeletionConflicts
         var finalAndroidCount = localItems(info.galleryUuid).size
 
         if (cancelRequested) cancelled = true
         if (!interrupted && !cancelled) {
             try {
                 progress("verify", 0, 1, "Verifica finale del gruppo")
-                // Non serve ricopiare file: un nuovo confronto hash+metadata deve
-                // risultare vuoto per dichiarare il gruppo realmente allineato.
                 val verifiedLocal = localItems(info.galleryUuid)
+                val verifiedLocalTombstones = localTombstones(info.galleryUuid, info.syncGroupUuid)
                 val verifiedRemoteManifest = fetchManifest(info)
                 val verifiedRemote = parseManifestItems(verifiedRemoteManifest)
-                val verifiedPlan = plan(verifiedLocal, verifiedRemote)
+                val verifiedRemoteTombstones = parseManifestTombstones(verifiedRemoteManifest, info.syncGroupUuid)
+                var verifiedLocalBaselines = metadataBaselineStore.read(
+                    info.galleryUuid,
+                    info.syncGroupUuid,
+                    info.windowsGalleryUuid,
+                )
+                var verifiedRemoteBaselines = parseManifestBaselines(
+                    verifiedRemoteManifest,
+                    info.galleryUuid,
+                )
+                var verifiedPlan = plan(
+                    verifiedLocal,
+                    verifiedRemote,
+                    verifiedLocalTombstones,
+                    verifiedRemoteTombstones,
+                    verifiedLocalBaselines,
+                    verifiedRemoteBaselines,
+                )
                 finalAndroidCount = verifiedLocal.size
                 windowsCount = verifiedRemote.size
                 metadataDifferencesAfter = (verifiedPlan["metadataDifferences"] as? Int) ?: 0
-                val remainingFiles = ((verifiedPlan["toAndroid"] as? Int) ?: 0) +
+                metadataBaselinePendingAfter = (verifiedPlan["metadataBaselinePending"] as? Int) ?: 0
+                metadataResolutionConflictsAfter =
+                    (verifiedPlan["metadataResolutionConflicts"] as? Int) ?: 0
+                deletionPendingAfter = ((verifiedPlan["deletionPendingAndroid"] as? Int) ?: 0) +
+                    ((verifiedPlan["deletionPendingWindows"] as? Int) ?: 0)
+                deletionConflictsAfter = (verifiedPlan["deletionConflicts"] as? Int) ?: 0
+                var remainingFiles = ((verifiedPlan["toAndroid"] as? Int) ?: 0) +
                     ((verifiedPlan["toWindows"] as? Int) ?: 0)
-                verifiedSynced = remainingFiles == 0 && metadataDifferencesAfter == 0
+
+                val contentAligned = remainingFiles == 0 &&
+                    metadataDifferencesAfter == 0 &&
+                    metadataResolutionConflictsAfter == 0 &&
+                    deletionPendingAfter == 0 &&
+                    deletionConflictsAfter == 0
+
+                if (contentAligned) {
+                    progress("metadata_baseline", 0, 1, "Salvataggio baseline metadata verificato")
+                    establishMetadataBaselines(info, verifiedLocal, verifiedRemote)
+
+                    // Verifica anche il baseline dopo averlo scritto su entrambi
+                    // i peer. Solo questo secondo controllo rende la sessione
+                    // idonea a propagare rimozioni metadata future.
+                    val baselineRemoteManifest = fetchManifest(info)
+                    val baselineRemote = parseManifestItems(baselineRemoteManifest)
+                    verifiedLocalBaselines = metadataBaselineStore.read(
+                        info.galleryUuid,
+                        info.syncGroupUuid,
+                        info.windowsGalleryUuid,
+                    )
+                    verifiedRemoteBaselines = parseManifestBaselines(
+                        baselineRemoteManifest,
+                        info.galleryUuid,
+                    )
+                    verifiedPlan = plan(
+                        verifiedLocal,
+                        baselineRemote,
+                        verifiedLocalTombstones,
+                        parseManifestTombstones(baselineRemoteManifest, info.syncGroupUuid),
+                        verifiedLocalBaselines,
+                        verifiedRemoteBaselines,
+                    )
+                    windowsCount = baselineRemote.size
+                    metadataDifferencesAfter = (verifiedPlan["metadataDifferences"] as? Int) ?: 0
+                    metadataBaselinePendingAfter = (verifiedPlan["metadataBaselinePending"] as? Int) ?: 0
+                    metadataResolutionConflictsAfter =
+                        (verifiedPlan["metadataResolutionConflicts"] as? Int) ?: 0
+                    deletionPendingAfter = ((verifiedPlan["deletionPendingAndroid"] as? Int) ?: 0) +
+                        ((verifiedPlan["deletionPendingWindows"] as? Int) ?: 0)
+                    deletionConflictsAfter = (verifiedPlan["deletionConflicts"] as? Int) ?: 0
+                    remainingFiles = ((verifiedPlan["toAndroid"] as? Int) ?: 0) +
+                        ((verifiedPlan["toWindows"] as? Int) ?: 0)
+                    progress("metadata_baseline", 1, 1, "Baseline metadata verificato")
+                }
+
+                verifiedSynced = remainingFiles == 0 &&
+                    metadataDifferencesAfter == 0 &&
+                    metadataBaselinePendingAfter == 0 &&
+                    metadataResolutionConflictsAfter == 0 &&
+                    deletionPendingAfter == 0 &&
+                    deletionConflictsAfter == 0
                 if (!verifiedSynced) {
                     failures += TransferFailure(
                         direction = "verify",
                         filename = "Gruppo",
-                        message = "La verifica finale rileva ancora $remainingFiles file e $metadataDifferencesAfter metadata da allineare.",
+                        message = "La verifica finale rileva ancora $remainingFiles file, " +
+                            "$metadataDifferencesAfter media con metadata differenti, " +
+                            "$metadataBaselinePendingAfter baseline metadata da inizializzare, " +
+                            "$metadataResolutionConflictsAfter conflitti metadata e " +
+                            "$deletionPendingAfter eliminazioni da allineare.",
                         network = false,
                     )
                 } else {
@@ -454,7 +697,7 @@ internal class GallerySyncBridge(
             else -> "partial"
         }
         val finalMessage = when {
-            cancelled -> "Sincronizzazione interrotta. I file completati verranno saltati al prossimo avvio."
+            cancelled -> "Sincronizzazione interrotta. Le operazioni già confermate restano valide."
             interrupted -> "Connessione interrotta. Riavvia la sincronizzazione quando il PC è raggiungibile."
             complete -> "Sincronizzazione completata e verificata"
             else -> "Sincronizzazione parziale: restano differenze da riallineare."
@@ -464,10 +707,21 @@ internal class GallerySyncBridge(
         return mutableMapOf<String, Any>(
             "downloaded" to successfulDownloads,
             "uploaded" to successfulUploads,
+            "deletedOnAndroid" to androidDeletion.movedToTrash,
+            "deletedOnWindows" to windowsDeletion.movedToTrash,
+            "deletionAlreadyAbsentAndroid" to androidDeletion.alreadyAbsent,
+            "deletionAlreadyAbsentWindows" to windowsDeletion.alreadyAbsent,
+            "deletionPendingAfter" to deletionPendingAfter,
+            "deletionConflictsBefore" to initialDeletionConflicts,
+            "deletionConflictsAfter" to deletionConflictsAfter,
             "alreadyPresent" to (initialPlan["alreadyPresent"] ?: 0),
             "pathConflicts" to (initialPlan["pathConflicts"] ?: 0),
             "metadataDifferencesBefore" to (initialPlan["metadataDifferences"] ?: 0),
             "metadataDifferencesAfter" to metadataDifferencesAfter,
+            "metadataBaselinePendingBefore" to (initialPlan["metadataBaselinePending"] ?: 0),
+            "metadataBaselinePendingAfter" to metadataBaselinePendingAfter,
+            "metadataResolutionConflictsBefore" to initialMetadataResolutionConflicts,
+            "metadataResolutionConflictsAfter" to metadataResolutionConflictsAfter,
             "metadataMergedWindows" to metadataMergedWindows,
             "metadataChangedWindows" to metadataChangedWindows,
             "metadataChangedAndroid" to androidMetadata.changedFiles,
@@ -637,62 +891,100 @@ internal class GallerySyncBridge(
             leftArtists.intersect(rightTags).isNotEmpty()
     }
 
-    private fun change(kind: String, value: String, note: String = ""): Map<String, String> =
-        linkedMapOf<String, String>("kind" to kind, "value" to value).apply {
+    private fun change(
+        kind: String,
+        value: String,
+        action: String,
+        note: String = "",
+    ): Map<String, String> =
+        linkedMapOf<String, String>(
+            "kind" to kind,
+            "value" to value,
+            "action" to action,
+        ).apply {
             if (note.isNotBlank()) put("note", note)
         }
 
-    private fun metadataDetail(local: SyncItem, remote: SyncItem): Map<String, Any> {
+    private fun metadataDetail(
+        local: SyncItem,
+        remote: SyncItem,
+        desired: SyncItem,
+        baselineReady: Boolean,
+    ): Map<String, Any> {
         val toAndroid = mutableListOf<Map<String, String>>()
         val toWindows = mutableListOf<Map<String, String>>()
 
-        val localTags = metadataNameMap(local.tags)
-        val localArtists = metadataNameMap(local.artists)
-        val remoteTags = metadataNameMap(remote.tags)
-        val remoteArtists = metadataNameMap(remote.artists)
-        val allNames = (localTags.keys + localArtists.keys + remoteTags.keys + remoteArtists.keys).toSortedSet()
+        fun appendChanges(
+            current: SyncMetadataSnapshot,
+            target: SyncMetadataSnapshot,
+            destination: MutableList<Map<String, String>>,
+        ) {
+            val allTags = (current.tags.keys + target.tags.keys).toSortedSet()
+            for (key in allTags) {
+                val before = current.tags[key]
+                val after = target.tags[key]
+                if (before == after) continue
+                val label = after?.name ?: before?.name ?: key
+                when {
+                    before == null && after != null ->
+                        destination += change(
+                            if (after.type == "artist") "Artista" else "Tag",
+                            label,
+                            "add",
+                        )
+                    before != null && after == null ->
+                        destination += change(
+                            if (before.type == "artist") "Artista" else "Tag",
+                            label,
+                            "remove",
+                            "Rimozione propagata da una modifica successiva al baseline verificato.",
+                        )
+                    before != null && after != null ->
+                        destination += change(
+                            if (after.type == "artist") "Artista" else "Tag",
+                            label,
+                            "set",
+                            "Classificazione aggiornata da ${if (before.type == "artist") "Artista" else "Tag"} a ${if (after.type == "artist") "Artista" else "Tag"}.",
+                        )
+                }
+            }
 
-        for (key in allNames) {
-            val localType = when {
-                key in localArtists -> "artist"
-                key in localTags -> "tag"
-                else -> ""
+            val allCharacters = (current.characters.keys + target.characters.keys).toSortedSet()
+            for (key in allCharacters) {
+                val before = current.characters[key]
+                val after = target.characters[key]
+                if (before == after) continue
+                val item = after ?: before ?: continue
+                val label = "${item.franchiseName} · ${item.name}"
+                destination += change(
+                    "Personaggio",
+                    label,
+                    if (after == null) "remove" else "add",
+                    if (after == null) {
+                        "Rimozione propagata da una modifica successiva al baseline verificato."
+                    } else {
+                        ""
+                    },
+                )
             }
-            val remoteType = when {
-                key in remoteArtists -> "artist"
-                key in remoteTags -> "tag"
-                else -> ""
-            }
-            val finalType = if (localType == "artist" || remoteType == "artist") "artist" else "tag"
-            val display = remoteArtists[key] ?: localArtists[key] ?: remoteTags[key] ?: localTags[key] ?: key
-            val note = if ((localType == "tag" || remoteType == "tag") && finalType == "artist") {
-                "La classificazione Artista prevale sul tag generale."
-            } else {
-                ""
-            }
-            if (localType != finalType) {
-                toAndroid += change(if (finalType == "artist") "Artista" else "Tag", display, note)
-            }
-            if (remoteType != finalType) {
-                toWindows += change(if (finalType == "artist") "Artista" else "Tag", display, note)
+
+            if (current.aiGenerated != target.aiGenerated) {
+                destination += change(
+                    "IA",
+                    "Contenuto IA",
+                    if (target.aiGenerated) "add" else "remove",
+                    if (!target.aiGenerated) {
+                        "Il flag IA verrà disattivato perché la modifica è successiva al baseline verificato."
+                    } else {
+                        ""
+                    },
+                )
             }
         }
 
-        val localCharacters = characterNameMap(local.characters)
-        val remoteCharacters = characterNameMap(remote.characters)
-        for ((key, label) in remoteCharacters) {
-            if (key !in localCharacters) toAndroid += change("Personaggio", label)
-        }
-        for ((key, label) in localCharacters) {
-            if (key !in remoteCharacters) toWindows += change("Personaggio", label)
-        }
-
-        if (remote.aiGenerated && !local.aiGenerated) {
-            toAndroid += change("IA", "Contenuto IA")
-        }
-        if (local.aiGenerated && !remote.aiGenerated) {
-            toWindows += change("IA", "Contenuto IA")
-        }
+        val desiredSnapshot = metadataSnapshot(desired)
+        appendChanges(metadataSnapshot(local), desiredSnapshot, toAndroid)
+        appendChanges(metadataSnapshot(remote), desiredSnapshot, toWindows)
 
         return mapOf(
             "filename" to local.filename.ifBlank { remote.filename },
@@ -700,33 +992,203 @@ internal class GallerySyncBridge(
             "toAndroid" to toAndroid,
             "toWindows" to toWindows,
             "typeConflict" to metadataTypeConflict(local, remote),
+            "baselineReady" to baselineReady,
             "changeCount" to (toAndroid.size + toWindows.size),
         )
     }
 
-    private fun plan(local: List<SyncItem>, remote: List<SyncItem>): Map<String, Any> {
-        val localByHash = local.filter { it.sha256.isNotBlank() }.associateBy { it.sha256.lowercase(Locale.ROOT) }
-        val remoteByHash = remote.filter { it.sha256.isNotBlank() }.associateBy { it.sha256.lowercase(Locale.ROOT) }
+    private fun matchTombstone(tombstone: SyncTombstone, items: List<SyncItem>): TombstoneMatch {
+        val exact = items.firstOrNull { it.syncUuid.equals(tombstone.fileUuid, ignoreCase = true) }
+        if (exact != null) {
+            return if (exact.sha256.equals(tombstone.sha256, ignoreCase = true)) {
+                TombstoneMatch(item = exact, matchKind = "uuid")
+            } else {
+                TombstoneMatch(conflict = "UUID uguale ma SHA-256 differente: cancellazione bloccata.")
+            }
+        }
+        val byHash = items.filter { it.sha256.equals(tombstone.sha256, ignoreCase = true) }
+        if (byHash.isEmpty()) return TombstoneMatch()
+        if (byHash.size == 1) return TombstoneMatch(item = byHash.first(), matchKind = "sha256")
+        val byPath = byHash.filter { it.relativePath.equals(tombstone.lastRelativePath, ignoreCase = true) }
+        if (byPath.size == 1) return TombstoneMatch(item = byPath.first(), matchKind = "sha256+path")
+        return TombstoneMatch(
+            conflict = "Più media identici corrispondono alla cancellazione: operazione bloccata per sicurezza.",
+        )
+    }
+
+    private fun plan(
+        local: List<SyncItem>,
+        remote: List<SyncItem>,
+        localTombstones: List<SyncTombstone>,
+        remoteTombstones: List<SyncTombstone>,
+        localBaselines: Map<String, SyncMetadataSnapshot>,
+        remoteBaselines: Map<String, SyncMetadataSnapshot>,
+    ): Map<String, Any> {
+        val deletionDetails = mutableListOf<Map<String, Any>>()
+        val deletionConflictDetails = mutableListOf<Map<String, Any>>()
+        val androidTargets = linkedMapOf<String, SyncItem>()
+        val windowsTargets = linkedMapOf<String, SyncItem>()
+        val pendingAndroid = linkedSetOf<String>()
+        val pendingWindows = linkedSetOf<String>()
+        val localTombstonesByUuid = localTombstones.associateBy { it.fileUuid.lowercase(Locale.ROOT) }
+        val remoteTombstonesByUuid = remoteTombstones.associateBy { it.fileUuid.lowercase(Locale.ROOT) }
+
+        for (tombstone in remoteTombstones) {
+            val counterpart = localTombstonesByUuid[tombstone.fileUuid.lowercase(Locale.ROOT)]
+            if (counterpart != null && !counterpart.sha256.equals(tombstone.sha256, ignoreCase = true)) {
+                deletionConflictDetails += mapOf(
+                    "direction" to "android",
+                    "relativePath" to tombstone.lastRelativePath,
+                    "filename" to tombstone.lastRelativePath.substringAfterLast('/'),
+                    "message" to "La stessa tombstone ha SHA-256 diversi sui due dispositivi: operazione bloccata.",
+                )
+                continue
+            }
+            val needsTombstoneRecord = counterpart == null
+            val match = matchTombstone(tombstone, local)
+            when {
+                match.conflict != null -> deletionConflictDetails += mapOf(
+                    "direction" to "android",
+                    "relativePath" to tombstone.lastRelativePath,
+                    "filename" to tombstone.lastRelativePath.substringAfterLast('/'),
+                    "message" to match.conflict,
+                )
+                match.item != null -> {
+                    val item = match.item
+                    androidTargets.putIfAbsent(item.syncUuid, item)
+                    pendingAndroid += tombstone.fileUuid.lowercase(Locale.ROOT)
+                    deletionDetails += mapOf(
+                        "direction" to "android",
+                        "relativePath" to item.relativePath,
+                        "filename" to item.filename,
+                        "matchKind" to match.matchKind,
+                        "action" to "trash",
+                    )
+                }
+                needsTombstoneRecord -> {
+                    pendingAndroid += tombstone.fileUuid.lowercase(Locale.ROOT)
+                    deletionDetails += mapOf(
+                        "direction" to "android",
+                        "relativePath" to tombstone.lastRelativePath,
+                        "filename" to tombstone.lastRelativePath.substringAfterLast('/'),
+                        "matchKind" to "absent",
+                        "action" to "record",
+                    )
+                }
+            }
+        }
+        for (tombstone in localTombstones) {
+            val counterpart = remoteTombstonesByUuid[tombstone.fileUuid.lowercase(Locale.ROOT)]
+            if (counterpart != null && !counterpart.sha256.equals(tombstone.sha256, ignoreCase = true)) {
+                deletionConflictDetails += mapOf(
+                    "direction" to "windows",
+                    "relativePath" to tombstone.lastRelativePath,
+                    "filename" to tombstone.lastRelativePath.substringAfterLast('/'),
+                    "message" to "La stessa tombstone ha SHA-256 diversi sui due dispositivi: operazione bloccata.",
+                )
+                continue
+            }
+            val needsTombstoneRecord = counterpart == null
+            val match = matchTombstone(tombstone, remote)
+            when {
+                match.conflict != null -> deletionConflictDetails += mapOf(
+                    "direction" to "windows",
+                    "relativePath" to tombstone.lastRelativePath,
+                    "filename" to tombstone.lastRelativePath.substringAfterLast('/'),
+                    "message" to match.conflict,
+                )
+                match.item != null -> {
+                    val item = match.item
+                    windowsTargets.putIfAbsent(item.syncUuid, item)
+                    pendingWindows += tombstone.fileUuid.lowercase(Locale.ROOT)
+                    deletionDetails += mapOf(
+                        "direction" to "windows",
+                        "relativePath" to item.relativePath,
+                        "filename" to item.filename,
+                        "matchKind" to match.matchKind,
+                        "action" to "trash",
+                    )
+                }
+                needsTombstoneRecord -> {
+                    pendingWindows += tombstone.fileUuid.lowercase(Locale.ROOT)
+                    deletionDetails += mapOf(
+                        "direction" to "windows",
+                        "relativePath" to tombstone.lastRelativePath,
+                        "filename" to tombstone.lastRelativePath.substringAfterLast('/'),
+                        "matchKind" to "absent",
+                        "action" to "record",
+                    )
+                }
+            }
+        }
+
+        // M7.5 usa la regola conservativa "deletion wins": finché una tombstone
+        // resta nel gruppo, lo stesso contenuto non viene ricopiato da un peer
+        // obsoleto. Una futura funzione esplicita potrà reintrodurre il media.
+        val blockedHashes = (localTombstones + remoteTombstones)
+            .map { it.sha256.lowercase(Locale.ROOT) }
+            .filter(String::isNotBlank)
+            .toSet()
+        val liveLocal = local.filter { it.sha256.lowercase(Locale.ROOT) !in blockedHashes }
+        val liveRemote = remote.filter { it.sha256.lowercase(Locale.ROOT) !in blockedHashes }
+
+        val localByHash = liveLocal.filter { it.sha256.isNotBlank() }
+            .associateBy { it.sha256.lowercase(Locale.ROOT) }
+        val remoteByHash = liveRemote.filter { it.sha256.isNotBlank() }
+            .associateBy { it.sha256.lowercase(Locale.ROOT) }
         val toAndroid = remoteByHash.filterKeys { it !in localByHash }.values
         val toWindows = localByHash.filterKeys { it !in remoteByHash }.values
         val commonHashes = localByHash.keys.intersect(remoteByHash.keys)
-        val localPaths = local.associateBy { it.relativePath.lowercase(Locale.ROOT) }
-        val pathConflicts = remote.count { remoteItem ->
+        val localPaths = liveLocal.associateBy { it.relativePath.lowercase(Locale.ROOT) }
+        val pathConflicts = liveRemote.count { remoteItem ->
             val localItem = localPaths[remoteItem.relativePath.lowercase(Locale.ROOT)]
             localItem != null && !localItem.sha256.equals(remoteItem.sha256, ignoreCase = true)
         }
         var metadataDifferences = 0
         var metadataTypeConflicts = 0
         var metadataChangeCount = 0
+        var metadataBaselinePending = 0
+        var metadataResolutionConflicts = 0
         val metadataDetails = mutableListOf<Map<String, Any>>()
+        val metadataResolutionConflictDetails = mutableListOf<Map<String, Any>>()
         val metadataDetailLimit = 200
         for (hash in commonHashes.sorted()) {
             val localItem = localByHash[hash] ?: continue
             val remoteItem = remoteByHash[hash] ?: continue
-            if (!metadataDiffers(localItem, remoteItem)) continue
+            val localSnapshot = metadataSnapshot(localItem)
+            val remoteSnapshot = metadataSnapshot(remoteItem)
+            val resolution = SyncMetadataResolver.resolve(
+                localSnapshot,
+                remoteSnapshot,
+                localBaselines[hash],
+                remoteBaselines[hash],
+            )
+            if (!resolution.baselineReady) metadataBaselinePending += 1
+            if (resolution.conflicts.isNotEmpty()) {
+                metadataResolutionConflicts += resolution.conflicts.size
+                if (metadataResolutionConflictDetails.size < 100) {
+                    resolution.conflicts.forEach { message ->
+                        if (metadataResolutionConflictDetails.size < 100) {
+                            metadataResolutionConflictDetails += mapOf(
+                                "filename" to localItem.filename.ifBlank { remoteItem.filename },
+                                "relativePath" to localItem.relativePath.ifBlank { remoteItem.relativePath },
+                                "message" to message,
+                            )
+                        }
+                    }
+                }
+                continue
+            }
+            val desiredItem = itemWithMetadata(localItem, resolution.snapshot)
+            if (localSnapshot.sameState(resolution.snapshot) && remoteSnapshot.sameState(resolution.snapshot)) continue
             metadataDifferences += 1
             if (metadataTypeConflict(localItem, remoteItem)) metadataTypeConflicts += 1
-            val detail = metadataDetail(localItem, remoteItem)
+            val detail = metadataDetail(
+                localItem,
+                remoteItem,
+                desiredItem,
+                resolution.baselineReady,
+            )
             metadataChangeCount += (detail["changeCount"] as? Int) ?: 0
             if (metadataDetails.size < metadataDetailLimit) metadataDetails += detail
         }
@@ -740,6 +1202,17 @@ internal class GallerySyncBridge(
             "metadataChangeCount" to metadataChangeCount,
             "metadataDetails" to metadataDetails,
             "metadataDetailsTruncated" to (metadataDifferences > metadataDetails.size),
+            "metadataBaselinePending" to metadataBaselinePending,
+            "metadataResolutionConflicts" to metadataResolutionConflicts,
+            "metadataResolutionConflictDetails" to metadataResolutionConflictDetails,
+            "deleteOnAndroid" to androidTargets.size,
+            "deleteOnWindows" to windowsTargets.size,
+            "deletionPendingAndroid" to pendingAndroid.size,
+            "deletionPendingWindows" to pendingWindows.size,
+            "deletionConflicts" to deletionConflictDetails.size,
+            "deletionDetails" to deletionDetails.take(200),
+            "deletionDetailsTruncated" to (deletionDetails.size > 200),
+            "deletionConflictDetails" to deletionConflictDetails.take(100),
             "bytesToAndroid" to toAndroid.sumOf { it.sizeBytes.coerceAtLeast(0L) },
             "bytesToWindows" to toWindows.sumOf { it.sizeBytes.coerceAtLeast(0L) },
         )
@@ -765,6 +1238,188 @@ internal class GallerySyncBridge(
             values += syncItemFromJson(value)
         }
         return values
+    }
+
+    private fun metadataSnapshot(item: SyncItem): SyncMetadataSnapshot =
+        SyncMetadataResolver.fromValues(
+            tags = item.tags,
+            artists = item.artists,
+            characters = item.characters,
+            aiGenerated = item.aiGenerated,
+        )
+
+    private fun parseManifestBaselines(
+        manifest: JSONObject,
+        peerGalleryUuid: String,
+    ): Map<String, SyncMetadataSnapshot> {
+        if (peerGalleryUuid.isBlank()) return emptyMap()
+        val array = manifest.optJSONArray("metadataBaselines") ?: JSONArray()
+        val values = linkedMapOf<String, SyncMetadataSnapshot>()
+        for (index in 0 until array.length()) {
+            val value = array.optJSONObject(index) ?: continue
+            if (value.optString("peerGalleryUuid").trim() != peerGalleryUuid) continue
+            val sha = value.optString("sha256").trim().lowercase(Locale.ROOT)
+            if (sha.length != 64) continue
+            val snapshot = SyncMetadataSnapshot.fromJson(value.optJSONObject("snapshot")) ?: continue
+            values[sha] = snapshot
+        }
+        return values
+    }
+
+    private fun itemWithMetadata(item: SyncItem, snapshot: SyncMetadataSnapshot): SyncItem = item.copy(
+        aiGenerated = snapshot.aiGenerated,
+        tags = snapshot.tags.values.filter { it.type == "general" }.map { it.name }.sortedBy { it.lowercase(Locale.ROOT) },
+        artists = snapshot.tags.values.filter { it.type == "artist" }.map { it.name }.sortedBy { it.lowercase(Locale.ROOT) },
+        characters = snapshot.characters.values.map { it.asMap() }.sortedWith(
+            compareBy<Map<String, String>>(
+                { it["franchiseName"].orEmpty().lowercase(Locale.ROOT) },
+                { it["name"].orEmpty().lowercase(Locale.ROOT) },
+            ),
+        ),
+    )
+
+    private fun resolvedMetadataItems(
+        local: List<SyncItem>,
+        remote: List<SyncItem>,
+        localBaselines: Map<String, SyncMetadataSnapshot>,
+        remoteBaselines: Map<String, SyncMetadataSnapshot>,
+    ): List<SyncItem> {
+        val localByHash = local.filter { it.sha256.isNotBlank() }
+            .associateBy { it.sha256.lowercase(Locale.ROOT) }
+        val remoteByHash = remote.filter { it.sha256.isNotBlank() }
+            .associateBy { it.sha256.lowercase(Locale.ROOT) }
+        return localByHash.keys.intersect(remoteByHash.keys).sorted().mapNotNull { hash ->
+            val localItem = localByHash[hash] ?: return@mapNotNull null
+            val remoteItem = remoteByHash[hash] ?: return@mapNotNull null
+            val resolution = SyncMetadataResolver.resolve(
+                metadataSnapshot(localItem),
+                metadataSnapshot(remoteItem),
+                localBaselines[hash],
+                remoteBaselines[hash],
+            )
+            if (resolution.conflicts.isNotEmpty()) return@mapNotNull null
+            val localSnapshot = metadataSnapshot(localItem)
+            val remoteSnapshot = metadataSnapshot(remoteItem)
+            if (localSnapshot.sameState(resolution.snapshot) && remoteSnapshot.sameState(resolution.snapshot)) {
+                return@mapNotNull null
+            }
+            itemWithMetadata(localItem, resolution.snapshot)
+        }
+    }
+
+    private fun baselineControlJson(
+        sha256: String,
+        snapshot: SyncMetadataSnapshot?,
+        info: ConnectionInfo,
+        reset: Boolean = false,
+    ): JSONObject = JSONObject().apply {
+        put("baselineSnapshot", true)
+        put("baselineSyncGroupUuid", info.syncGroupUuid)
+        put("baselinePeerGalleryUuid", info.galleryUuid)
+        if (reset) put("baselineReset", true)
+        if (sha256.isNotBlank() && snapshot != null) {
+            put("sha256", sha256)
+            put("snapshot", snapshot.toJson())
+        }
+    }
+
+    private fun establishMetadataBaselines(
+        info: ConnectionInfo,
+        local: List<SyncItem>,
+        remote: List<SyncItem>,
+    ) {
+        val localByHash = local.filter { it.sha256.isNotBlank() }
+            .associateBy { it.sha256.lowercase(Locale.ROOT) }
+        val remoteByHash = remote.filter { it.sha256.isNotBlank() }
+            .associateBy { it.sha256.lowercase(Locale.ROOT) }
+        val common = localByHash.keys.intersect(remoteByHash.keys).sorted()
+        val snapshots = linkedMapOf<String, SyncMetadataSnapshot>()
+        for (hash in common) {
+            val localItem = localByHash[hash] ?: continue
+            val remoteItem = remoteByHash[hash] ?: continue
+            val left = metadataSnapshot(localItem)
+            val right = metadataSnapshot(remoteItem)
+            if (!left.sameState(right)) {
+                throw IllegalStateException("Baseline metadata non creato: i peer non sono ancora allineati.")
+            }
+            snapshots[hash] = left
+        }
+
+        // Windows viene aggiornato per primo. Se la rete cade durante i chunk,
+        // Android conserva il vecchio baseline: al giro successivo i due lati
+        // non combaceranno e il resolver tornerà automaticamente in modalità
+        // additiva, senza inferire rimozioni.
+        val entries = snapshots.entries.toList()
+        val chunks = if (entries.isEmpty()) listOf(emptyList()) else entries.chunked(90)
+        chunks.forEachIndexed { index, chunk ->
+            val payload = basePayload(info).apply {
+                put("items", JSONArray().apply {
+                    if (index == 0) put(baselineControlJson("", null, info, reset = true))
+                    for ((sha, snapshot) in chunk) put(baselineControlJson(sha, snapshot, info))
+                })
+            }
+            val response = postJson(info, "/api/mobile/sync/metadata", payload)
+            if (response.optInt("deletionConflicts", 0) > 0) {
+                throw IllegalStateException("Windows ha rifiutato l'aggiornamento del baseline metadata.")
+            }
+        }
+        metadataBaselineStore.replace(
+            info.galleryUuid,
+            info.syncGroupUuid,
+            info.windowsGalleryUuid,
+            snapshots,
+        )
+    }
+
+    private fun parseManifestTombstones(
+        manifest: JSONObject,
+        expectedGroupUuid: String,
+    ): List<SyncTombstone> {
+        if (expectedGroupUuid.isBlank()) return emptyList()
+        val array = manifest.optJSONArray("tombstones") ?: JSONArray()
+        val values = mutableListOf<SyncTombstone>()
+        for (index in 0 until array.length()) {
+            val value = array.optJSONObject(index) ?: continue
+            val fileUuid = value.optString("fileUuid").trim()
+            val sha256 = value.optString("sha256").trim().lowercase(Locale.ROOT)
+            val relativePath = value.optString("lastRelativePath").trim()
+            val syncGroupUuid = value.optString("syncGroupUuid").trim()
+            // Le tombstone senza gruppo (pre-M7.5) non vengono mai adottate
+            // automaticamente: potrebbe trattarsi di una cancellazione fatta
+            // prima che la galleria appartenesse al gruppo corrente.
+            if (fileUuid.isBlank() || sha256.length != 64 || relativePath.isBlank() ||
+                syncGroupUuid != expectedGroupUuid
+            ) {
+                continue
+            }
+            values += SyncTombstone(
+                fileUuid = fileUuid,
+                sha256 = sha256,
+                mediaType = value.optString("mediaType", "image"),
+                lastRelativePath = relativePath,
+                deletedAt = value.optString("deletedAt"),
+                originPeerUuid = value.optString("originPeerUuid"),
+                createdLocally = value.optBoolean("createdLocally", false),
+                syncGroupUuid = syncGroupUuid,
+            )
+        }
+        return values
+    }
+
+    private fun tombstoneJson(
+        tombstone: SyncTombstone,
+        originFallback: String,
+        validateOnly: Boolean = false,
+    ): JSONObject = JSONObject().apply {
+        put("deleted", true)
+        put("fileUuid", tombstone.fileUuid)
+        put("sha256", tombstone.sha256)
+        put("mediaType", tombstone.mediaType)
+        put("lastRelativePath", tombstone.lastRelativePath)
+        if (tombstone.deletedAt.isNotBlank()) put("deletedAt", tombstone.deletedAt)
+        put("originPeerUuid", tombstone.originPeerUuid.ifBlank { originFallback })
+        put("syncGroupUuid", tombstone.syncGroupUuid)
+        if (validateOnly) put("validateOnly", true)
     }
 
     private fun syncItemFromJson(value: JSONObject): SyncItem {
@@ -798,6 +1453,315 @@ internal class GallerySyncBridge(
             tags = strings("tags"),
             artists = strings("artists"),
         )
+    }
+
+    private fun localTombstones(
+        galleryUuid: String,
+        syncGroupUuid: String,
+    ): List<SyncTombstone> {
+        if (syncGroupUuid.isBlank()) return emptyList()
+        val database = GalleryIndexDatabase(activity.applicationContext, galleryUuid)
+        try {
+            val values = mutableListOf<SyncTombstone>()
+            database.readableDatabase.rawQuery(
+                """
+                SELECT file_uuid, sha256, media_type, last_relative_path,
+                       deleted_at, origin_peer_uuid, created_locally, sync_group_uuid
+                FROM sync_tombstones
+                WHERE sync_group_uuid = ?
+                ORDER BY deleted_at, file_uuid
+                """.trimIndent(),
+                arrayOf(syncGroupUuid),
+            ).use { cursor ->
+                while (cursor.moveToNext()) {
+                    values += SyncTombstone(
+                        fileUuid = cursor.getString(0),
+                        sha256 = cursor.getString(1).lowercase(Locale.ROOT),
+                        mediaType = cursor.getString(2),
+                        lastRelativePath = cursor.getString(3),
+                        deletedAt = cursor.getString(4).orEmpty(),
+                        originPeerUuid = if (cursor.isNull(5)) "" else cursor.getString(5),
+                        createdLocally = cursor.getInt(6) != 0,
+                        syncGroupUuid = cursor.getString(7),
+                    )
+                }
+            }
+            return values
+        } finally {
+            database.close()
+        }
+    }
+
+    private fun storeRemoteTombstone(
+        galleryUuid: String,
+        tombstone: SyncTombstone,
+        originFallback: String,
+        syncGroupUuid: String,
+    ) {
+        if (syncGroupUuid.isBlank() || tombstone.syncGroupUuid != syncGroupUuid) {
+            throw IllegalStateException("Tombstone non appartenente al gruppo Android attivo.")
+        }
+        val database = GalleryIndexDatabase(activity.applicationContext, galleryUuid)
+        try {
+            val db = database.writableDatabase
+            db.rawQuery(
+                "SELECT sync_group_uuid FROM sync_tombstones WHERE file_uuid = ? LIMIT 1",
+                arrayOf(tombstone.fileUuid),
+            ).use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val existingGroup = cursor.getString(0).orEmpty().trim()
+                    if (existingGroup.isNotBlank() && existingGroup != syncGroupUuid) {
+                        throw IllegalStateException(
+                            "La stessa identità media appartiene a una tombstone di un altro gruppo.",
+                        )
+                    }
+                }
+            }
+            val values = ContentValues().apply {
+                put("file_uuid", tombstone.fileUuid)
+                put("sha256", tombstone.sha256.lowercase(Locale.ROOT))
+                put("media_type", tombstone.mediaType)
+                put("last_relative_path", tombstone.lastRelativePath)
+                if (tombstone.deletedAt.isNotBlank()) put("deleted_at", tombstone.deletedAt)
+                put("origin_peer_uuid", tombstone.originPeerUuid.ifBlank { originFallback })
+                put("created_locally", 0)
+                put("sync_group_uuid", syncGroupUuid)
+            }
+            val updated = db.update(
+                "sync_tombstones",
+                values,
+                "file_uuid = ? AND (sync_group_uuid = ? OR sync_group_uuid = '')",
+                arrayOf(tombstone.fileUuid, syncGroupUuid),
+            )
+            if (updated == 0) {
+                db.insertWithOnConflict(
+                    "sync_tombstones",
+                    null,
+                    values,
+                    SQLiteDatabase.CONFLICT_IGNORE,
+                )
+            }
+        } finally {
+            database.close()
+        }
+    }
+
+    private fun preflightRemoteTombstones(
+        info: ConnectionInfo,
+        tombstones: List<SyncTombstone>,
+    ): AndroidDeletionPreflight {
+        if (tombstones.isEmpty()) {
+            return AndroidDeletionPreflight(emptyList(), emptyList())
+        }
+        val active = localItems(info.galleryUuid)
+        val conflicts = mutableListOf<Map<String, String>>()
+        val resolved = mutableListOf<Pair<SyncTombstone, TombstoneMatch>>()
+        val database = GalleryIndexDatabase(activity.applicationContext, info.galleryUuid)
+        try {
+            val db = database.readableDatabase
+            for (tombstone in tombstones.distinctBy { it.fileUuid.lowercase(Locale.ROOT) }) {
+                if (tombstone.syncGroupUuid != info.syncGroupUuid) {
+                    conflicts += mapOf(
+                        "direction" to "android",
+                        "relativePath" to tombstone.lastRelativePath,
+                        "message" to "Tombstone appartenente a un gruppo differente: cancellazione bloccata.",
+                    )
+                    continue
+                }
+                var storedConflict: String? = null
+                db.rawQuery(
+                    "SELECT sync_group_uuid, sha256 FROM sync_tombstones WHERE file_uuid = ? LIMIT 1",
+                    arrayOf(tombstone.fileUuid),
+                ).use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val existingGroup = cursor.getString(0).orEmpty().trim()
+                        val existingSha = cursor.getString(1).orEmpty().lowercase(Locale.ROOT)
+                        storedConflict = when {
+                            existingGroup.isNotBlank() && existingGroup != info.syncGroupUuid ->
+                                "La stessa identità media appartiene a una tombstone di un altro gruppo: cancellazione bloccata."
+                            existingGroup == info.syncGroupUuid && existingSha.isNotBlank() &&
+                                existingSha != tombstone.sha256.lowercase(Locale.ROOT) ->
+                                "La stessa tombstone ha SHA-256 differente: cancellazione bloccata."
+                            else -> null
+                        }
+                    }
+                }
+                if (storedConflict != null) {
+                    conflicts += mapOf(
+                        "direction" to "android",
+                        "relativePath" to tombstone.lastRelativePath,
+                        "message" to storedConflict.orEmpty(),
+                    )
+                    continue
+                }
+                val match = matchTombstone(tombstone, active)
+                if (match.conflict != null) {
+                    conflicts += mapOf(
+                        "direction" to "android",
+                        "relativePath" to tombstone.lastRelativePath,
+                        "message" to match.conflict,
+                    )
+                    continue
+                }
+                resolved += tombstone to match
+            }
+        } finally {
+            database.close()
+        }
+        return AndroidDeletionPreflight(resolved, conflicts)
+    }
+
+    private fun applyRemoteTombstones(
+        info: ConnectionInfo,
+        tombstones: List<SyncTombstone>,
+    ): DeletionApplyStats {
+        val preflight = preflightRemoteTombstones(info, tombstones)
+        if (preflight.conflicts.isNotEmpty()) {
+            return DeletionApplyStats(conflicts = preflight.conflicts)
+        }
+        if (preflight.resolved.isEmpty()) return DeletionApplyStats()
+
+        // Persisti tutte le tombstone prima di toccare il filesystem. Se la
+        // persistenza fallisce, nessun file viene spostato nel cestino.
+        try {
+            for ((tombstone, _) in preflight.resolved) {
+                storeRemoteTombstone(
+                    info.galleryUuid,
+                    tombstone,
+                    info.windowsGalleryUuid,
+                    info.syncGroupUuid,
+                )
+            }
+        } catch (error: Exception) {
+            return DeletionApplyStats(
+                conflicts = listOf(
+                    mapOf(
+                        "direction" to "android",
+                        "relativePath" to "",
+                        "message" to "Impossibile registrare in sicurezza le eliminazioni Android: ${readableError(error)}",
+                    ),
+                ),
+            )
+        }
+
+        var moved = 0
+        var absent = 0
+        val conflicts = mutableListOf<Map<String, String>>()
+        val handledTargets = hashSetOf<String>()
+        for ((_, match) in preflight.resolved) {
+            val item = match.item
+            if (item != null && handledTargets.add(item.syncUuid)) {
+                try {
+                    trashRepository.moveToTrash(info.galleryUuid, info.treeUri, item.syncUuid)
+                    moved += 1
+                } catch (error: Exception) {
+                    conflicts += mapOf(
+                        "direction" to "android",
+                        "relativePath" to item.relativePath,
+                        "message" to "Tombstone registrata, ma impossibile spostare il media nel cestino Android: ${readableError(error)}",
+                    )
+                }
+            } else if (item == null) {
+                absent += 1
+            }
+        }
+        return DeletionApplyStats(movedToTrash = moved, alreadyAbsent = absent, conflicts = conflicts)
+    }
+
+    private fun validateLocalTombstonesOnWindows(
+        info: ConnectionInfo,
+        tombstones: List<SyncTombstone>,
+    ): List<Map<String, String>> {
+        val scoped = tombstones
+            .filter { it.syncGroupUuid == info.syncGroupUuid }
+            .distinctBy { it.fileUuid.lowercase(Locale.ROOT) }
+        if (scoped.isEmpty()) return emptyList()
+
+        val conflicts = mutableListOf<Map<String, String>>()
+        val chunks = scoped.chunked(100)
+        for ((index, chunk) in chunks.withIndex()) {
+            if (cancelRequested) throw SyncCancelledException()
+            progress(
+                "deletions_windows",
+                index,
+                chunks.size.coerceAtLeast(1),
+                "Verifica eliminazioni su Windows",
+            )
+            val payload = basePayload(info).apply {
+                put("items", JSONArray().apply {
+                    chunk.forEach { put(tombstoneJson(it, info.galleryUuid, validateOnly = true)) }
+                })
+            }
+            val response = postJson(info, "/api/mobile/sync/metadata", payload)
+            val details = response.optJSONArray("deletionConflictDetails") ?: JSONArray()
+            for (detailIndex in 0 until details.length()) {
+                val detail = details.optJSONObject(detailIndex) ?: continue
+                conflicts += mapOf(
+                    "direction" to "windows",
+                    "relativePath" to detail.optString("relativePath"),
+                    "message" to detail.optString("message", "Cancellazione Windows bloccata."),
+                )
+            }
+            if (response.optInt("deletionConflicts", 0) > 0 && details.length() == 0) {
+                conflicts += mapOf(
+                    "direction" to "windows",
+                    "relativePath" to "",
+                    "message" to "Windows ha rilevato una cancellazione ambigua e l'ha bloccata.",
+                )
+            }
+            if (conflicts.isNotEmpty()) break
+        }
+        return conflicts
+    }
+
+    private fun sendLocalTombstonesToWindows(
+        info: ConnectionInfo,
+        tombstones: List<SyncTombstone>,
+    ): DeletionApplyStats {
+        val scoped = tombstones
+            .filter { it.syncGroupUuid == info.syncGroupUuid }
+            .distinctBy { it.fileUuid.lowercase(Locale.ROOT) }
+        if (scoped.isEmpty()) return DeletionApplyStats()
+        var moved = 0
+        var absent = 0
+        val conflicts = validateLocalTombstonesOnWindows(info, scoped).toMutableList()
+        if (conflicts.isNotEmpty()) return DeletionApplyStats(conflicts = conflicts)
+        val chunks = scoped.chunked(100)
+
+        for ((index, chunk) in chunks.withIndex()) {
+            if (cancelRequested) throw SyncCancelledException()
+            progress(
+                "deletions_windows",
+                index,
+                chunks.size.coerceAtLeast(1),
+                "Propagazione eliminazioni su Windows",
+            )
+            val payload = basePayload(info).apply {
+                put("items", JSONArray().apply {
+                    chunk.forEach { put(tombstoneJson(it, info.galleryUuid)) }
+                })
+            }
+            val response = postJson(info, "/api/mobile/sync/metadata", payload)
+            moved += response.optInt("deletedMovedToTrash", 0)
+            absent += response.optInt("deletionAlreadyAbsent", 0)
+            val details = response.optJSONArray("deletionConflictDetails") ?: JSONArray()
+            for (detailIndex in 0 until details.length()) {
+                val detail = details.optJSONObject(detailIndex) ?: continue
+                conflicts += mapOf(
+                    "direction" to "windows",
+                    "relativePath" to detail.optString("relativePath"),
+                    "message" to detail.optString("message", "Cancellazione Windows bloccata."),
+                )
+            }
+            progress(
+                "deletions_windows",
+                index + 1,
+                chunks.size.coerceAtLeast(1),
+                "Eliminazioni Windows elaborate",
+            )
+            if (conflicts.isNotEmpty()) break
+        }
+        return DeletionApplyStats(movedToTrash = moved, alreadyAbsent = absent, conflicts = conflicts)
     }
 
     private fun localItems(galleryUuid: String): List<SyncItem> {
@@ -1080,6 +2044,10 @@ internal class GallerySyncBridge(
     }
 
     private fun mergeRemoteMetadata(galleryUuid: String, remote: List<SyncItem>): MetadataMergeStats {
+        if (remote.isEmpty()) return MetadataMergeStats()
+        val beforeByHash = localItems(galleryUuid)
+            .filter { it.sha256.isNotBlank() }
+            .associateBy { it.sha256.lowercase(Locale.ROOT) }
         val database = GalleryIndexDatabase(activity.applicationContext, galleryUuid)
         var changedFiles = 0
         var aiUpdated = 0
@@ -1093,72 +2061,93 @@ internal class GallerySyncBridge(
             db.beginTransaction()
             try {
                 for (item in remote) {
-                    val localRow = db.rawQuery(
-                        "SELECT sync_uuid, ai_generated FROM media WHERE sha256 = ? AND is_present = 1 LIMIT 1",
-                        arrayOf(item.sha256),
-                    ).use { cursor ->
-                        if (cursor.moveToFirst()) cursor.getString(0) to (cursor.getInt(1) != 0) else null
-                    } ?: continue
-                    val localUuid = localRow.first
-                    var changed = false
+                    if (item.sha256.isBlank()) continue
+                    val hash = item.sha256.lowercase(Locale.ROOT)
+                    val before = beforeByHash[hash] ?: continue
+                    val desiredSnapshot = metadataSnapshot(item)
+                    val beforeSnapshot = metadataSnapshot(before)
+                    if (beforeSnapshot == desiredSnapshot) continue
 
-                    if (item.aiGenerated && !localRow.second) {
-                        val values = ContentValues().apply { put("ai_generated", 1) }
-                        db.update("media", values, "sync_uuid = ?", arrayOf(localUuid))
-                        aiUpdated += 1
-                        changed = true
-                    }
-                    if (item.aiGenerated) {
-                        val ensured = ensureTag(db, "AI", "system")
-                        if (linkTag(db, localUuid, ensured.id)) {
-                            tagsAdded += 1
-                            changed = true
-                        }
-                    }
-                    item.tags.forEach { tag ->
-                        if (tag.isBlank() || tag.equals("AI", true)) return@forEach
-                        val ensured = ensureTag(db, tag, "general")
-                        if (linkTag(db, localUuid, ensured.id)) {
-                            tagsAdded += 1
-                            changed = true
-                        }
-                    }
-                    item.artists.forEach { artist ->
-                        if (artist.isBlank() || artist.equals("AI", true)) return@forEach
-                        val ensured = ensureTag(db, artist, "artist")
-                        if (ensured.promoted) changed = true
-                        if (linkTag(db, localUuid, ensured.id)) {
-                            artistsAdded += 1
-                            changed = true
-                        }
-                    }
-                    item.characters.forEach { character ->
+                    val localUuid = db.rawQuery(
+                        "SELECT sync_uuid FROM media WHERE sha256 = ? AND is_present = 1 LIMIT 1",
+                        arrayOf(item.sha256),
+                    ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null } ?: continue
+
+                    // Risolvi e crea prima tutte le entità necessarie. Solo
+                    // dopo che ogni personaggio desiderato è risolvibile si
+                    // passa alla sostituzione distruttiva delle associazioni.
+                    val characterIds = mutableListOf<Long>()
+                    var unresolvedCharacter = false
+                    for (character in item.characters) {
                         val ensured = ensureCharacter(db, character)
                         if (ensured.createdFranchise) createdFranchises += 1
                         if (ensured.createdCharacter) createdCharacters += 1
-                        val characterId = ensured.id ?: return@forEach
-                        val values = ContentValues().apply {
+                        val id = ensured.id
+                        if (id == null) {
+                            unresolvedCharacter = true
+                            break
+                        }
+                        characterIds += id
+                    }
+                    if (unresolvedCharacter) continue
+
+                    val desiredTags = mutableListOf<Long>()
+                    for (tag in item.tags) {
+                        if (tag.isBlank() || tag.equals("AI", true)) continue
+                        val ensured = ensureTag(db, tag, "general")
+                        desiredTags += ensured.id
+                    }
+                    val desiredArtists = mutableListOf<Long>()
+                    for (artist in item.artists) {
+                        if (artist.isBlank() || artist.equals("AI", true)) continue
+                        val ensured = ensureTag(db, artist, "artist")
+                        desiredArtists += ensured.id
+                    }
+                    val aiTagId = if (item.aiGenerated) ensureTag(db, "AI", "system").id else null
+
+                    val values = ContentValues().apply {
+                        put("ai_generated", if (item.aiGenerated) 1 else 0)
+                        put("metadata_updated_epoch_ms", System.currentTimeMillis())
+                    }
+                    db.update("media", values, "sync_uuid = ?", arrayOf(localUuid))
+
+                    db.delete("media_characters", "media_sync_uuid = ?", arrayOf(localUuid))
+                    for (characterId in characterIds.distinct()) {
+                        val link = ContentValues().apply {
                             put("media_sync_uuid", localUuid)
                             put("character_id", characterId)
                         }
-                        val inserted = db.insertWithOnConflict(
+                        db.insertWithOnConflict(
                             "media_characters",
                             null,
-                            values,
+                            link,
                             SQLiteDatabase.CONFLICT_IGNORE,
                         )
-                        if (inserted != -1L) {
-                            characterLinksAdded += 1
-                            changed = true
-                        }
                     }
-                    if (changed) {
-                        val values = ContentValues().apply {
-                            put("metadata_updated_epoch_ms", System.currentTimeMillis())
-                        }
-                        db.update("media", values, "sync_uuid = ?", arrayOf(localUuid))
-                        changedFiles += 1
-                    }
+
+                    // Rimuovi soltanto le associazioni che M7 gestisce. Tag di
+                    // sistema futuri/non riconosciuti restano intatti.
+                    db.execSQL(
+                        """
+                        DELETE FROM media_tags
+                        WHERE media_sync_uuid = ?
+                          AND tag_id IN (
+                              SELECT id FROM tags
+                              WHERE type IN ('general', 'artist')
+                                 OR name = 'AI' COLLATE NOCASE
+                          )
+                        """.trimIndent(),
+                        arrayOf(localUuid),
+                    )
+                    for (tagId in desiredTags.distinct()) linkTag(db, localUuid, tagId)
+                    for (tagId in desiredArtists.distinct()) linkTag(db, localUuid, tagId)
+                    if (aiTagId != null) linkTag(db, localUuid, aiTagId)
+
+                    if (before.aiGenerated != item.aiGenerated) aiUpdated += 1
+                    tagsAdded += item.tags.size
+                    artistsAdded += item.artists.size
+                    characterLinksAdded += characterIds.distinct().size
+                    changedFiles += 1
                 }
                 db.setTransactionSuccessful()
             } finally {

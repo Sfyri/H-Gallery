@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -16,17 +17,19 @@ from backend.indexer import synchronize_archive
 from backend.paths import DATA_ROOT
 from backend.scanner import create_character, create_franchise, load_config, sync_characters
 from backend.sync_foundation import get_sync_foundation_status
+from backend.trash import trash_gallery_file
 
 _BLOCKED_ROOTS = {".user", ".todo", ".trash", ".script"}
 _SAFE_UUID = re.compile(r"^[0-9a-fA-F-]{16,64}$")
 
 
 class MobileSyncService:
-    """Additive Windows <-> Android gallery merge used by M7.
+    """Windows <-> Android gallery merge used by M7.
 
-    M7 never overwrites or deletes a different media file. Equality is based on
-    SHA-256. Path collisions are preserved by assigning the incoming file a
-    deterministic ``_sync_<id>`` suffix.
+    File transfers remain conservative and collision-safe. M7.5 handles only
+    explicit, tombstone-backed media removals. M7.6 adds verified three-way
+    metadata baselines: removals are propagated only when both peers prove the
+    same previous state; otherwise metadata merging falls back to additive mode.
     """
 
     def __init__(self) -> None:
@@ -56,6 +59,13 @@ class MobileSyncService:
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                 digest.update(chunk)
         return digest.hexdigest()
+
+    @staticmethod
+    def _current_sync_group_uuid(connection) -> str:
+        row = connection.execute(
+            "SELECT value FROM sync_state WHERE key = 'sync_group_uuid' LIMIT 1"
+        ).fetchone()
+        return str(row["value"] if row is not None else "").strip()
 
     @staticmethod
     def _metadata_for_file(connection, file_id: int) -> dict[str, Any]:
@@ -111,6 +121,7 @@ class MobileSyncService:
         root = self._gallery_root()
         with get_connection() as connection:
             foundation = get_sync_foundation_status(connection)
+            sync_group_uuid = self._current_sync_group_uuid(connection)
             rows = connection.execute(
                 """
                 SELECT id, sync_uuid, relative_path, filename, extension,
@@ -145,10 +156,60 @@ class MobileSyncService:
                         **metadata,
                     }
                 )
+            tombstones = [
+                {
+                    "fileUuid": str(row["file_uuid"]),
+                    "sha256": str(row["sha256"]).lower(),
+                    "mediaType": str(row["media_type"]),
+                    "lastRelativePath": str(row["last_relative_path"]),
+                    "deletedAt": str(row["deleted_at"]),
+                    "originPeerUuid": str(row["origin_peer_uuid"] or ""),
+                    "createdLocally": bool(row["created_locally"]),
+                }
+                for row in connection.execute(
+                    """
+                    SELECT file_uuid, sha256, media_type, last_relative_path,
+                           deleted_at, origin_peer_uuid, created_locally, sync_group_uuid
+                    FROM sync_tombstones
+                    WHERE sync_group_uuid = ? AND sync_group_uuid <> ''
+                    ORDER BY deleted_at, file_uuid
+                    """,
+                    (sync_group_uuid,),
+                ).fetchall()
+            ]
+            for item in tombstones:
+                item["syncGroupUuid"] = sync_group_uuid
+
+            metadata_baselines: list[dict[str, Any]] = []
+            if sync_group_uuid:
+                for row in connection.execute(
+                    """
+                    SELECT peer_gallery_uuid, media_sha256, snapshot_json
+                    FROM sync_metadata_baselines
+                    WHERE sync_group_uuid = ?
+                    ORDER BY peer_gallery_uuid, media_sha256
+                    """,
+                    (sync_group_uuid,),
+                ).fetchall():
+                    try:
+                        snapshot = json.loads(str(row["snapshot_json"]))
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        continue
+                    if not isinstance(snapshot, dict):
+                        continue
+                    metadata_baselines.append(
+                        {
+                            "peerGalleryUuid": str(row["peer_gallery_uuid"]),
+                            "sha256": str(row["media_sha256"]).lower(),
+                            "snapshot": snapshot,
+                        }
+                    )
             return {
-                "schema": 1,
+                "schema": 4,
                 "galleryUuid": str(foundation["gallery_uuid"]),
                 "files": files,
+                "tombstones": tombstones,
+                "metadataBaselines": metadata_baselines,
                 "count": len(files),
             }
 
@@ -230,6 +291,25 @@ class MobileSyncService:
                 raise ValueError("Il file ricevuto non corrisponde all'hash dichiarato.")
 
             root = self._gallery_root()
+            incoming_uuid = str(media.get("syncUuid", "")).strip()
+            with get_connection() as connection:
+                sync_group_uuid = self._current_sync_group_uuid(connection)
+                tombstone = connection.execute(
+                    """
+                    SELECT file_uuid FROM sync_tombstones
+                    WHERE sync_group_uuid = ?
+                      AND (file_uuid = ? OR sha256 = ?)
+                    LIMIT 1
+                    """,
+                    (sync_group_uuid, incoming_uuid, expected_hash),
+                ).fetchone() if sync_group_uuid else None
+            if tombstone is not None:
+                temporary_path.unlink(missing_ok=True)
+                return {
+                    "status": "tombstoned",
+                    "syncUuid": str(tombstone["file_uuid"]),
+                    "message": "Il media è stato eliminato nel gruppo di sincronizzazione.",
+                }
             # Prima di toccare il filesystem controlla un duplicato realmente
             # presente su disco. Una riga DB stale non deve far perdere il file
             # che Android sta tentando di ripristinare.
@@ -420,8 +500,477 @@ class MobileSyncService:
             "unresolvedCatalogCharacters": unresolved,
         }
 
-    def merge_metadata(self, items: Iterable[dict[str, Any]]) -> dict[str, int]:
-        item_list = [dict(item) for item in items if isinstance(item, dict)]
+    @staticmethod
+    def _clean_tombstone(item: dict[str, Any]) -> dict[str, Any] | None:
+        file_uuid = str(item.get("fileUuid") or item.get("syncUuid") or "").strip()
+        sha256 = str(item.get("sha256") or "").strip().lower()
+        media_type = str(item.get("mediaType") or "image").strip().lower()
+        relative_path = str(item.get("lastRelativePath") or item.get("relativePath") or "").strip()
+        if not _SAFE_UUID.match(file_uuid) or len(sha256) != 64:
+            return None
+        if media_type not in {"image", "video"}:
+            media_type = "image"
+        try:
+            relative_path = MobileSyncService._safe_relative_path(relative_path)
+        except ValueError:
+            return None
+        return {
+            "fileUuid": file_uuid,
+            "sha256": sha256,
+            "mediaType": media_type,
+            "lastRelativePath": relative_path,
+            "deletedAt": str(item.get("deletedAt") or "").strip(),
+            "originPeerUuid": str(item.get("originPeerUuid") or "").strip()[:240],
+        }
+
+    @staticmethod
+    def _store_remote_tombstone(tombstone: dict[str, Any], sync_group_uuid: str) -> None:
+        if not sync_group_uuid:
+            raise ValueError("La galleria Windows non appartiene a un gruppo di sincronizzazione.")
+        with get_connection() as connection:
+            if tombstone["deletedAt"]:
+                connection.execute(
+                    """
+                    INSERT INTO sync_tombstones(
+                        file_uuid, sha256, media_type, last_relative_path,
+                        deleted_at, origin_peer_uuid, created_locally, sync_group_uuid
+                    ) VALUES (?, ?, ?, ?, ?, ?, 0, ?)
+                    ON CONFLICT(file_uuid) DO UPDATE SET
+                        sha256 = excluded.sha256,
+                        media_type = excluded.media_type,
+                        last_relative_path = excluded.last_relative_path,
+                        deleted_at = excluded.deleted_at,
+                        origin_peer_uuid = excluded.origin_peer_uuid,
+                        created_locally = 0,
+                        sync_group_uuid = excluded.sync_group_uuid
+                    WHERE sync_tombstones.sync_group_uuid = excluded.sync_group_uuid
+                       OR sync_tombstones.sync_group_uuid = ''
+                    """,
+                    (
+                        tombstone["fileUuid"], tombstone["sha256"], tombstone["mediaType"],
+                        tombstone["lastRelativePath"], tombstone["deletedAt"],
+                        tombstone["originPeerUuid"] or None, sync_group_uuid,
+                    ),
+                )
+            else:
+                connection.execute(
+                    """
+                    INSERT INTO sync_tombstones(
+                        file_uuid, sha256, media_type, last_relative_path,
+                        origin_peer_uuid, created_locally, sync_group_uuid
+                    ) VALUES (?, ?, ?, ?, ?, 0, ?)
+                    ON CONFLICT(file_uuid) DO UPDATE SET
+                        sha256 = excluded.sha256,
+                        media_type = excluded.media_type,
+                        last_relative_path = excluded.last_relative_path,
+                        origin_peer_uuid = excluded.origin_peer_uuid,
+                        created_locally = 0,
+                        sync_group_uuid = excluded.sync_group_uuid
+                    WHERE sync_tombstones.sync_group_uuid = excluded.sync_group_uuid
+                       OR sync_tombstones.sync_group_uuid = ''
+                    """,
+                    (
+                        tombstone["fileUuid"], tombstone["sha256"], tombstone["mediaType"],
+                        tombstone["lastRelativePath"], tombstone["originPeerUuid"] or None,
+                        sync_group_uuid,
+                    ),
+                )
+
+    @staticmethod
+    def _resolve_tombstone_target(tombstone: dict[str, Any]) -> tuple[int | None, str | None]:
+        """Trova un solo media attivo senza mai indovinare una cancellazione.
+
+        Priorità: UUID+SHA. Per gallerie collegate prima di M7.5, dove lo stesso
+        contenuto può avere UUID diversi, accetta SHA solo se individua un unico
+        media; se ci sono duplicati identici usa il percorso solo quando è unico.
+        """
+        with get_connection() as connection:
+            exact = connection.execute(
+                "SELECT id, sha256 FROM files WHERE sync_uuid = ? AND is_trashed = 0 LIMIT 1",
+                (tombstone["fileUuid"],),
+            ).fetchone()
+            if exact is not None:
+                if str(exact["sha256"]).lower() != tombstone["sha256"]:
+                    return None, "UUID uguale ma SHA-256 differente: cancellazione bloccata."
+                target_id = int(exact["id"])
+                story = connection.execute(
+                    "SELECT story_id FROM story_pages WHERE file_id = ? LIMIT 1",
+                    (target_id,),
+                ).fetchone()
+                if story is not None:
+                    return None, (
+                        "Il media appartiene a una storia Windows. Sciogli prima la storia: "
+                        "la cancellazione sincronizzata è stata bloccata."
+                    )
+                return target_id, None
+
+            candidates = connection.execute(
+                """
+                SELECT id, relative_path
+                FROM files
+                WHERE sha256 = ? AND is_trashed = 0
+                ORDER BY id
+                """,
+                (tombstone["sha256"],),
+            ).fetchall()
+            if not candidates:
+                return None, None
+            if len(candidates) == 1:
+                target_id = int(candidates[0]["id"])
+                story = connection.execute(
+                    "SELECT story_id FROM story_pages WHERE file_id = ? LIMIT 1",
+                    (target_id,),
+                ).fetchone()
+                if story is not None:
+                    return None, (
+                        "Il media appartiene a una storia Windows. Sciogli prima la storia: "
+                        "la cancellazione sincronizzata è stata bloccata."
+                    )
+                return target_id, None
+
+            path_matches = [
+                row for row in candidates
+                if str(row["relative_path"]).casefold() == tombstone["lastRelativePath"].casefold()
+            ]
+            if len(path_matches) == 1:
+                target_id = int(path_matches[0]["id"])
+                story = connection.execute(
+                    "SELECT story_id FROM story_pages WHERE file_id = ? LIMIT 1",
+                    (target_id,),
+                ).fetchone()
+                if story is not None:
+                    return None, (
+                        "Il media appartiene a una storia Windows. Sciogli prima la storia: "
+                        "la cancellazione sincronizzata è stata bloccata."
+                    )
+                return target_id, None
+            return None, "Più media identici corrispondono alla tombstone: cancellazione ambigua bloccata."
+
+    def _apply_tombstones(self, items: Iterable[dict[str, Any]]) -> dict[str, Any]:
+        item_list = list(items)
+        moved_to_trash = 0
+        already_absent = 0
+        conflicts: list[dict[str, str]] = []
+        applied = 0
+        with get_connection() as connection:
+            sync_group_uuid = self._current_sync_group_uuid(connection)
+        if item_list and not sync_group_uuid:
+            return {
+                "deletionsApplied": 0,
+                "deletedMovedToTrash": 0,
+                "deletionAlreadyAbsent": 0,
+                "deletionConflicts": len(item_list),
+                "deletionConflictDetails": [{
+                    "fileUuid": str(item.get("fileUuid") or ""),
+                    "relativePath": str(item.get("lastRelativePath") or ""),
+                    "message": "Gruppo di sincronizzazione Windows assente: cancellazione bloccata.",
+                } for item in item_list],
+            }
+
+        # Preflight completo del batch: nessuna cancellazione del batch viene
+        # applicata se anche una sola tombstone è ambigua o appartiene a un
+        # gruppo differente. Questo evita merge distruttivi parziali.
+        resolved: list[tuple[dict[str, Any], int | None]] = []
+        for raw in item_list:
+            tombstone = self._clean_tombstone(raw)
+            if tombstone is None:
+                conflicts.append({
+                    "fileUuid": str(raw.get("fileUuid") or ""),
+                    "relativePath": str(raw.get("lastRelativePath") or ""),
+                    "message": "Tombstone non valida: cancellazione ignorata.",
+                })
+                continue
+            with get_connection() as connection:
+                existing = connection.execute(
+                    "SELECT sync_group_uuid, sha256 FROM sync_tombstones WHERE file_uuid = ? LIMIT 1",
+                    (tombstone["fileUuid"],),
+                ).fetchone()
+            if existing is not None:
+                existing_group = str(existing["sync_group_uuid"] or "").strip()
+                existing_sha = str(existing["sha256"] or "").lower()
+                if existing_group and existing_group != sync_group_uuid:
+                    conflicts.append({
+                        "fileUuid": tombstone["fileUuid"],
+                        "relativePath": tombstone["lastRelativePath"],
+                        "message": "La stessa identità media appartiene a una tombstone di un altro gruppo: cancellazione bloccata.",
+                    })
+                    continue
+                if existing_group == sync_group_uuid and existing_sha and existing_sha != tombstone["sha256"]:
+                    conflicts.append({
+                        "fileUuid": tombstone["fileUuid"],
+                        "relativePath": tombstone["lastRelativePath"],
+                        "message": "La stessa tombstone ha SHA-256 differente: cancellazione bloccata.",
+                    })
+                    continue
+            target_id, conflict = self._resolve_tombstone_target(tombstone)
+            if conflict:
+                conflicts.append({
+                    "fileUuid": tombstone["fileUuid"],
+                    "relativePath": tombstone["lastRelativePath"],
+                    "message": conflict,
+                })
+                continue
+            resolved.append((tombstone, target_id))
+
+        if conflicts:
+            return {
+                "deletionsApplied": 0,
+                "deletedMovedToTrash": 0,
+                "deletionAlreadyAbsent": 0,
+                "deletionConflicts": len(conflicts),
+                "deletionConflictDetails": conflicts,
+            }
+
+        validate_only = bool(item_list) and all(bool(item.get("validateOnly")) for item in item_list)
+        if validate_only:
+            return {
+                "deletionsApplied": 0,
+                "deletedMovedToTrash": 0,
+                "deletionAlreadyAbsent": 0,
+                "deletionConflicts": 0,
+                "deletionConflictDetails": [],
+                "deletionsValidated": len(resolved),
+            }
+
+        handled_target_ids: set[int] = set()
+        for tombstone, target_id in resolved:
+            # Registra prima l'intenzione di cancellazione. Se il processo si
+            # interrompe subito dopo, al prossimo tentativo la tombstone resta
+            # disponibile e l'operazione può essere ripresa in modo idempotente.
+            self._store_remote_tombstone(tombstone, sync_group_uuid)
+            applied += 1
+            if target_id is not None and target_id not in handled_target_ids:
+                handled_target_ids.add(target_id)
+                try:
+                    # M7.5 non distrugge la copia remota: la sposta nel cestino
+                    # locale. La tombstone impedisce comunque che venga ricopiata.
+                    trash_gallery_file(target_id)
+                    moved_to_trash += 1
+                except Exception as error:
+                    conflicts.append({
+                        "fileUuid": tombstone["fileUuid"],
+                        "relativePath": tombstone["lastRelativePath"],
+                        "message": f"Tombstone registrata, ma impossibile spostare il media nel cestino Windows: {error}",
+                    })
+                    continue
+            elif target_id is None:
+                already_absent += 1
+        return {
+            "deletionsApplied": applied,
+            "deletedMovedToTrash": moved_to_trash,
+            "deletionAlreadyAbsent": already_absent,
+            "deletionConflicts": len(conflicts),
+            "deletionConflictDetails": conflicts,
+        }
+
+    @staticmethod
+    def _clean_baseline_snapshot(value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        tags_raw = value.get("tags")
+        characters_raw = value.get("characters")
+        if not isinstance(tags_raw, dict) or not isinstance(characters_raw, dict):
+            return None
+        tags: dict[str, dict[str, str]] = {}
+        for raw_key, raw_value in tags_raw.items():
+            key = " ".join(str(raw_key).split()).casefold()
+            if not key or not isinstance(raw_value, dict):
+                continue
+            tag_type = str(raw_value.get("type") or "").strip().casefold()
+            if tag_type not in {"general", "artist"}:
+                continue
+            name = " ".join(str(raw_value.get("name") or raw_key).split())
+            if not name or name.casefold() == "ai":
+                continue
+            tags[key] = {"name": name, "type": tag_type}
+        characters: dict[str, dict[str, str]] = {}
+        for raw_key, raw_value in characters_raw.items():
+            key = str(raw_key or "").strip().casefold()
+            if not key or not isinstance(raw_value, dict):
+                continue
+            name = " ".join(str(raw_value.get("name") or "").split())
+            franchise = " ".join(str(raw_value.get("franchiseName") or "").split())
+            if not name or not franchise:
+                continue
+            characters[key] = {
+                "name": name,
+                "franchiseName": franchise,
+                "relativePath": str(raw_value.get("relativePath") or "").strip(),
+                "franchiseCode": str(raw_value.get("franchiseCode") or "").strip(),
+                "franchiseRelativePath": str(raw_value.get("franchiseRelativePath") or "").strip(),
+            }
+        return {
+            "version": 1,
+            "tags": tags,
+            "characters": characters,
+            "aiGenerated": bool(value.get("aiGenerated")),
+        }
+
+    def _store_metadata_baseline_controls(
+        self,
+        items: list[dict[str, Any]],
+        sync_group_uuid: str,
+    ) -> int:
+        if not items or not sync_group_uuid:
+            return 0
+        stored = 0
+        with get_connection() as connection:
+            for item in items:
+                group = str(item.get("baselineSyncGroupUuid") or "").strip()
+                peer = str(item.get("baselinePeerGalleryUuid") or "").strip()
+                if group != sync_group_uuid or not peer:
+                    continue
+                if bool(item.get("baselineReset")):
+                    connection.execute(
+                        "DELETE FROM sync_metadata_baselines "
+                        "WHERE sync_group_uuid = ? AND peer_gallery_uuid = ?",
+                        (sync_group_uuid, peer),
+                    )
+                sha256 = str(item.get("sha256") or "").strip().lower()
+                if len(sha256) != 64:
+                    continue
+                snapshot = self._clean_baseline_snapshot(item.get("snapshot"))
+                if snapshot is None:
+                    continue
+                connection.execute(
+                    """
+                    INSERT INTO sync_metadata_baselines(
+                        sync_group_uuid, peer_gallery_uuid, media_sha256,
+                        snapshot_json, updated_at
+                    ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(sync_group_uuid, peer_gallery_uuid, media_sha256)
+                    DO UPDATE SET
+                        snapshot_json = excluded.snapshot_json,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (
+                        sync_group_uuid,
+                        peer,
+                        sha256,
+                        json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                    ),
+                )
+                stored += 1
+        return stored
+
+    @staticmethod
+    def _metadata_key(value: str) -> str:
+        return " ".join(str(value).split()).casefold()
+
+    def _replace_file_metadata(
+        self,
+        connection,
+        file_id: int,
+        file_row,
+        item: dict[str, Any],
+    ) -> tuple[bool, int, int, int, int, int]:
+        desired_tags: dict[str, str] = {}
+        for value in item.get("tags") or []:
+            name = " ".join(str(value).split())
+            if name and name.casefold() != "ai":
+                desired_tags[self._metadata_key(name)] = name
+        desired_artists: dict[str, str] = {}
+        for value in item.get("artists") or []:
+            name = " ".join(str(value).split())
+            if name and name.casefold() != "ai":
+                key = self._metadata_key(name)
+                desired_artists[key] = name
+                desired_tags.pop(key, None)
+        desired_ai = bool(item.get("aiGenerated"))
+
+        desired_characters: list[int] = []
+        unresolved = 0
+        for character in item.get("characters") or []:
+            if not isinstance(character, dict):
+                continue
+            character_id = self._find_character_id(connection, character)
+            if character_id is None:
+                unresolved += 1
+            else:
+                desired_characters.append(character_id)
+        if unresolved:
+            # Non eliminare associazioni personaggio se non possiamo ricostruire
+            # integralmente lo stato desiderato.
+            return False, 0, 0, 0, 0, unresolved
+
+        current_metadata = self._metadata_for_file(connection, file_id)
+        current_tags = {self._metadata_key(v) for v in current_metadata["tags"]}
+        current_artists = {self._metadata_key(v) for v in current_metadata["artists"]}
+        current_characters = {
+            f"{self._metadata_key(c.get('franchiseName', ''))}\u0000{self._metadata_key(c.get('name', ''))}"
+            for c in current_metadata["characters"]
+        }
+        desired_character_keys = {
+            f"{self._metadata_key(str(c.get('franchiseName') or ''))}\u0000{self._metadata_key(str(c.get('name') or ''))}"
+            for c in item.get("characters") or [] if isinstance(c, dict)
+        }
+        current_ai = bool(file_row["ai_generated"])
+        changed = (
+            current_tags != set(desired_tags) or
+            current_artists != set(desired_artists) or
+            current_characters != desired_character_keys or
+            current_ai != desired_ai
+        )
+        if not changed:
+            return False, 0, 0, 0, 0, 0
+
+        connection.execute("UPDATE files SET ai_generated = ? WHERE id = ?", (int(desired_ai), file_id))
+        connection.execute("DELETE FROM file_characters WHERE file_id = ?", (file_id,))
+        for character_id in sorted(set(desired_characters)):
+            connection.execute(
+                "INSERT OR IGNORE INTO file_characters(file_id, character_id) VALUES (?, ?)",
+                (file_id, character_id),
+            )
+
+        # Rimuove soltanto metadata gestiti dal sync (general/artist e AI),
+        # lasciando intatti eventuali futuri tag di sistema non conosciuti.
+        connection.execute(
+            """
+            DELETE FROM file_tags
+            WHERE file_id = ? AND tag_id IN (
+                SELECT id FROM tags
+                WHERE type IN ('general', 'artist') OR name = 'AI' COLLATE NOCASE
+            )
+            """,
+            (file_id,),
+        )
+        tags_added = 0
+        artists_added = 0
+        for name in desired_tags.values():
+            tag_id, _, _ = ensure_tag(connection, name, "general")
+            cursor = connection.execute(
+                "INSERT OR IGNORE INTO file_tags(file_id, tag_id) VALUES (?, ?)",
+                (file_id, tag_id),
+            )
+            if cursor.rowcount > 0:
+                tags_added += 1
+        for name in desired_artists.values():
+            tag_id, _, _ = ensure_tag(connection, name, "artist")
+            cursor = connection.execute(
+                "INSERT OR IGNORE INTO file_tags(file_id, tag_id) VALUES (?, ?)",
+                (file_id, tag_id),
+            )
+            if cursor.rowcount > 0:
+                artists_added += 1
+        if desired_ai:
+            ai_id, _, _ = ensure_tag(connection, "AI", "system")
+            connection.execute(
+                "INSERT OR IGNORE INTO file_tags(file_id, tag_id) VALUES (?, ?)",
+                (file_id, ai_id),
+            )
+        return True, int(current_ai != desired_ai), tags_added, artists_added, len(set(desired_characters)), 0
+
+    def merge_metadata(self, items: Iterable[dict[str, Any]]) -> dict[str, Any]:
+        all_items = [dict(item) for item in items if isinstance(item, dict)]
+        baseline_items = [item for item in all_items if bool(item.get("baselineSnapshot"))]
+        tombstone_items = [
+            item for item in all_items
+            if bool(item.get("deleted")) and not bool(item.get("baselineSnapshot"))
+        ]
+        item_list = [
+            item for item in all_items
+            if not bool(item.get("deleted")) and not bool(item.get("baselineSnapshot"))
+        ]
         merged = 0
         changed_files = 0
         ai_updated = 0
@@ -431,14 +980,33 @@ class MobileSyncService:
         unresolved_characters = 0
 
         with self._lock:
+            deletion_stats = self._apply_tombstones(tombstone_items)
+            with get_connection() as baseline_connection:
+                baseline_group_uuid = self._current_sync_group_uuid(baseline_connection)
+            baselines_stored = self._store_metadata_baseline_controls(
+                baseline_items, baseline_group_uuid
+            )
             catalog = self._ensure_character_catalog(item_list)
             # create_franchise/create_character aggiornano già il DB; non rilanciare
             # qui lo scanner, perché le nuove cartelle possono essere ancora vuote
             # finché non vengono aggiunte le associazioni del media.
             with get_connection() as connection:
+                sync_group_uuid = self._current_sync_group_uuid(connection)
                 for item in item_list:
                     sha256 = str(item.get("sha256") or "").strip().lower()
                     if len(sha256) != 64:
+                        continue
+                    # Una tombstone ha precedenza sul merge additivo: non ricreare
+                    # metadata su un media già dichiarato eliminato.
+                    deleted = connection.execute(
+                        """
+                        SELECT 1 FROM sync_tombstones
+                        WHERE sync_group_uuid = ? AND sha256 = ?
+                        LIMIT 1
+                        """,
+                        (sync_group_uuid, sha256),
+                    ).fetchone() if sync_group_uuid else None
+                    if deleted is not None:
                         continue
                     file_row = connection.execute(
                         "SELECT id, ai_generated FROM files WHERE sha256 = ? AND is_trashed = 0 LIMIT 1",
@@ -448,6 +1016,24 @@ class MobileSyncService:
                         continue
                     file_id = int(file_row["id"])
                     changed = False
+
+                    if bool(item.get("replaceMetadata")):
+                        (
+                            replaced, ai_delta, replace_tags, replace_artists,
+                            replace_characters, replace_unresolved,
+                        ) = self._replace_file_metadata(connection, file_id, file_row, item)
+                        unresolved_characters += replace_unresolved
+                        if replace_unresolved:
+                            merged += 1
+                            continue
+                        if replaced:
+                            changed_files += 1
+                            ai_updated += ai_delta
+                            tags_added += replace_tags
+                            artists_added += replace_artists
+                            character_links_added += replace_characters
+                        merged += 1
+                        continue
 
                     if bool(item.get("aiGenerated")) and not bool(file_row["ai_generated"]):
                         connection.execute("UPDATE files SET ai_generated = 1 WHERE id = ?", (file_id,))
@@ -516,6 +1102,8 @@ class MobileSyncService:
             "createdFranchises": int(catalog["createdFranchises"]),
             "createdCharacters": int(catalog["createdCharacters"]),
             "unresolvedCharacters": unresolved_characters + int(catalog["unresolvedCatalogCharacters"]),
+            "baselinesStored": baselines_stored,
+            **deletion_stats,
         }
 
     def finalize(self, *, device_id: str, android_gallery_uuid: str, android_gallery_name: str) -> dict[str, Any]:

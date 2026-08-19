@@ -271,11 +271,11 @@ class _GallerySyncPageState extends State<GallerySyncPage> {
           : ListView(
               padding: const EdgeInsets.fromLTRB(20, 20, 20, 96),
               children: [
-                const Text('M7.4 · Gruppi di sincronizzazione', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
+                const Text('M7.6 · Gruppi di sincronizzazione', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
                 const SizedBox(height: 8),
                 const Text(
                   'Ogni gruppo collega esplicitamente una galleria Android e una Windows. '
-                  'M7.4 sincronizza anche tag, artisti, personaggi e stato AI, e conserva la data dell’ultima verifica riuscita.',
+                  'M7.6 sincronizza file, eliminazioni e metadata con un baseline verificato, e conserva la data dell’ultima verifica riuscita.',
                   style: TextStyle(color: AppTheme.muted, height: 1.45),
                 ),
                 const SizedBox(height: 22),
@@ -523,15 +523,77 @@ class _GalleryMergePageState extends State<GalleryMergePage> {
   Future<void> _sync() async {
     final plan = _plan;
     if (plan == null || _syncing) return;
+    if (plan.deletionConflicts > 0) {
+      _error(
+        'M7.5 ha bloccato ${plan.deletionConflicts} cancellazioni ambigue. '
+        'Apri “Dettaglio eliminazioni” e risolvi i conflitti prima del merge.',
+      );
+      return;
+    }
+    if (plan.metadataResolutionConflicts > 0) {
+      _error(
+        'M7.6 ha bloccato ${plan.metadataResolutionConflicts} modifiche metadata concorrenti. '
+        'Apri “Dettaglio metadata” e risolvi manualmente il conflitto prima del merge.',
+      );
+      return;
+    }
+
+    final hasDeletions = plan.pendingDeletions > 0;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Sincronizzare il gruppo?'),
-        content: Text(
-          'Verranno copiati ${plan.toAndroid} media su Android e ${plan.toWindows} su Windows. '
-          '${plan.metadataDifferences} media hanno metadata differenti e verranno uniti in modo additivo. '
-          'M7.4 mantiene i retry di M7.3 e verifica nuovamente file e metadata a fine merge. '
-          'Le eliminazioni non vengono ancora propagate.',
+        title: Text(
+          hasDeletions
+              ? 'Sincronizzare e applicare le eliminazioni?'
+              : 'Sincronizzare il gruppo?',
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Verranno copiati ${plan.toAndroid} media su Android e '
+                '${plan.toWindows} su Windows. ${plan.metadataDifferences} media '
+                'hanno metadata differenti. M7.6 applica aggiunte e rimozioni '
+                'solo quando la modifica è determinabile dal baseline verificato.',
+                style: const TextStyle(height: 1.4),
+              ),
+              if (plan.metadataBaselinePending > 0) ...[
+                const SizedBox(height: 10),
+                Text(
+                  '${plan.metadataBaselinePending} media non hanno ancora un baseline '
+                  'metadata condiviso. Per questi media la sessione resta additiva; '
+                  'a verifica conclusa verrà creato il baseline per le sincronizzazioni future.',
+                  style: const TextStyle(color: AppTheme.muted, fontSize: 12, height: 1.4),
+                ),
+              ],
+              if (hasDeletions) ...[
+                const SizedBox(height: 14),
+                Text(
+                  'Eliminazioni da propagare: ${plan.pendingDeletions}. '
+                  'Di queste, ${plan.deleteOnAndroid} sposteranno un media nel '
+                  'Cestino Android e ${plan.deleteOnWindows} nel Cestino Windows.',
+                  style: const TextStyle(fontWeight: FontWeight.w700, height: 1.4),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'M7.5 non distrugge definitivamente la copia sul dispositivo '
+                  'ricevente: la sposta nel suo Cestino. Solo una eliminazione '
+                  'definitiva eseguita dentro H-Gallery genera una cancellazione '
+                  'sincronizzabile.',
+                  style: TextStyle(height: 1.4),
+                ),
+              ],
+              const SizedBox(height: 14),
+              const Text(
+                'Le rimozioni metadata vengono propagate solo con un baseline '
+                'condiviso e verificato. In assenza di baseline M7.6 non interpreta '
+                'mai una semplice assenza come cancellazione.',
+                style: TextStyle(color: AppTheme.muted, fontSize: 12, height: 1.4),
+              ),
+            ],
+          ),
         ),
         actions: [
           TextButton(
@@ -540,8 +602,12 @@ class _GalleryMergePageState extends State<GalleryMergePage> {
           ),
           FilledButton.icon(
             onPressed: () => Navigator.of(context).pop(true),
-            icon: const Icon(Icons.sync_rounded),
-            label: const Text('Avvia merge'),
+            icon: Icon(
+              hasDeletions ? Icons.delete_sweep_rounded : Icons.sync_rounded,
+            ),
+            label: Text(
+              hasDeletions ? 'Sincronizza ed elimina' : 'Avvia merge',
+            ),
           ),
         ],
       ),
@@ -573,18 +639,26 @@ class _GalleryMergePageState extends State<GalleryMergePage> {
       } else if (result.cancelled) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Sincronizzazione interrotta. I file completati sono già al sicuro.'),
+            content: Text(
+              'Sincronizzazione interrotta. Le operazioni già confermate sono al sicuro.',
+            ),
           ),
         );
       } else if (result.interrupted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Connessione interrotta. Puoi riprendere il merge quando il PC torna raggiungibile.'),
+            content: Text(
+              'Connessione interrotta. Puoi riprendere il merge quando il PC torna raggiungibile.',
+            ),
           ),
         );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Merge parziale: alcuni file richiedono un nuovo tentativo.')),
+          const SnackBar(
+            content: Text(
+              'Merge parziale: restano operazioni da verificare o ripetere.',
+            ),
+          ),
         );
       }
 
@@ -603,7 +677,7 @@ class _GalleryMergePageState extends State<GalleryMergePage> {
     } on PlatformException catch (error) {
       _error(
         error.message ??
-            'Sincronizzazione non avviata. I file già completati in precedenza verranno comunque riconosciuti dall’hash.',
+            'Sincronizzazione non avviata: è presente un conflitto che richiede risoluzione manuale.',
       );
     } finally {
       if (mounted) {
@@ -650,6 +724,10 @@ class _GalleryMergePageState extends State<GalleryMergePage> {
         return 'Indicizzazione';
       case 'compare':
         return 'Confronto gallerie';
+      case 'deletions':
+        return 'Allineamento eliminazioni';
+      case 'deletions_windows':
+        return 'Eliminazioni su Windows';
       case 'download':
         return 'Windows → Android';
       case 'upload':
@@ -660,6 +738,8 @@ class _GalleryMergePageState extends State<GalleryMergePage> {
         return 'Merge metadata Android';
       case 'metadata_windows':
         return 'Merge metadata Windows';
+      case 'metadata_baseline':
+        return 'Verifica baseline metadata';
       case 'finalize_windows':
         return 'Aggiornamento Windows';
       case 'verify':
@@ -737,9 +817,15 @@ class _GalleryMergePageState extends State<GalleryMergePage> {
           if (plan != null) ...[
             const SizedBox(height: 22),
             _PlanCard(plan: plan, bytes: _bytes),
-            if (plan.metadataDifferences > 0) ...[
+            if (plan.metadataDifferences > 0 ||
+                plan.metadataBaselinePending > 0 ||
+                plan.metadataResolutionConflicts > 0) ...[
               const SizedBox(height: 10),
               _MetadataDetailsCard(plan: plan),
+            ],
+            if (plan.pendingDeletions > 0 || plan.deletionConflicts > 0) ...[
+              const SizedBox(height: 10),
+              _DeletionDetailsCard(plan: plan),
             ],
             if (plan.pathConflicts > 0) ...[
               const SizedBox(height: 10),
@@ -759,7 +845,7 @@ class _GalleryMergePageState extends State<GalleryMergePage> {
                 child: Padding(
                   padding: const EdgeInsets.all(16),
                   child: Text(
-                    '${plan.metadataTypeConflicts} conflitti tag/artista: M7.4 mantiene un solo tag e dà precedenza al tipo Artista.',
+                    '${plan.metadataTypeConflicts} differenze tag/artista rilevate. Senza baseline condiviso prevale Artista; con baseline verificato M7.6 applica solo modifiche non ambigue.',
                     style: const TextStyle(height: 1.4),
                   ),
                 ),
@@ -769,15 +855,27 @@ class _GalleryMergePageState extends State<GalleryMergePage> {
             Row(
               children: [
                 Icon(
-                  plan.synchronized ? Icons.check_circle_rounded : Icons.sync_problem_rounded,
-                  color: plan.synchronized ? AppTheme.success : AppTheme.accent,
+                  plan.hasBlockingConflicts
+                      ? Icons.block_rounded
+                      : plan.synchronized
+                          ? Icons.check_circle_rounded
+                          : Icons.sync_problem_rounded,
+                  color: plan.hasBlockingConflicts
+                      ? Theme.of(context).colorScheme.error
+                      : plan.synchronized
+                          ? AppTheme.success
+                          : AppTheme.accent,
                 ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    plan.synchronized
-                        ? 'Gallerie già allineate: il merge eseguirà solo una nuova verifica.'
-                        : '${plan.pendingChanges} modifiche complessive da sincronizzare.',
+                    plan.deletionConflicts > 0
+                        ? '${plan.deletionConflicts} cancellazioni bloccate per sicurezza.'
+                        : plan.metadataResolutionConflicts > 0
+                            ? '${plan.metadataResolutionConflicts} conflitti metadata richiedono una risoluzione manuale.'
+                            : plan.synchronized
+                                ? 'Gallerie e baseline metadata già allineati.'
+                                : '${plan.pendingChanges} operazioni o baseline da sincronizzare.',
                     style: const TextStyle(fontWeight: FontWeight.w600),
                   ),
                 ),
@@ -785,14 +883,35 @@ class _GalleryMergePageState extends State<GalleryMergePage> {
             ),
             const SizedBox(height: 14),
             FilledButton.icon(
-              onPressed: _syncing ? null : _sync,
-              icon: const Icon(Icons.sync_rounded),
+              onPressed: _syncing || plan.hasBlockingConflicts ? null : _sync,
+              icon: Icon(
+                plan.pendingDeletions > 0
+                    ? Icons.delete_sweep_rounded
+                    : Icons.sync_rounded,
+              ),
               label: Text(
-                plan.synchronized
-                    ? 'Verifica sincronizzazione'
-                    : plan.toAndroid == 0 && plan.toWindows == 0
-                        ? 'Sincronizza metadata'
-                        : 'Sincronizza gallerie',
+                plan.deletionConflicts > 0
+                    ? 'Risolvi i conflitti di eliminazione'
+                    : plan.metadataResolutionConflicts > 0
+                        ? 'Risolvi i conflitti metadata'
+                        : plan.synchronized
+                            ? 'Verifica sincronizzazione'
+                            : plan.metadataBaselinePending > 0 &&
+                                    plan.toAndroid == 0 &&
+                                    plan.toWindows == 0 &&
+                                    plan.metadataDifferences == 0 &&
+                                    plan.pendingDeletions == 0
+                                ? 'Inizializza baseline metadata'
+                                : plan.pendingDeletions > 0 &&
+                                        plan.toAndroid == 0 &&
+                                        plan.toWindows == 0 &&
+                                        plan.metadataDifferences == 0
+                                    ? 'Sincronizza eliminazioni'
+                                    : plan.pendingDeletions > 0
+                                        ? 'Sincronizza ed elimina'
+                                        : plan.toAndroid == 0 && plan.toWindows == 0
+                                            ? 'Sincronizza metadata'
+                                            : 'Sincronizza gallerie',
               ),
             ),
           ],
@@ -890,8 +1009,28 @@ class _SyncResultCard extends StatelessWidget {
             const SizedBox(height: 12),
             Text('Windows → Android completati: ${result.downloaded}'),
             Text('Android → Windows completati: ${result.uploaded}'),
+            if (result.deletedOnAndroid > 0)
+              Text('Spostati nel Cestino Android: ${result.deletedOnAndroid}'),
+            if (result.deletedOnWindows > 0)
+              Text('Spostati nel Cestino Windows: ${result.deletedOnWindows}'),
+            if (result.deletionAlreadyAbsentAndroid > 0 ||
+                result.deletionAlreadyAbsentWindows > 0)
+              Text(
+                'Eliminazioni registrate su media già assenti: '
+                '${result.deletionAlreadyAbsentAndroid + result.deletionAlreadyAbsentWindows}',
+              ),
+            if (result.deletionPendingAfter > 0)
+              Text('Eliminazioni ancora da propagare: ${result.deletionPendingAfter}'),
+            if (result.deletionConflictsAfter > 0)
+              Text(
+                'Conflitti eliminazione ancora presenti: ${result.deletionConflictsAfter}',
+              ),
             Text('Già presenti all’avvio: ${result.alreadyPresent}'),
             Text('Metadata differenti all’avvio: ${result.metadataDifferencesBefore}'),
+            if (result.metadataBaselinePendingBefore > 0)
+              Text('Baseline metadata da inizializzare all’avvio: ${result.metadataBaselinePendingBefore}'),
+            if (result.metadataResolutionConflictsBefore > 0)
+              Text('Conflitti metadata all’avvio: ${result.metadataResolutionConflictsBefore}'),
             Text('Metadata modificati su Android: ${result.metadataChangedAndroid}'),
             Text('Metadata modificati su Windows: ${result.metadataChangedWindows}'),
             if (result.createdCharactersAndroid > 0 || result.createdFranchisesAndroid > 0)
@@ -904,8 +1043,11 @@ class _SyncResultCard extends StatelessWidget {
               ),
             Text(
               result.verifiedSynced
-                  ? 'Verifica finale: file e metadata allineati'
-                  : 'Metadata ancora differenti dopo il merge: ${result.metadataDifferencesAfter}',
+                  ? 'Verifica finale: file, metadata, baseline ed eliminazioni allineati'
+                  : 'Verifica finale: ${result.metadataDifferencesAfter} differenze metadata, '
+                      '${result.metadataBaselinePendingAfter} baseline da inizializzare, '
+                      '${result.metadataResolutionConflictsAfter} conflitti metadata e '
+                      '${result.deletionPendingAfter} eliminazioni ancora da allineare',
             ),
             if (result.failed > 0) Text('Trasferimenti falliti: ${result.failed}'),
             if (result.pending > 0) Text('Non ancora tentati: ${result.pending}'),
@@ -914,8 +1056,8 @@ class _SyncResultCard extends StatelessWidget {
             if (!result.complete) ...[
               const SizedBox(height: 12),
               const Text(
-                'Nessun trasferimento completato viene perso: esegui di nuovo “Analizza gallerie” e poi “Sincronizza”. '
-                'Gli SHA-256 già presenti verranno esclusi automaticamente dal nuovo piano.',
+                'Nessun trasferimento o tombstone già confermata viene perso: esegui di nuovo “Analizza gallerie” e poi “Sincronizza”. '
+                'Le operazioni già completate verranno escluse automaticamente dal nuovo piano.',
                 style: TextStyle(color: AppTheme.muted, fontSize: 12, height: 1.4),
               ),
             ],
@@ -945,22 +1087,29 @@ class _SyncResultCard extends StatelessWidget {
   }
 }
 
-class _MetadataDetailsCard extends StatelessWidget {
-  const _MetadataDetailsCard({required this.plan});
+class _DeletionDetailsCard extends StatelessWidget {
+  const _DeletionDetailsCard({required this.plan});
 
   final GallerySyncPlan plan;
 
   @override
   Widget build(BuildContext context) {
+    final errorColor = Theme.of(context).colorScheme.error;
     return Card(
       child: ExpansionTile(
-        leading: const Icon(Icons.rule_folder_rounded, color: AppTheme.accent),
+        leading: Icon(
+          plan.deletionConflicts > 0
+              ? Icons.gpp_bad_rounded
+              : Icons.delete_sweep_rounded,
+          color: plan.deletionConflicts > 0 ? errorColor : AppTheme.accent,
+        ),
         title: const Text(
-          'Dettaglio metadata',
+          'Dettaglio eliminazioni',
           style: TextStyle(fontWeight: FontWeight.w700),
         ),
         subtitle: Text(
-          '${plan.metadataDifferences} media · ${plan.metadataChangeCount} modifiche',
+          '${plan.pendingDeletions} da propagare'
+          '${plan.deletionConflicts > 0 ? ' · ${plan.deletionConflicts} bloccate' : ''}',
         ),
         childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
         children: [
@@ -972,14 +1121,291 @@ class _MetadataDetailsCard extends StatelessWidget {
               borderRadius: BorderRadius.circular(12),
             ),
             child: const Text(
-              'M7.4 esegue un merge additivo: nessun metadata verrà rimosso durante questa sincronizzazione.',
+              'M7.5 propaga solo eliminazioni definitive registrate da H-Gallery. '
+              'Sul dispositivo ricevente il media viene spostato nel Cestino, '
+              'non distrutto definitivamente. File mancanti per modifiche esterne '
+              'non vengono interpretati come cancellazioni.',
+              style: TextStyle(color: AppTheme.muted, height: 1.4),
+            ),
+          ),
+          if (plan.deletionConflictDetails.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Operazioni bloccate',
+                style: TextStyle(
+                  fontWeight: FontWeight.w800,
+                  color: errorColor,
+                ),
+              ),
+            ),
+            const SizedBox(height: 6),
+            for (final conflict in plan.deletionConflictDetails)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(Icons.block_rounded, size: 18, color: errorColor),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '${conflict.targetLabel} · '
+                            '${conflict.filename.isEmpty ? conflict.relativePath : conflict.filename}',
+                            style: const TextStyle(fontWeight: FontWeight.w700),
+                          ),
+                          if (conflict.relativePath.isNotEmpty)
+                            Text(
+                              conflict.relativePath,
+                              style: const TextStyle(
+                                color: AppTheme.muted,
+                                fontSize: 11,
+                              ),
+                            ),
+                          Text(
+                            conflict.message,
+                            style: TextStyle(
+                              color: errorColor,
+                              fontSize: 12,
+                              height: 1.35,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            const Text(
+              'Finché esiste anche un solo conflitto, il pulsante di sincronizzazione resta disabilitato.',
+              style: TextStyle(color: AppTheme.muted, fontSize: 12, height: 1.35),
+            ),
+          ],
+          if (plan.deletionDetails.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            for (var index = 0; index < plan.deletionDetails.length; index++) ...[
+              _DeletionDetailTile(detail: plan.deletionDetails[index]),
+              if (index != plan.deletionDetails.length - 1)
+                const Divider(height: 18),
+            ],
+          ],
+          if (plan.deletionDetailsTruncated) ...[
+            const SizedBox(height: 10),
+            const Text(
+              'L’anteprima mostra le prime 200 operazioni di eliminazione; il conteggio totale comprende anche le restanti.',
+              style: TextStyle(color: AppTheme.muted, fontSize: 12, height: 1.35),
+            ),
+          ],
+          const SizedBox(height: 10),
+          const Text(
+            'M7.6 gestisce separatamente le rimozioni metadata tramite un baseline verificato: '
+            'una semplice assenza non viene mai interpretata come eliminazione.',
+            style: TextStyle(color: AppTheme.muted, fontSize: 12, height: 1.4),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DeletionDetailTile extends StatelessWidget {
+  const _DeletionDetailTile({required this.detail});
+
+  final GalleryDeletionDetail detail;
+
+  @override
+  Widget build(BuildContext context) {
+    final title = detail.action == 'record'
+        ? 'Su ${detail.targetLabel}: registra eliminazione'
+        : 'Su ${detail.targetLabel}: sposta nel Cestino';
+    final matchNote = switch (detail.matchKind) {
+      'uuid' => 'Identità media verificata con UUID + SHA-256.',
+      'sha256' => 'Identità compatibile verificata tramite SHA-256 univoco.',
+      'sha256+path' => 'Identità compatibile verificata tramite SHA-256 + percorso.',
+      'absent' => 'Il file è già assente; verrà replicata solo la tombstone.',
+      _ => '',
+    };
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            detail.action == 'record'
+                ? Icons.fact_check_outlined
+                : Icons.delete_outline_rounded,
+            size: 19,
+            color: AppTheme.accent,
+          ),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
+                Text(
+                  detail.filename.isEmpty ? detail.relativePath : detail.filename,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                if (detail.relativePath.isNotEmpty)
+                  Text(
+                    detail.relativePath,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: AppTheme.muted, fontSize: 11),
+                  ),
+                if (matchNote.isNotEmpty)
+                  Text(
+                    matchNote,
+                    style: const TextStyle(color: AppTheme.muted, fontSize: 11),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MetadataDetailsCard extends StatelessWidget {
+  const _MetadataDetailsCard({required this.plan});
+
+  final GallerySyncPlan plan;
+
+  @override
+  Widget build(BuildContext context) {
+    final errorColor = Theme.of(context).colorScheme.error;
+    final subtitle = <String>[
+      '${plan.metadataDifferences} media',
+      '${plan.metadataChangeCount} modifiche',
+      if (plan.metadataBaselinePending > 0)
+        '${plan.metadataBaselinePending} baseline da inizializzare',
+      if (plan.metadataResolutionConflicts > 0)
+        '${plan.metadataResolutionConflicts} conflitti',
+    ].join(' · ');
+
+    return Card(
+      child: ExpansionTile(
+        leading: Icon(
+          plan.metadataResolutionConflicts > 0
+              ? Icons.gpp_bad_rounded
+              : Icons.rule_folder_rounded,
+          color: plan.metadataResolutionConflicts > 0
+              ? errorColor
+              : AppTheme.accent,
+        ),
+        title: const Text(
+          'Dettaglio metadata',
+          style: TextStyle(fontWeight: FontWeight.w700),
+        ),
+        subtitle: Text(subtitle),
+        childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
+        children: [
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: AppTheme.panel,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Text(
+              'M7.6 usa un confronto a tre vie con l’ultimo baseline verificato. '
+              'Aggiunte e rimozioni vengono propagate solo quando la direzione '
+              'della modifica è certa. Senza un baseline condiviso il merge resta '
+              'additivo e non deduce cancellazioni dalla sola assenza.',
               style: TextStyle(color: AppTheme.muted, height: 1.35),
             ),
           ),
-          const SizedBox(height: 10),
-          for (var index = 0; index < plan.metadataDetails.length; index++) ...[
-            _MetadataDifferenceTile(detail: plan.metadataDetails[index]),
-            if (index != plan.metadataDetails.length - 1) const Divider(height: 18),
+          if (plan.metadataBaselinePending > 0) ...[
+            const SizedBox(height: 10),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppTheme.panel,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                '${plan.metadataBaselinePending} media non hanno ancora un baseline '
+                'metadata identico sui due dispositivi. La prossima sincronizzazione '
+                'allineerà i metadata senza rimozioni e, dopo la verifica, salverà '
+                'un baseline condiviso.',
+                style: const TextStyle(color: AppTheme.muted, height: 1.35),
+              ),
+            ),
+          ],
+          if (plan.metadataResolutionConflictDetails.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Conflitti bloccanti',
+                style: TextStyle(
+                  fontWeight: FontWeight.w800,
+                  color: errorColor,
+                ),
+              ),
+            ),
+            const SizedBox(height: 6),
+            for (final conflict in plan.metadataResolutionConflictDetails)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(Icons.block_rounded, size: 18, color: errorColor),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            conflict.filename.isEmpty
+                                ? conflict.relativePath
+                                : conflict.filename,
+                            style: const TextStyle(fontWeight: FontWeight.w700),
+                          ),
+                          if (conflict.relativePath.isNotEmpty)
+                            Text(
+                              conflict.relativePath,
+                              style: const TextStyle(
+                                color: AppTheme.muted,
+                                fontSize: 11,
+                              ),
+                            ),
+                          Text(
+                            conflict.message,
+                            style: TextStyle(
+                              color: errorColor,
+                              fontSize: 12,
+                              height: 1.35,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            const Text(
+              'M7.6 non sceglie automaticamente tra due modifiche concorrenti incompatibili. '
+              'Uniforma manualmente il metadata sui due dispositivi e analizza di nuovo.',
+              style: TextStyle(color: AppTheme.muted, fontSize: 12, height: 1.35),
+            ),
+          ],
+          if (plan.metadataDetails.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            for (var index = 0; index < plan.metadataDetails.length; index++) ...[
+              _MetadataDifferenceTile(detail: plan.metadataDetails[index]),
+              if (index != plan.metadataDetails.length - 1)
+                const Divider(height: 18),
+            ],
           ],
           if (plan.metadataDetailsTruncated) ...[
             const SizedBox(height: 12),
@@ -1030,13 +1456,13 @@ class _MetadataDifferenceTile extends StatelessWidget {
         if (detail.toAndroid.isNotEmpty)
           _MetadataDirection(
             icon: Icons.phone_android_rounded,
-            title: 'Su Android verrà aggiunto',
+            title: 'Su Android verrà modificato',
             changes: detail.toAndroid,
           ),
         if (detail.toWindows.isNotEmpty)
           _MetadataDirection(
             icon: Icons.computer_rounded,
-            title: 'Su Windows verrà aggiunto',
+            title: 'Su Windows verrà modificato',
             changes: detail.toWindows,
           ),
         if (detail.typeConflict)
@@ -1045,7 +1471,7 @@ class _MetadataDifferenceTile extends StatelessWidget {
             child: Align(
               alignment: Alignment.centerLeft,
               child: Text(
-                'Conflitto di tipo tag/artista: prevale Artista.',
+                'Differenza di classificazione tag/artista rilevata. M7.6 la gestisce solo se la direzione è determinabile dal baseline.',
                 style: TextStyle(color: AppTheme.muted, fontSize: 12),
               ),
             ),
@@ -1087,7 +1513,7 @@ class _MetadataDirection extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('+ ${change.label}'),
+                  Text('${change.symbol} ${change.label}'),
                   if (change.note.isNotEmpty)
                     Text(
                       change.note,
@@ -1135,6 +1561,36 @@ class _PlanCard extends StatelessWidget {
             line(Icons.upload_rounded, 'Da copiare su Windows', '${plan.toWindows} · ${bytes(plan.bytesToWindows)}'),
             line(Icons.done_all_rounded, 'Già presenti', '${plan.alreadyPresent}'),
             line(Icons.sell_rounded, 'Media con metadata differenti', '${plan.metadataDifferences} · ${plan.metadataChangeCount} modifiche'),
+            if (plan.metadataBaselinePending > 0)
+              line(
+                Icons.shield_outlined,
+                'Baseline metadata da inizializzare',
+                '${plan.metadataBaselinePending}',
+              ),
+            if (plan.metadataResolutionConflicts > 0)
+              line(
+                Icons.block_rounded,
+                'Conflitti metadata bloccanti',
+                '${plan.metadataResolutionConflicts}',
+              ),
+            if (plan.deletionPendingAndroid > 0)
+              line(
+                Icons.delete_sweep_rounded,
+                'Eliminazioni da propagare su Android',
+                '${plan.deletionPendingAndroid}',
+              ),
+            if (plan.deletionPendingWindows > 0)
+              line(
+                Icons.delete_sweep_rounded,
+                'Eliminazioni da propagare su Windows',
+                '${plan.deletionPendingWindows}',
+              ),
+            if (plan.deletionConflicts > 0)
+              line(
+                Icons.block_rounded,
+                'Cancellazioni bloccate per sicurezza',
+                '${plan.deletionConflicts}',
+              ),
           ],
         ),
       ),

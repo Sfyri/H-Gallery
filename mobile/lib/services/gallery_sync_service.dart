@@ -80,19 +80,25 @@ class GalleryMetadataChange {
   const GalleryMetadataChange({
     required this.kind,
     required this.value,
+    required this.action,
     required this.note,
   });
 
   final String kind;
   final String value;
+  final String action;
   final String note;
 
   String get label => value.isEmpty ? kind : '$kind: $value';
+  bool get removes => action == 'remove';
+  bool get changesType => action == 'set';
+  String get symbol => removes ? '−' : (changesType ? '↔' : '+');
 
   factory GalleryMetadataChange.fromPlatform(Map<Object?, Object?> value) {
     return GalleryMetadataChange(
       kind: value['kind']?.toString() ?? 'Metadata',
       value: value['value']?.toString() ?? '',
+      action: value['action']?.toString() ?? 'add',
       note: value['note']?.toString() ?? '',
     );
   }
@@ -140,6 +146,80 @@ class GalleryMetadataDifference {
   }
 }
 
+class GalleryMetadataConflict {
+  const GalleryMetadataConflict({
+    required this.filename,
+    required this.relativePath,
+    required this.message,
+  });
+
+  final String filename;
+  final String relativePath;
+  final String message;
+
+  factory GalleryMetadataConflict.fromPlatform(Map<Object?, Object?> value) {
+    return GalleryMetadataConflict(
+      filename: value['filename']?.toString() ?? '',
+      relativePath: value['relativePath']?.toString() ?? '',
+      message: value['message']?.toString() ?? 'Conflitto metadata non risolvibile automaticamente.',
+    );
+  }
+}
+
+class GalleryDeletionDetail {
+  const GalleryDeletionDetail({
+    required this.direction,
+    required this.filename,
+    required this.relativePath,
+    required this.matchKind,
+    required this.action,
+  });
+
+  final String direction;
+  final String filename;
+  final String relativePath;
+  final String matchKind;
+  final String action;
+
+  bool get onAndroid => direction == 'android';
+  String get targetLabel => onAndroid ? 'Android' : 'Windows';
+
+  factory GalleryDeletionDetail.fromPlatform(Map<Object?, Object?> value) {
+    return GalleryDeletionDetail(
+      direction: value['direction']?.toString() ?? '',
+      filename: value['filename']?.toString() ?? '',
+      relativePath: value['relativePath']?.toString() ?? '',
+      matchKind: value['matchKind']?.toString() ?? '',
+      action: value['action']?.toString() ?? 'trash',
+    );
+  }
+}
+
+class GalleryDeletionConflict {
+  const GalleryDeletionConflict({
+    required this.direction,
+    required this.filename,
+    required this.relativePath,
+    required this.message,
+  });
+
+  final String direction;
+  final String filename;
+  final String relativePath;
+  final String message;
+
+  String get targetLabel => direction == 'android' ? 'Android' : 'Windows';
+
+  factory GalleryDeletionConflict.fromPlatform(Map<Object?, Object?> value) {
+    return GalleryDeletionConflict(
+      direction: value['direction']?.toString() ?? '',
+      filename: value['filename']?.toString() ?? '',
+      relativePath: value['relativePath']?.toString() ?? '',
+      message: value['message']?.toString() ?? 'Cancellazione bloccata per sicurezza.',
+    );
+  }
+}
+
 class GallerySyncPlan {
   const GallerySyncPlan({
     required this.androidCount,
@@ -153,6 +233,17 @@ class GallerySyncPlan {
     required this.metadataChangeCount,
     required this.metadataDetails,
     required this.metadataDetailsTruncated,
+    required this.metadataBaselinePending,
+    required this.metadataResolutionConflicts,
+    required this.metadataResolutionConflictDetails,
+    required this.deleteOnAndroid,
+    required this.deleteOnWindows,
+    required this.deletionPendingAndroid,
+    required this.deletionPendingWindows,
+    required this.deletionConflicts,
+    required this.deletionDetails,
+    required this.deletionDetailsTruncated,
+    required this.deletionConflictDetails,
     required this.bytesToAndroid,
     required this.bytesToWindows,
     required this.windowsGalleryUuid,
@@ -170,13 +261,35 @@ class GallerySyncPlan {
   final int metadataChangeCount;
   final List<GalleryMetadataDifference> metadataDetails;
   final bool metadataDetailsTruncated;
+  final int metadataBaselinePending;
+  final int metadataResolutionConflicts;
+  final List<GalleryMetadataConflict> metadataResolutionConflictDetails;
+  final int deleteOnAndroid;
+  final int deleteOnWindows;
+  final int deletionPendingAndroid;
+  final int deletionPendingWindows;
+  final int deletionConflicts;
+  final List<GalleryDeletionDetail> deletionDetails;
+  final bool deletionDetailsTruncated;
+  final List<GalleryDeletionConflict> deletionConflictDetails;
   final int bytesToAndroid;
   final int bytesToWindows;
   final String windowsGalleryUuid;
   final String windowsGalleryName;
 
-  int get pendingChanges => toAndroid + toWindows + metadataDifferences;
-  bool get synchronized => toAndroid == 0 && toWindows == 0 && metadataDifferences == 0;
+  int get pendingDeletions => deletionPendingAndroid + deletionPendingWindows;
+  int get pendingChanges =>
+      toAndroid + toWindows + metadataDifferences + pendingDeletions + metadataBaselinePending;
+  bool get hasBlockingConflicts =>
+      deletionConflicts > 0 || metadataResolutionConflicts > 0;
+  bool get synchronized =>
+      toAndroid == 0 &&
+      toWindows == 0 &&
+      metadataDifferences == 0 &&
+      metadataBaselinePending == 0 &&
+      metadataResolutionConflicts == 0 &&
+      pendingDeletions == 0 &&
+      deletionConflicts == 0;
 
   factory GallerySyncPlan.fromPlatform(Map<Object?, Object?> value) {
     int number(String key) => (value[key] as num?)?.toInt() ?? 0;
@@ -191,6 +304,39 @@ class GallerySyncPlan {
             )
             .toList(growable: false)
         : const <GalleryMetadataDifference>[];
+    final rawMetadataConflicts = value['metadataResolutionConflictDetails'];
+    final metadataResolutionConflictDetails = rawMetadataConflicts is List
+        ? rawMetadataConflicts
+            .whereType<Map>()
+            .map(
+              (entry) => GalleryMetadataConflict.fromPlatform(
+                Map<Object?, Object?>.from(entry),
+              ),
+            )
+            .toList(growable: false)
+        : const <GalleryMetadataConflict>[];
+    final rawDeletionDetails = value['deletionDetails'];
+    final deletionDetails = rawDeletionDetails is List
+        ? rawDeletionDetails
+            .whereType<Map>()
+            .map(
+              (entry) => GalleryDeletionDetail.fromPlatform(
+                Map<Object?, Object?>.from(entry),
+              ),
+            )
+            .toList(growable: false)
+        : const <GalleryDeletionDetail>[];
+    final rawDeletionConflicts = value['deletionConflictDetails'];
+    final deletionConflictDetails = rawDeletionConflicts is List
+        ? rawDeletionConflicts
+            .whereType<Map>()
+            .map(
+              (entry) => GalleryDeletionConflict.fromPlatform(
+                Map<Object?, Object?>.from(entry),
+              ),
+            )
+            .toList(growable: false)
+        : const <GalleryDeletionConflict>[];
     return GallerySyncPlan(
       androidCount: number('androidCount'),
       windowsCount: number('windowsCount'),
@@ -203,6 +349,17 @@ class GallerySyncPlan {
       metadataChangeCount: number('metadataChangeCount'),
       metadataDetails: metadataDetails,
       metadataDetailsTruncated: value['metadataDetailsTruncated'] == true,
+      metadataBaselinePending: number('metadataBaselinePending'),
+      metadataResolutionConflicts: number('metadataResolutionConflicts'),
+      metadataResolutionConflictDetails: metadataResolutionConflictDetails,
+      deleteOnAndroid: number('deleteOnAndroid'),
+      deleteOnWindows: number('deleteOnWindows'),
+      deletionPendingAndroid: number('deletionPendingAndroid'),
+      deletionPendingWindows: number('deletionPendingWindows'),
+      deletionConflicts: number('deletionConflicts'),
+      deletionDetails: deletionDetails,
+      deletionDetailsTruncated: value['deletionDetailsTruncated'] == true,
+      deletionConflictDetails: deletionConflictDetails,
       bytesToAndroid: number('bytesToAndroid'),
       bytesToWindows: number('bytesToWindows'),
       windowsGalleryUuid: value['windowsGalleryUuid']?.toString() ?? '',
@@ -238,10 +395,21 @@ class GallerySyncResult {
   const GallerySyncResult({
     required this.downloaded,
     required this.uploaded,
+    required this.deletedOnAndroid,
+    required this.deletedOnWindows,
+    required this.deletionAlreadyAbsentAndroid,
+    required this.deletionAlreadyAbsentWindows,
+    required this.deletionPendingAfter,
+    required this.deletionConflictsBefore,
+    required this.deletionConflictsAfter,
     required this.alreadyPresent,
     required this.pathConflicts,
     required this.metadataDifferencesBefore,
     required this.metadataDifferencesAfter,
+    required this.metadataBaselinePendingBefore,
+    required this.metadataBaselinePendingAfter,
+    required this.metadataResolutionConflictsBefore,
+    required this.metadataResolutionConflictsAfter,
     required this.metadataMergedWindows,
     required this.metadataChangedAndroid,
     required this.metadataChangedWindows,
@@ -266,10 +434,21 @@ class GallerySyncResult {
 
   final int downloaded;
   final int uploaded;
+  final int deletedOnAndroid;
+  final int deletedOnWindows;
+  final int deletionAlreadyAbsentAndroid;
+  final int deletionAlreadyAbsentWindows;
+  final int deletionPendingAfter;
+  final int deletionConflictsBefore;
+  final int deletionConflictsAfter;
   final int alreadyPresent;
   final int pathConflicts;
   final int metadataDifferencesBefore;
   final int metadataDifferencesAfter;
+  final int metadataBaselinePendingBefore;
+  final int metadataBaselinePendingAfter;
+  final int metadataResolutionConflictsBefore;
+  final int metadataResolutionConflictsAfter;
   final int metadataMergedWindows;
   final int metadataChangedAndroid;
   final int metadataChangedWindows;
@@ -310,10 +489,21 @@ class GallerySyncResult {
     return GallerySyncResult(
       downloaded: number('downloaded'),
       uploaded: number('uploaded'),
+      deletedOnAndroid: number('deletedOnAndroid'),
+      deletedOnWindows: number('deletedOnWindows'),
+      deletionAlreadyAbsentAndroid: number('deletionAlreadyAbsentAndroid'),
+      deletionAlreadyAbsentWindows: number('deletionAlreadyAbsentWindows'),
+      deletionPendingAfter: number('deletionPendingAfter'),
+      deletionConflictsBefore: number('deletionConflictsBefore'),
+      deletionConflictsAfter: number('deletionConflictsAfter'),
       alreadyPresent: number('alreadyPresent'),
       pathConflicts: number('pathConflicts'),
       metadataDifferencesBefore: number('metadataDifferencesBefore'),
       metadataDifferencesAfter: number('metadataDifferencesAfter'),
+      metadataBaselinePendingBefore: number('metadataBaselinePendingBefore'),
+      metadataBaselinePendingAfter: number('metadataBaselinePendingAfter'),
+      metadataResolutionConflictsBefore: number('metadataResolutionConflictsBefore'),
+      metadataResolutionConflictsAfter: number('metadataResolutionConflictsAfter'),
       metadataMergedWindows: number('metadataMergedWindows'),
       metadataChangedAndroid: number('metadataChangedAndroid'),
       metadataChangedWindows: number('metadataChangedWindows'),

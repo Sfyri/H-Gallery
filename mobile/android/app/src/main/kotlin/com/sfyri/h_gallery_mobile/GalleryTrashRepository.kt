@@ -156,8 +156,11 @@ internal class GalleryTrashRepository(private val context: Context) {
                 ?: throw IllegalStateException("Elemento del cestino non più disponibile.")
             val source = Uri.parse(record.trashDocumentUri)
             if (!documentExists(source)) {
-                database.permanentlyDeleteTrash(trashId)
-                throw IllegalStateException("Il file nel cestino non esiste più ed è stato registrato come eliminato.")
+                database.permanentlyDeleteTrash(trashId, createSyncTombstone = false)
+                throw IllegalStateException(
+                    "Il file nel cestino non esiste più. Il record locale è stato ripulito, " +
+                        "ma la scomparsa esterna non verrà sincronizzata come eliminazione.",
+                )
             }
 
             val root = rootDocumentUri(treeUri)
@@ -324,7 +327,13 @@ internal class GalleryTrashRepository(private val context: Context) {
     private fun reconcileMissing(database: GalleryIndexDatabase) {
         for (record in database.allTrashRecords()) {
             if (!documentExists(Uri.parse(record.trashDocumentUri))) {
-                database.permanentlyDeleteTrash(record.trashId)
+                // Il file è scomparso fuori da H-Gallery: ripulisci solo il
+                // record locale. Non è una cancellazione esplicita e quindi non
+                // deve generare una tombstone sincronizzabile.
+                database.permanentlyDeleteTrash(
+                    record.trashId,
+                    createSyncTombstone = false,
+                )
             }
         }
     }

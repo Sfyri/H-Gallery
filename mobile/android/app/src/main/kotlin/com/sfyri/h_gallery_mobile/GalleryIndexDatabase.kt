@@ -135,7 +135,7 @@ internal class GalleryIndexDatabase(
     DATABASE_VERSION,
 ) {
     companion object {
-        private const val DATABASE_VERSION = 4
+        private const val DATABASE_VERSION = 6
     }
 
     override fun onConfigure(db: SQLiteDatabase) {
@@ -194,6 +194,12 @@ internal class GalleryIndexDatabase(
         if (oldVersion < 4) {
             createTrashAndSyncSchema(db)
         }
+        if (oldVersion < 5) {
+            ensureSyncTombstoneGroupColumn(db)
+        }
+        if (oldVersion < 6) {
+            createMetadataBaselineSchema(db)
+        }
     }
 
     private fun createTrashAndSyncSchema(db: SQLiteDatabase) {
@@ -242,7 +248,8 @@ internal class GalleryIndexDatabase(
                 last_relative_path TEXT NOT NULL,
                 deleted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 origin_peer_uuid TEXT,
-                created_locally INTEGER NOT NULL DEFAULT 1 CHECK(created_locally IN (0, 1))
+                created_locally INTEGER NOT NULL DEFAULT 1 CHECK(created_locally IN (0, 1)),
+                sync_group_uuid TEXT NOT NULL DEFAULT ''
             )
             """.trimIndent(),
         )
@@ -268,6 +275,40 @@ internal class GalleryIndexDatabase(
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             """.trimIndent(),
+        )
+        ensureSyncTombstoneGroupColumn(db)
+        createMetadataBaselineSchema(db)
+    }
+
+    private fun createMetadataBaselineSchema(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS sync_metadata_baselines (
+                sync_group_uuid TEXT NOT NULL,
+                peer_gallery_uuid TEXT NOT NULL,
+                media_sha256 TEXT NOT NULL,
+                snapshot_json TEXT NOT NULL,
+                updated_at_epoch_ms INTEGER NOT NULL,
+                PRIMARY KEY(sync_group_uuid, peer_gallery_uuid, media_sha256)
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_sync_metadata_baselines_pair " +
+                "ON sync_metadata_baselines(sync_group_uuid, peer_gallery_uuid)",
+        )
+    }
+
+    private fun ensureSyncTombstoneGroupColumn(db: SQLiteDatabase) {
+        val columns = columnNames(db, "sync_tombstones")
+        if ("sync_group_uuid" !in columns) {
+            db.execSQL(
+                "ALTER TABLE sync_tombstones ADD COLUMN sync_group_uuid TEXT NOT NULL DEFAULT ''",
+            )
+        }
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_sync_tombstones_group_deleted " +
+                "ON sync_tombstones(sync_group_uuid, deleted_at)",
         )
     }
 
@@ -1640,7 +1681,10 @@ internal class GalleryIndexDatabase(
         }
     }
 
-    fun permanentlyDeleteTrash(trashId: Long) {
+    fun permanentlyDeleteTrash(
+        trashId: Long,
+        createSyncTombstone: Boolean = true,
+    ) {
         val db = writableDatabase
         db.beginTransaction()
         try {
@@ -1648,19 +1692,37 @@ internal class GalleryIndexDatabase(
                 db.setTransactionSuccessful()
                 return
             }
-            val tombstone = ContentValues().apply {
-                put("file_uuid", record.mediaSyncUuid)
-                put("sha256", record.sha256)
-                put("media_type", record.mediaType)
-                put("last_relative_path", record.originalRelativePath)
-                put("created_locally", 1)
+            val syncGroupUuid = db.rawQuery(
+                "SELECT value FROM sync_state WHERE key = ? LIMIT 1",
+                arrayOf("sync_group_uuid"),
+            ).use { cursor ->
+                if (cursor.moveToFirst()) cursor.getString(0).trim() else ""
             }
-            db.insertWithOnConflict(
-                "sync_tombstones",
-                null,
-                tombstone,
-                SQLiteDatabase.CONFLICT_REPLACE,
-            )
+            // Una cancellazione locale diventa sincronizzabile solo se la
+            // galleria appartiene già a un gruppo. Non retro-associamo mai
+            // cancellazioni eseguite mentre la galleria era scollegata.
+            val normalizedSha256 = record.sha256.trim().lowercase(Locale.ROOT)
+            if (createSyncTombstone &&
+                syncGroupUuid.isNotBlank() &&
+                record.mediaSyncUuid.isNotBlank() &&
+                normalizedSha256.length == 64 &&
+                normalizedSha256.all { it in '0'..'9' || it in 'a'..'f' }
+            ) {
+                val tombstone = ContentValues().apply {
+                    put("file_uuid", record.mediaSyncUuid)
+                    put("sha256", normalizedSha256)
+                    put("media_type", record.mediaType)
+                    put("last_relative_path", record.originalRelativePath)
+                    put("created_locally", 1)
+                    put("sync_group_uuid", syncGroupUuid)
+                }
+                db.insertWithOnConflict(
+                    "sync_tombstones",
+                    null,
+                    tombstone,
+                    SQLiteDatabase.CONFLICT_IGNORE,
+                )
+            }
             val operation = ContentValues().apply {
                 put("operation_type", "permanent_delete")
                 put("source_relative_path", record.trashRelativePath)
