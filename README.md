@@ -1,6 +1,6 @@
 # H-Gallery
 
-Galleria locale per organizzare immagini, GIF e video per serie, personaggi, tag e artisti. I file restano sul computer e l’interfaccia usa `127.0.0.1`.
+Galleria locale per organizzare immagini, GIF e video per serie, personaggi, tag e artisti. I file restano sul computer e l’interfaccia Windows usa `127.0.0.1`.
 
 ## Funzioni principali
 
@@ -10,7 +10,11 @@ Galleria locale per organizzare immagini, GIF e video per serie, personaggi, tag
 - ricerca, filtri, classifica e cestino interno;
 - miniature, anteprime animate, backup e ripristino;
 - più gallerie indipendenti;
-- launcher Windows senza terminale.
+- launcher Windows senza terminale;
+- app Android con gallerie locali;
+- associazione sicura Windows ↔ Android sulla rete locale;
+- sincronizzazione bidirezionale di media, metadata ed eliminazioni;
+- retry e ripresa sicura dopo interruzioni.
 
 ## Installazione Windows
 
@@ -29,6 +33,30 @@ E:\H-Gallery\
 ```
 
 Disinstallare H-Gallery non elimina la galleria.
+
+L’installer configura anche le regole Windows Firewall necessarie alla comunicazione con l’app Android sulla rete locale. La sincronizzazione richiede che Windows e Android possano raggiungersi sulla stessa LAN/Wi-Fi.
+
+## Android e sincronizzazione
+
+La versione Android usa gallerie locali indipendenti che possono essere collegate esplicitamente a una galleria Windows tramite un gruppo di sincronizzazione.
+
+Per collegare i dispositivi:
+
+1. avvia H-Gallery su Windows;
+2. collega PC e telefono alla stessa rete locale;
+3. su Android apri **Collega PC**;
+4. cerca il PC sulla rete e completa l’associazione;
+5. collega la galleria Android alla galleria Windows desiderata;
+6. usa **Sincronizza** per analizzare e applicare le differenze.
+
+La sincronizzazione gestisce nuovi file, metadata, eliminazioni registrate da H-Gallery, collisioni, retry e ripresa dopo interruzioni. Le operazioni ambigue vengono bloccate invece di scegliere automaticamente una modifica potenzialmente distruttiva.
+
+Durante lo sviluppo l’app Android può essere avviata da sorgente con:
+
+```powershell
+cd mobile
+flutter run
+```
 
 ## Primo utilizzo
 

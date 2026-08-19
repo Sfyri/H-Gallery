@@ -13,6 +13,9 @@ data/
 cache/
 backups/
 
+# Backup di milestone/sviluppo
+.m*_backup/
+
 # Python
 __pycache__/
 *.py[cod]
