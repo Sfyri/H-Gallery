@@ -96,13 +96,6 @@ class _StoryReaderPageState extends State<StoryReaderPage> {
     });
   }
 
-  List<MediaItem> get _singlePageOrder {
-    if (_mode == _StoryReaderMode.manga) {
-      return _pages.reversed.toList(growable: false);
-    }
-    return _pages;
-  }
-
   IconData get _modeIcon {
     switch (_mode) {
       case _StoryReaderMode.normal:
@@ -150,7 +143,7 @@ class _StoryReaderPageState extends State<StoryReaderPage> {
                   contentPadding: EdgeInsets.zero,
                   leading: Icon(Icons.menu_book_rounded),
                   title: Text('Normale'),
-                  subtitle: Text('Ordine delle pagine salvato'),
+                  subtitle: Text('Sinistra → destra'),
                 ),
               ),
               PopupMenuItem(
@@ -159,7 +152,7 @@ class _StoryReaderPageState extends State<StoryReaderPage> {
                   contentPadding: EdgeInsets.zero,
                   leading: Icon(Icons.swap_horiz_rounded),
                   title: Text('Manga'),
-                  subtitle: Text('Ordine delle pagine invertito'),
+                  subtitle: Text('Destra → sinistra'),
                 ),
               ),
               PopupMenuItem(
@@ -190,7 +183,11 @@ class _StoryReaderPageState extends State<StoryReaderPage> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.error_outline_rounded, color: Colors.white70, size: 48),
+              const Icon(
+                Icons.error_outline_rounded,
+                color: Colors.white70,
+                size: 48,
+              ),
               const SizedBox(height: 12),
               const Text(
                 'Impossibile aprire la storia.',
@@ -254,23 +251,20 @@ class _StoryReaderPageState extends State<StoryReaderPage> {
   }
 
   Widget _buildPagedReader() {
-    final orderedPages = _singlePageOrder;
-    final displayedPageNumber = _mode == _StoryReaderMode.manga
-        ? _pages.length - _currentIndex
-        : _currentIndex + 1;
-
     return Stack(
       fit: StackFit.expand,
       children: [
         PageView.builder(
           controller: _pageController,
+          // L'ordine logico resta sempre pagina 1, 2, 3...;
+          // in modalità Manga cambia soltanto il verso dello swipe.
           reverse: _mode == _StoryReaderMode.manga,
-          itemCount: orderedPages.length,
+          itemCount: _pages.length,
           onPageChanged: (index) => setState(() => _currentIndex = index),
           itemBuilder: (context, index) => _StoryPageImage(
-            key: ValueKey('${_mode.name}-${orderedPages[index].syncUuid}'),
+            key: ValueKey('${_mode.name}-${_pages[index].syncUuid}'),
             galleryUuid: widget.gallery.galleryUuid,
-            item: orderedPages[index],
+            item: _pages[index],
             mediaService: widget.mediaService,
             fitWidth: false,
           ),
@@ -288,9 +282,12 @@ class _StoryReaderPageState extends State<StoryReaderPage> {
                   borderRadius: BorderRadius.circular(999),
                 ),
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 6,
+                  ),
                   child: Text(
-                    '$displayedPageNumber / ${_pages.length}',
+                    '${_currentIndex + 1} / ${_pages.length}',
                     style: const TextStyle(
                       color: Colors.white,
                       fontWeight: FontWeight.w600,
@@ -324,7 +321,8 @@ class _StoryPageImage extends StatefulWidget {
   State<_StoryPageImage> createState() => _StoryPageImageState();
 }
 
-class _StoryPageImageState extends State<_StoryPageImage> {
+class _StoryPageImageState extends State<_StoryPageImage>
+    with AutomaticKeepAliveClientMixin<_StoryPageImage> {
   late Future<ViewerSource> _sourceFuture;
 
   @override
@@ -337,7 +335,11 @@ class _StoryPageImageState extends State<_StoryPageImage> {
   }
 
   @override
+  bool get wantKeepAlive => widget.fitWidth;
+
+  @override
   Widget build(BuildContext context) {
+    super.build(context);
     return FutureBuilder<ViewerSource>(
       future: _sourceFuture,
       builder: (context, snapshot) {
@@ -352,7 +354,11 @@ class _StoryPageImageState extends State<_StoryPageImage> {
           return SizedBox(
             height: widget.fitWidth ? 260 : null,
             child: const Center(
-              child: Icon(Icons.broken_image_outlined, color: Colors.white54, size: 44),
+              child: Icon(
+                Icons.broken_image_outlined,
+                color: Colors.white54,
+                size: 44,
+              ),
             ),
           );
         }
@@ -363,7 +369,11 @@ class _StoryPageImageState extends State<_StoryPageImage> {
           gaplessPlayback: true,
           filterQuality: FilterQuality.medium,
           errorBuilder: (context, error, stackTrace) => const Center(
-            child: Icon(Icons.broken_image_outlined, color: Colors.white54, size: 44),
+            child: Icon(
+              Icons.broken_image_outlined,
+              color: Colors.white54,
+              size: 44,
+            ),
           ),
         );
         if (widget.fitWidth) return image;
