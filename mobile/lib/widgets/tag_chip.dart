@@ -41,7 +41,6 @@ class HGalleryTagChip extends StatelessWidget {
       overflow: TextOverflow.ellipsis,
       style: TextStyle(color: _textColor),
     );
-
     if (onPressed != null) {
       return ActionChip(
         avatar: showAddIcon
@@ -54,7 +53,6 @@ class HGalleryTagChip extends StatelessWidget {
         visualDensity: VisualDensity.compact,
       );
     }
-
     return Chip(
       label: labelWidget,
       backgroundColor: _backgroundColor,

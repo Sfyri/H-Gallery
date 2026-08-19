@@ -5,6 +5,7 @@ import '../theme/app_theme.dart';
 import 'gallery_media_tab.dart';
 import 'new_media_tab.dart';
 import 'search_media_tab.dart';
+import 'settings_page.dart';
 import 'trash_media_tab.dart';
 
 class GalleryReadyPage extends StatefulWidget {
@@ -33,6 +34,14 @@ class _GalleryReadyPageState extends State<GalleryReadyPage> {
     }
   }
 
+  void _openSettings() {
+    Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => SettingsPage(gallery: widget.gallery),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -51,6 +60,13 @@ class _GalleryReadyPageState extends State<GalleryReadyPage> {
             ),
           ],
         ),
+        actions: [
+          IconButton(
+            tooltip: 'Settings',
+            onPressed: _openSettings,
+            icon: const Icon(Icons.settings_rounded),
+          ),
+        ],
       ),
       body: IndexedStack(
         index: _index,

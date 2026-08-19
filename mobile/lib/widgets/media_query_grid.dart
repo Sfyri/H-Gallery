@@ -6,13 +6,16 @@ import 'package:flutter/services.dart';
 import '../models/gallery_browse_models.dart';
 import '../models/gallery_profile.dart';
 import '../models/media_item.dart';
+import '../models/story_models.dart';
+import '../screens/media_viewer_page.dart';
+import '../screens/story_reader_page.dart';
 import '../services/gallery_browse_service.dart';
 import '../services/media_bridge.dart';
 import '../services/trash_service.dart';
 import '../theme/app_theme.dart';
-import '../screens/media_viewer_page.dart';
 import 'media_info_sheet.dart';
 import 'media_thumbnail_tile.dart';
+import 'story_card.dart';
 
 class MediaQueryGrid extends StatefulWidget {
   const MediaQueryGrid({
@@ -49,7 +52,8 @@ class _MediaQueryGridState extends State<MediaQueryGrid> {
 
   final ScrollController _scrollController = ScrollController();
   List<MediaItem> _items = const [];
-  int _total = 0;
+  List<GalleryStorySummary> _stories = const [];
+  int _mediaTotal = 0;
   bool _loading = true;
   bool _loadingMore = false;
   Object? _error;
@@ -94,20 +98,31 @@ class _MediaQueryGridState extends State<MediaQueryGrid> {
       _loading = true;
       _error = null;
       _items = const [];
-      _total = 0;
+      _stories = const [];
+      _mediaTotal = 0;
     });
+
     try {
-      final result = await widget.browseService.queryMedia(
+      final mediaFuture = widget.browseService.queryMedia(
         widget.gallery.galleryUuid,
         widget.query,
         limit: _pageSize,
       );
+      final storiesFuture = widget.browseService.queryStories(
+        widget.gallery.galleryUuid,
+        widget.query,
+      );
+
+      final mediaResult = await mediaFuture;
+      final stories = await storiesFuture;
       if (!mounted || generation != _requestGeneration) return;
+
       setState(() {
-        _items = result.items;
-        _total = result.total;
+        _items = mediaResult.items;
+        _stories = stories;
+        _mediaTotal = mediaResult.total;
       });
-      widget.onTotalChanged?.call(result.total);
+      widget.onTotalChanged?.call(mediaResult.total + stories.length);
     } catch (error) {
       if (!mounted || generation != _requestGeneration) return;
       setState(() => _error = error);
@@ -119,7 +134,7 @@ class _MediaQueryGridState extends State<MediaQueryGrid> {
   }
 
   Future<void> _loadMore() async {
-    if (_loadingMore || _items.length >= _total) return;
+    if (_loadingMore || _items.length >= _mediaTotal) return;
     final generation = _requestGeneration;
     _loadingMore = true;
     try {
@@ -135,7 +150,7 @@ class _MediaQueryGridState extends State<MediaQueryGrid> {
       if (unique.isEmpty) return;
       setState(() {
         _items = [..._items, ...unique];
-        _total = result.total;
+        _mediaTotal = result.total;
       });
     } finally {
       _loadingMore = false;
@@ -161,6 +176,7 @@ class _MediaQueryGridState extends State<MediaQueryGrid> {
       ),
     );
     if (confirmed != true || !mounted) return;
+
     try {
       await widget.trashService.moveMediaToTrash(
         widget.gallery.galleryUuid,
@@ -193,8 +209,21 @@ class _MediaQueryGridState extends State<MediaQueryGrid> {
           gallery: widget.gallery,
           initialItems: List<MediaItem>.of(_items),
           initialIndex: index,
-          totalCount: _total,
+          totalCount: _mediaTotal,
           mediaService: filteredService,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openStory(GalleryStorySummary story) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (context) => StoryReaderPage(
+          gallery: widget.gallery,
+          story: story,
+          mediaService: widget.mediaService,
+          browseService: widget.browseService,
         ),
       ),
     );
@@ -205,13 +234,13 @@ class _MediaQueryGridState extends State<MediaQueryGrid> {
     if (_loading) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_error != null && _items.isEmpty) {
+    if (_error != null && _items.isEmpty && _stories.isEmpty) {
       return _QueryErrorState(
         message: _errorMessage(_error),
         onRetry: _loadFirstPage,
       );
     }
-    if (_items.isEmpty) {
+    if (_items.isEmpty && _stories.isEmpty) {
       return _EmptyQueryState(
         title: widget.emptyTitle,
         message: widget.emptyMessage,
@@ -224,38 +253,85 @@ class _MediaQueryGridState extends State<MediaQueryGrid> {
         controller: _scrollController,
         physics: const AlwaysScrollableScrollPhysics(),
         slivers: [
-          SliverPadding(
-            padding: const EdgeInsets.fromLTRB(12, 10, 12, 24),
-            sliver: SliverGrid(
-              delegate: SliverChildBuilderDelegate(
-                (context, index) {
-                  final item = _items[index];
-                  return MediaThumbnailTile(
-                    key: ValueKey(item.syncUuid),
-                    galleryUuid: widget.gallery.galleryUuid,
-                    item: item,
-                    mediaService: widget.mediaService,
-                    onTap: () => _openViewer(index),
-                    onLongPress: () => showMediaInfoSheet(
-                      context: context,
-                      galleryUuid: widget.gallery.galleryUuid,
-                      item: item,
-                      browseService: widget.browseService,
-                      onTrash: () => _moveToTrash(item),
-                    ),
-                  );
-                },
-                childCount: _items.length,
-              ),
-              gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                maxCrossAxisExtent: 190,
-                mainAxisSpacing: 8,
-                crossAxisSpacing: 8,
-                childAspectRatio: 0.82,
+          if (_stories.isNotEmpty) ...[
+            const SliverToBoxAdapter(
+              child: Padding(
+                padding: EdgeInsets.fromLTRB(14, 12, 14, 6),
+                child: Text(
+                  'Storie',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+                ),
               ),
             ),
-          ),
-          if (_items.length < _total)
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+              sliver: SliverGrid(
+                delegate: SliverChildBuilderDelegate(
+                  (context, index) {
+                    final story = _stories[index];
+                    return StoryCard(
+                      key: ValueKey('story:${story.relativePath}'),
+                      galleryUuid: widget.gallery.galleryUuid,
+                      story: story,
+                      mediaService: widget.mediaService,
+                      onTap: () => _openStory(story),
+                    );
+                  },
+                  childCount: _stories.length,
+                ),
+                gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                  maxCrossAxisExtent: 220,
+                  mainAxisSpacing: 8,
+                  crossAxisSpacing: 8,
+                  childAspectRatio: 0.82,
+                ),
+              ),
+            ),
+          ],
+          if (_items.isNotEmpty) ...[
+            if (_stories.isNotEmpty)
+              const SliverToBoxAdapter(
+                child: Padding(
+                  padding: EdgeInsets.fromLTRB(14, 4, 14, 6),
+                  child: Text(
+                    'Media',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+                  ),
+                ),
+              ),
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 24),
+              sliver: SliverGrid(
+                delegate: SliverChildBuilderDelegate(
+                  (context, index) {
+                    final item = _items[index];
+                    return MediaThumbnailTile(
+                      key: ValueKey(item.syncUuid),
+                      galleryUuid: widget.gallery.galleryUuid,
+                      item: item,
+                      mediaService: widget.mediaService,
+                      onTap: () => _openViewer(index),
+                      onLongPress: () => showMediaInfoSheet(
+                        context: context,
+                        galleryUuid: widget.gallery.galleryUuid,
+                        item: item,
+                        browseService: widget.browseService,
+                        onTrash: () => _moveToTrash(item),
+                      ),
+                    );
+                  },
+                  childCount: _items.length,
+                ),
+                gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                  maxCrossAxisExtent: 190,
+                  mainAxisSpacing: 8,
+                  crossAxisSpacing: 8,
+                  childAspectRatio: 0.82,
+                ),
+              ),
+            ),
+          ],
+          if (_items.length < _mediaTotal)
             const SliverToBoxAdapter(
               child: Padding(
                 padding: EdgeInsets.only(bottom: 28),

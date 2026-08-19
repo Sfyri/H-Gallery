@@ -1,4 +1,5 @@
-﻿import 'dart:async';
+import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -398,7 +399,7 @@ class _GalleryMediaTabState extends State<GalleryMediaTab> {
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
                         : const Icon(Icons.refresh_rounded),
-                    label: Text(_scanning ? 'Rilettura in corso窶ｦ' : 'Rileggi cartelle'),
+                    label: Text(_scanning ? 'Rilettura in corso…' : 'Rileggi cartelle'),
                   ),
                 ],
               ),
@@ -550,7 +551,7 @@ class _GalleryMediaTabState extends State<GalleryMediaTab> {
   String _scanSummary(ScanResult result) {
     return 'Rilettura completata: +${result.added} nuovi, '
         '${result.updated} modificati, ${result.moved} spostati, '
-        '${result.removed} non piﾃｹ presenti.';
+        '${result.removed} non più presenti.';
   }
 
   String _errorMessage(Object? error) {
@@ -713,7 +714,7 @@ class _EmptySeriesState extends StatelessWidget {
             ),
             SizedBox(height: 7),
             Text(
-              'I media senza una struttura Serie/Personaggio restano disponibili in 窶弋utti窶・',
+              'I media senza una struttura Serie/Personaggio restano disponibili in “Tutti”.',
               textAlign: TextAlign.center,
               style: TextStyle(color: AppTheme.muted, height: 1.4),
             ),
@@ -743,7 +744,7 @@ class _EmptyGalleryState extends StatelessWidget {
             ),
             SizedBox(height: 7),
             Text(
-              'I file in .toDo non compaiono qui finchﾃｩ non vengono organizzati.',
+              'I file in .toDo non compaiono qui finché non vengono organizzati.',
               textAlign: TextAlign.center,
               style: TextStyle(color: AppTheme.muted, height: 1.4),
             ),
@@ -783,4 +784,3 @@ class _ErrorState extends StatelessWidget {
     );
   }
 }
-

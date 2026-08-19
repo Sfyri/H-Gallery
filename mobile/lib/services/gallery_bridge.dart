@@ -7,6 +7,8 @@ abstract interface class GalleryService {
 
   Future<GalleryProfile?> addGallery({String nameHint = ''});
 
+  Future<void> renameGallery(String galleryUuid, String name);
+
   Future<void> disconnectGallery(String galleryUuid);
 }
 
@@ -32,10 +34,19 @@ class PlatformGalleryService implements GalleryService {
       'pickGalleryDirectory',
       <String, Object?>{'nameHint': nameHint.trim()},
     );
-    if (value == null) {
-      return null;
-    }
+    if (value == null) return null;
     return GalleryProfile.fromPlatform(value);
+  }
+
+  @override
+  Future<void> renameGallery(String galleryUuid, String name) {
+    return _channel.invokeMethod<void>(
+      'renameGallery',
+      <String, Object?>{
+        'galleryUuid': galleryUuid,
+        'name': name.trim(),
+      },
+    );
   }
 
   @override

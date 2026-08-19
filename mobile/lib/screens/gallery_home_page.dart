@@ -4,8 +4,8 @@ import 'package:flutter/services.dart';
 import '../models/gallery_profile.dart';
 import '../services/gallery_bridge.dart';
 import '../theme/app_theme.dart';
-import 'gallery_ready_page.dart';
 import 'device_connection_page.dart';
+import 'gallery_ready_page.dart';
 
 class GalleryHomePage extends StatefulWidget {
   const GalleryHomePage({required this.galleryService, super.key});
@@ -44,7 +44,6 @@ class _GalleryHomePageState extends State<GalleryHomePage> {
 
   Future<void> _addGallery() async {
     if (_working) return;
-
     var pendingName = '';
     final nameHint = await showDialog<String>(
       context: context,
@@ -93,7 +92,6 @@ class _GalleryHomePageState extends State<GalleryHomePage> {
         ],
       ),
     );
-
     if (nameHint == null || !mounted) return;
 
     setState(() => _working = true);
@@ -110,6 +108,65 @@ class _GalleryHomePageState extends State<GalleryHomePage> {
       _showError(error.message ?? 'Impossibile collegare la cartella scelta.');
     } finally {
       if (mounted) setState(() => _working = false);
+    }
+  }
+
+  Future<void> _rename(GalleryProfile gallery) async {
+    var pendingName = gallery.name;
+
+    final newName = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Rinomina galleria'),
+        content: TextFormField(
+          initialValue: gallery.name,
+          autofocus: true,
+          textInputAction: TextInputAction.done,
+          decoration: const InputDecoration(
+            labelText: 'Nome',
+            helperText: 'Cambia solo il nome mostrato da H-Gallery.',
+          ),
+          onChanged: (value) => pendingName = value,
+          onFieldSubmitted: (value) {
+            final cleaned = value.trim();
+            if (cleaned.isEmpty) return;
+            FocusScope.of(dialogContext).unfocus();
+            Navigator.of(dialogContext).pop(cleaned);
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              FocusScope.of(dialogContext).unfocus();
+              Navigator.of(dialogContext).pop();
+            },
+            child: const Text('Annulla'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final cleaned = pendingName.trim();
+              if (cleaned.isEmpty) return;
+              FocusScope.of(dialogContext).unfocus();
+              Navigator.of(dialogContext).pop(cleaned);
+            },
+            child: const Text('Rinomina'),
+          ),
+        ],
+      ),
+    );
+
+    if (newName == null || !mounted || newName == gallery.name) return;
+
+    try {
+      await widget.galleryService.renameGallery(gallery.galleryUuid, newName);
+      await _reload();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Galleria rinominata in “$newName”.')),
+      );
+    } on PlatformException catch (error) {
+      if (!mounted) return;
+      _showError(error.message ?? 'Impossibile rinominare la galleria.');
     }
   }
 
@@ -145,9 +202,7 @@ class _GalleryHomePageState extends State<GalleryHomePage> {
   }
 
   void _showError(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
   void _openGallery(GalleryProfile gallery) {
@@ -158,9 +213,7 @@ class _GalleryHomePageState extends State<GalleryHomePage> {
       return;
     }
     Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => GalleryReadyPage(gallery: gallery),
-      ),
+      MaterialPageRoute<void>(builder: (_) => GalleryReadyPage(gallery: gallery)),
     );
   }
 
@@ -219,6 +272,7 @@ class _GalleryHomePageState extends State<GalleryHomePage> {
                       return _GalleryCard(
                         gallery: gallery,
                         onTap: () => _openGallery(gallery),
+                        onRename: () => _rename(gallery),
                         onDisconnect: () => _disconnect(gallery),
                       );
                     },
@@ -331,11 +385,13 @@ class _GalleryCard extends StatelessWidget {
   const _GalleryCard({
     required this.gallery,
     required this.onTap,
+    required this.onRename,
     required this.onDisconnect,
   });
 
   final GalleryProfile gallery;
   final VoidCallback onTap;
+  final VoidCallback onRename;
   final VoidCallback onDisconnect;
 
   @override
@@ -378,20 +434,14 @@ class _GalleryCard extends StatelessWidget {
                       gallery.name,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 17,
-                        fontWeight: FontWeight.w700,
-                      ),
+                      style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
                     ),
                     const SizedBox(height: 4),
                     Text(
                       gallery.locationLabel,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: AppTheme.muted,
-                        fontSize: 13,
-                      ),
+                      style: const TextStyle(color: AppTheme.muted, fontSize: 13),
                     ),
                     const SizedBox(height: 8),
                     Row(
@@ -399,16 +449,10 @@ class _GalleryCard extends StatelessWidget {
                         Container(
                           width: 7,
                           height: 7,
-                          decoration: BoxDecoration(
-                            color: statusColor,
-                            shape: BoxShape.circle,
-                          ),
+                          decoration: BoxDecoration(color: statusColor, shape: BoxShape.circle),
                         ),
                         const SizedBox(width: 7),
-                        Text(
-                          statusText,
-                          style: TextStyle(color: statusColor, fontSize: 12),
-                        ),
+                        Text(statusText, style: TextStyle(color: statusColor, fontSize: 12)),
                       ],
                     ),
                   ],
@@ -417,9 +461,20 @@ class _GalleryCard extends StatelessWidget {
               PopupMenuButton<String>(
                 tooltip: 'Opzioni',
                 onSelected: (value) {
+                  if (value == 'rename') onRename();
                   if (value == 'disconnect') onDisconnect();
                 },
                 itemBuilder: (_) => const [
+                  PopupMenuItem(
+                    value: 'rename',
+                    child: Row(
+                      children: [
+                        Icon(Icons.edit_outlined),
+                        SizedBox(width: 10),
+                        Text('Rinomina'),
+                      ],
+                    ),
+                  ),
                   PopupMenuItem(
                     value: 'disconnect',
                     child: Row(

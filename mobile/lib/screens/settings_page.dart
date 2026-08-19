@@ -14,59 +14,39 @@ class SettingsPage extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
       body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 28),
         children: [
-          const _SectionTitle('Galleria'),
-          const SizedBox(height: 8),
-          Card(
-            child: Column(
-              children: [
-                ListTile(
-                  leading: const Icon(Icons.photo_library_outlined),
-                  title: Text(gallery.name),
-                  subtitle: Text(gallery.locationLabel),
-                ),
-                const Divider(height: 1),
-                ListTile(
-                  leading: const Icon(Icons.folder_outlined),
-                  title: const Text('Cartella'),
-                  subtitle: Text(gallery.directoryName),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 24),
-          const _SectionTitle('Connessione'),
-          const SizedBox(height: 8),
-          Card(
-            child: ListTile(
-              leading: const Icon(Icons.devices_rounded),
-              title: const Text('Collega PC'),
-              subtitle: const Text(
-                'Gestisci la connessione e la sincronizzazione con H-Gallery Windows.',
+          _SettingsCard(
+            title: 'Galleria',
+            children: [
+              _InfoLine(label: 'Nome', value: gallery.name),
+              _InfoLine(label: 'Cartella', value: gallery.directoryName),
+              _InfoLine(label: 'Posizione', value: gallery.locationLabel),
+              _InfoLine(
+                label: 'Accesso',
+                value: gallery.accessible ? 'Disponibile' : 'Non disponibile',
               ),
-              trailing: const Icon(Icons.chevron_right_rounded),
-              onTap: () {
-                Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => const DeviceConnectionPage(),
-                  ),
-                );
-              },
-            ),
+            ],
           ),
-          const SizedBox(height: 24),
-          const _SectionTitle('Informazioni'),
-          const SizedBox(height: 8),
-          Card(
-            child: ListTile(
-              leading: const Icon(Icons.info_outline_rounded),
-              title: const Text('H-Gallery Android'),
-              subtitle: Text(
-                'Impostazioni della galleria mobile.',
-                style: TextStyle(color: AppTheme.muted),
+          const SizedBox(height: 14),
+          _SettingsCard(
+            title: 'Sincronizzazione',
+            children: [
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.devices_rounded, color: AppTheme.accent),
+                title: const Text('Collega PC'),
+                subtitle: const Text('Apri la schermata di collegamento e sincronizzazione.'),
+                trailing: const Icon(Icons.chevron_right_rounded),
+                onTap: () {
+                  Navigator.of(context).push<void>(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const DeviceConnectionPage(),
+                    ),
+                  );
+                },
               ),
-            ),
+            ],
           ),
         ],
       ),
@@ -74,18 +54,53 @@ class SettingsPage extends StatelessWidget {
   }
 }
 
-class _SectionTitle extends StatelessWidget {
-  const _SectionTitle(this.text);
+class _SettingsCard extends StatelessWidget {
+  const _SettingsCard({required this.title, required this.children});
 
-  final String text;
+  final String title;
+  final List<Widget> children;
 
   @override
   Widget build(BuildContext context) {
-    return Text(
-      text,
-      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-            fontWeight: FontWeight.w700,
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+      decoration: BoxDecoration(
+        color: AppTheme.panel,
+        border: Border.all(color: AppTheme.border),
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 10),
+          ...children,
+        ],
+      ),
+    );
+  }
+}
+
+class _InfoLine extends StatelessWidget {
+  const _InfoLine({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 86,
+            child: Text(label, style: const TextStyle(color: AppTheme.muted)),
           ),
+          Expanded(child: Text(value.isEmpty ? '—' : value)),
+        ],
+      ),
     );
   }
 }

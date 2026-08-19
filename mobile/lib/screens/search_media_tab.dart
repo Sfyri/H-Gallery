@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+
 import '../models/gallery_browse_models.dart';
 import '../models/gallery_profile.dart';
 import '../services/gallery_browse_service.dart';
@@ -37,6 +38,10 @@ class _SearchMediaTabState extends State<SearchMediaTab> {
   bool _loadingCatalog = true;
   int _resultCount = 0;
 
+  String _selectedSeries = '';
+  String _selectedCharacter = '';
+  String _selectedSpecial = '';
+
   @override
   void initState() {
     super.initState();
@@ -68,7 +73,10 @@ class _SearchMediaTabState extends State<SearchMediaTab> {
         widget.gallery.galleryUuid,
       );
       if (!mounted) return;
-      setState(() => _catalog = catalog);
+      setState(() {
+        _catalog = catalog;
+        _validateLocationSelections(catalog);
+      });
     } catch (error) {
       if (!mounted) return;
       setState(() => _catalogError = error);
@@ -77,7 +85,21 @@ class _SearchMediaTabState extends State<SearchMediaTab> {
     }
   }
 
+  void _validateLocationSelections(GalleryFilterCatalog catalog) {
+    bool exists(String path, Iterable<GalleryFilterLocation> entries) =>
+        path.isEmpty || entries.any((entry) => entry.relativePath == path);
+
+    final series = catalog.locations.where((entry) => entry.kind == 'series');
+    final characters = catalog.locations.where((entry) => entry.kind == 'character');
+    final special = catalog.locations.where((entry) => entry.kind != 'series' && entry.kind != 'character');
+
+    if (!exists(_selectedSeries, series)) _selectedSeries = '';
+    if (!exists(_selectedCharacter, characters)) _selectedCharacter = '';
+    if (!exists(_selectedSpecial, special)) _selectedSpecial = '';
+  }
+
   void _onSearchChanged(String value) {
+    setState(() {});
     _debounce?.cancel();
     _debounce = Timer(const Duration(milliseconds: 280), () {
       if (!mounted) return;
@@ -94,20 +116,35 @@ class _SearchMediaTabState extends State<SearchMediaTab> {
   void _clearFilters() {
     _searchController.clear();
     _debounce?.cancel();
-    setState(() => _query = const MediaQuerySpec());
+    setState(() {
+      _query = const MediaQuerySpec();
+      _selectedSeries = '';
+      _selectedCharacter = '';
+      _selectedSpecial = '';
+    });
   }
 
   Future<void> _showFilters() async {
     final catalog = _catalog;
     if (catalog == null) return;
 
-    var location = _query.relativePrefix;
+    var seriesPath = _selectedSeries;
+    var characterPath = _selectedCharacter;
+    var specialPath = _selectedSpecial;
     var tag = _query.tag;
     var artist = _query.artist;
     var aiOnly = _query.aiOnly;
-    if (!catalog.locations.any((value) => value.relativePath == location)) {
-      location = '';
-    }
+
+    final seriesLocations = catalog.locations
+        .where((entry) => entry.kind == 'series')
+        .toList(growable: false);
+    final allCharacterLocations = catalog.locations
+        .where((entry) => entry.kind == 'character')
+        .toList(growable: false);
+    final specialLocations = catalog.locations
+        .where((entry) => entry.kind != 'series' && entry.kind != 'character')
+        .toList(growable: false);
+
     if (!catalog.tags.contains(tag)) tag = '';
     if (!catalog.artists.contains(artist)) artist = '';
 
@@ -118,6 +155,19 @@ class _SearchMediaTabState extends State<SearchMediaTab> {
       backgroundColor: AppTheme.panel,
       builder: (context) => StatefulBuilder(
         builder: (context, setSheetState) {
+          final characterLocations = seriesPath.isEmpty
+              ? allCharacterLocations
+              : allCharacterLocations
+                  .where(
+                    (entry) => entry.relativePath.startsWith('$seriesPath/'),
+                  )
+                  .toList(growable: false);
+
+          if (characterPath.isNotEmpty &&
+              !characterLocations.any((entry) => entry.relativePath == characterPath)) {
+            characterPath = '';
+          }
+
           return SafeArea(
             child: SingleChildScrollView(
               padding: EdgeInsets.fromLTRB(
@@ -135,11 +185,11 @@ class _SearchMediaTabState extends State<SearchMediaTab> {
                   ),
                   const SizedBox(height: 18),
                   DropdownButtonFormField<String>(
-                    key: ValueKey<String>('location:$location'),
-                    initialValue: location.isEmpty ? null : location,
+                    key: ValueKey<String>('series:$seriesPath'),
+                    initialValue: seriesPath.isEmpty ? null : seriesPath,
                     isExpanded: true,
-                    decoration: const InputDecoration(labelText: 'Serie / cartella'),
-                    items: catalog.locations
+                    decoration: const InputDecoration(labelText: 'Serie'),
+                    items: seriesLocations
                         .map(
                           (value) => DropdownMenuItem<String>(
                             value: value.relativePath,
@@ -147,8 +197,72 @@ class _SearchMediaTabState extends State<SearchMediaTab> {
                           ),
                         )
                         .toList(growable: false),
-                    onChanged: (value) => setSheetState(() => location = value ?? ''),
+                    onChanged: (value) => setSheetState(() {
+                      seriesPath = value ?? '';
+                      specialPath = '';
+                      if (characterPath.isNotEmpty &&
+                          !characterPath.startsWith('$seriesPath/')) {
+                        characterPath = '';
+                      }
+                    }),
                   ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    key: ValueKey<String>('character:$seriesPath:$characterPath'),
+                    initialValue: characterPath.isEmpty ? null : characterPath,
+                    isExpanded: true,
+                    decoration: const InputDecoration(labelText: 'Personaggio'),
+                    items: characterLocations
+                        .map(
+                          (value) => DropdownMenuItem<String>(
+                            value: value.relativePath,
+                            child: Text(
+                              _characterLabel(value, seriesPath),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        )
+                        .toList(growable: false),
+                    onChanged: characterLocations.isEmpty
+                        ? null
+                        : (value) => setSheetState(() {
+                              characterPath = value ?? '';
+                              specialPath = '';
+                              if (characterPath.isNotEmpty) {
+                                final parent = characterPath.contains('/')
+                                    ? characterPath.substring(0, characterPath.lastIndexOf('/'))
+                                    : '';
+                                if (parent.isNotEmpty &&
+                                    seriesLocations.any((entry) => entry.relativePath == parent)) {
+                                  seriesPath = parent;
+                                }
+                              }
+                            }),
+                  ),
+                  if (specialLocations.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      key: ValueKey<String>('special:$specialPath'),
+                      initialValue: specialPath.isEmpty ? null : specialPath,
+                      isExpanded: true,
+                      decoration: const InputDecoration(labelText: 'Cartella speciale'),
+                      items: specialLocations
+                          .map(
+                            (value) => DropdownMenuItem<String>(
+                              value: value.relativePath,
+                              child: Text(value.label, overflow: TextOverflow.ellipsis),
+                            ),
+                          )
+                          .toList(growable: false),
+                      onChanged: (value) => setSheetState(() {
+                        specialPath = value ?? '';
+                        if (specialPath.isNotEmpty) {
+                          seriesPath = '';
+                          characterPath = '';
+                        }
+                      }),
+                    ),
+                  ],
                   const SizedBox(height: 12),
                   DropdownButtonFormField<String>(
                     key: ValueKey<String>('tag:$tag'),
@@ -193,14 +307,14 @@ class _SearchMediaTabState extends State<SearchMediaTab> {
                     children: [
                       Expanded(
                         child: OutlinedButton(
-                          onPressed: () {
-                            setSheetState(() {
-                              location = '';
-                              tag = '';
-                              artist = '';
-                              aiOnly = false;
-                            });
-                          },
+                          onPressed: () => setSheetState(() {
+                            seriesPath = '';
+                            characterPath = '';
+                            specialPath = '';
+                            tag = '';
+                            artist = '';
+                            aiOnly = false;
+                          }),
                           child: const Text('Azzera'),
                         ),
                       ),
@@ -222,15 +336,32 @@ class _SearchMediaTabState extends State<SearchMediaTab> {
     );
 
     if (applied == true && mounted) {
+      final effectiveLocation = characterPath.isNotEmpty
+          ? characterPath
+          : specialPath.isNotEmpty
+              ? specialPath
+              : seriesPath;
       setState(() {
+        _selectedSeries = seriesPath;
+        _selectedCharacter = characterPath;
+        _selectedSpecial = specialPath;
         _query = _query.copyWith(
-          relativePrefix: location,
+          relativePrefix: effectiveLocation,
           tag: tag,
           artist: artist,
           aiOnly: aiOnly,
         );
       });
     }
+  }
+
+  String _characterLabel(GalleryFilterLocation value, String seriesPath) {
+    if (seriesPath.isEmpty) return value.label;
+    final separator = value.label.indexOf(' · ');
+    if (separator >= 0 && separator + 3 < value.label.length) {
+      return value.label.substring(separator + 3);
+    }
+    return value.label;
   }
 
   int get _extraFilterCount {

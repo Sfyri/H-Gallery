@@ -1,4 +1,4 @@
-﻿import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_test/flutter_test.dart';
 import 'package:h_gallery_mobile/main.dart';
 import 'package:h_gallery_mobile/models/gallery_profile.dart';
 import 'package:h_gallery_mobile/services/gallery_bridge.dart';
@@ -9,9 +9,6 @@ class _FakeGalleryService implements GalleryService {
 
   @override
   Future<void> disconnectGallery(String galleryUuid) async {}
-
-  @override
-  Future<void> renameGallery(String galleryUuid, String name) async {}
 
   @override
   Future<List<GalleryProfile>> listGalleries() async => const [];
@@ -26,4 +23,3 @@ void main() {
     expect(find.text('Nessuna galleria collegata'), findsOneWidget);
   });
 }
-

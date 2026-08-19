@@ -70,6 +70,25 @@ class MainActivity : FlutterActivity() {
                 startActivityForResult(intent, PICK_DIRECTORY_REQUEST)
             }
 
+            "renameGallery" -> {
+                val galleryUuid = call.argument<String>("galleryUuid")?.trim().orEmpty()
+                val name = call.argument<String>("name")?.trim().orEmpty()
+                if (galleryUuid.isEmpty()) {
+                    result.error("INVALID_GALLERY", "Identità della galleria non valida.", null)
+                    return
+                }
+                if (name.isEmpty()) {
+                    result.error("INVALID_GALLERY_NAME", "Il nome della galleria non può essere vuoto.", null)
+                    return
+                }
+                try {
+                    renameGallery(galleryUuid, name)
+                    result.success(null)
+                } catch (error: Exception) {
+                    result.error("GALLERY_RENAME_FAILED", safeMessage(error), null)
+                }
+            }
+
             "disconnectGallery" -> {
                 val galleryUuid = call.argument<String>("galleryUuid")?.trim().orEmpty()
                 if (galleryUuid.isEmpty()) {
@@ -191,6 +210,19 @@ class MainActivity : FlutterActivity() {
         }
         saveProfiles(profiles)
         return profile
+    }
+
+    private fun renameGallery(galleryUuid: String, name: String) {
+        val profiles = loadProfiles().toMutableList()
+        val index = profiles.indexOfFirst { it.optString("galleryUuid") == galleryUuid }
+        if (index < 0) {
+            throw IllegalArgumentException("Galleria non trovata.")
+        }
+
+        val profile = profiles[index]
+        profile.put("name", name.trim())
+        profiles[index] = profile
+        saveProfiles(profiles)
     }
 
     private fun disconnectGallery(galleryUuid: String) {

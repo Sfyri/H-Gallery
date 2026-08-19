@@ -5,6 +5,7 @@ import '../screens/media_metadata_editor_page.dart';
 import '../services/gallery_browse_service.dart';
 import '../services/media_metadata_editor_service.dart';
 import '../theme/app_theme.dart';
+import 'tag_chip.dart';
 
 Future<void> showMediaInfoSheet({
   required BuildContext context,
@@ -55,17 +56,41 @@ Future<void> showMediaInfoSheet({
                     ? '—'
                     : metadata.characters.map((value) => value.label).join(', '),
               ),
-              _InfoRow(
+              _ChipInfoRow(
                 label: 'Tag',
-                value: metadata.tags.isEmpty ? '—' : metadata.tags.join(', '),
+                emptyText: '—',
+                children: metadata.tags
+                    .map(
+                      (value) => HGalleryTagChip(
+                        label: value,
+                        type: HGalleryTagType.general,
+                      ),
+                    )
+                    .toList(growable: false),
               ),
-              _InfoRow(
+              _ChipInfoRow(
                 label: 'Artisti',
-                value: metadata.artists.isEmpty ? '—' : metadata.artists.join(', '),
+                emptyText: '—',
+                children: metadata.artists
+                    .map(
+                      (value) => HGalleryTagChip(
+                        label: value,
+                        type: HGalleryTagType.artist,
+                      ),
+                    )
+                    .toList(growable: false),
               ),
-              _InfoRow(
+              _ChipInfoRow(
                 label: 'IA',
-                value: metadata.aiGenerated ? 'Sì' : 'No',
+                emptyText: 'No',
+                children: metadata.aiGenerated
+                    ? const [
+                        HGalleryTagChip(
+                          label: 'IA',
+                          type: HGalleryTagType.system,
+                        ),
+                      ]
+                    : const [],
               ),
             ] else if (metadataError != null)
               const Padding(
@@ -136,6 +161,45 @@ class _InfoRow extends StatelessWidget {
             child: Text(label, style: const TextStyle(color: AppTheme.muted)),
           ),
           Expanded(child: Text(value)),
+        ],
+      ),
+    );
+  }
+}
+
+class _ChipInfoRow extends StatelessWidget {
+  const _ChipInfoRow({
+    required this.label,
+    required this.children,
+    required this.emptyText,
+  });
+
+  final String label;
+  final List<Widget> children;
+  final String emptyText;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 94,
+            child: Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(label, style: const TextStyle(color: AppTheme.muted)),
+            ),
+          ),
+          Expanded(
+            child: children.isEmpty
+                ? Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(emptyText),
+                  )
+                : Wrap(spacing: 6, runSpacing: 6, children: children),
+          ),
         ],
       ),
     );
