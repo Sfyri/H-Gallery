@@ -12,6 +12,7 @@
             <h1>H-Gallery</h1>
             <p>Archivio locale di immagini e video</p>
         </div>
+
         <nav class="main-nav" aria-label="Navigazione principale">
             <button class="nav-button active" data-view="gallery" type="button">Galleria</button>
             <button class="nav-button" data-view="todo" type="button">
@@ -24,6 +25,7 @@
             <button class="nav-button" data-view="settings" type="button">Impostazioni</button>
         </nav>
     </header>
+
     <main>
         <p id="global-status" class="status-message global-status"></p>
 
@@ -32,6 +34,7 @@
                 <div id="breadcrumb" class="breadcrumb">
                     <button type="button" data-gallery-home>Galleria</button>
                 </div>
+
                 <div class="global-search-wrap">
                     <input
                         id="global-search"
@@ -42,6 +45,7 @@
                     <div id="global-search-results" class="floating-results"></div>
                 </div>
             </div>
+
             <section id="overview-panel">
                 <div id="overview-summary" class="stat-grid"></div>
                 <aside id="empty-gallery-guide" class="empty-gallery-guide" hidden>
@@ -53,6 +57,7 @@
                 </aside>
                 <div id="franchise-grid" class="collection-grid"></div>
             </section>
+
             <section id="franchise-panel" hidden>
                 <div class="section-heading">
                     <div>
@@ -63,6 +68,7 @@
                 </div>
                 <div id="character-grid" class="collection-grid"></div>
             </section>
+
             <section id="media-panel" hidden>
                 <div class="section-heading media-heading">
                     <div>
@@ -78,6 +84,7 @@
                         <button id="manage-character-aliases" class="secondary-button" type="button">Modifica personaggio</button>
                     </div>
                 </div>
+
                 <form id="media-filter-form" class="filter-bar">
                     <input id="media-search" type="search" placeholder="Cerca nei file, tag o personaggi">
                     <select id="media-type-filter" aria-label="Tipo di file">
@@ -105,6 +112,7 @@
                     <button type="submit">Applica</button>
                     <button id="clear-media-filters" class="secondary-button" type="button">Pulisci</button>
                 </form>
+
                 <section id="story-section" class="story-section" hidden>
                     <div class="story-section-heading">
                         <div>
@@ -114,6 +122,7 @@
                     </div>
                     <div id="story-grid" class="story-grid"></div>
                 </section>
+
                 <div id="gallery-selection-toolbar" class="selection-toolbar" hidden>
                     <strong id="gallery-selection-count">0 immagini selezionate</strong>
                     <div class="selection-toolbar-actions">
@@ -122,11 +131,13 @@
                         <button id="create-story-from-gallery" type="button">Crea storia</button>
                     </div>
                 </div>
+
                 <p id="media-result-summary" class="result-summary"></p>
                 <div id="gallery-media-grid" class="media-grid"></div>
                 <div id="pagination" class="pagination"></div>
             </section>
         </section>
+
         <section id="todo-view" class="app-view" hidden>
             <div class="section-heading">
                 <div>
@@ -148,6 +159,7 @@
             </div>
             <div id="todo-media-grid" class="media-grid"></div>
         </section>
+
         <section id="trash-view" class="app-view" hidden>
             <div class="section-heading">
                 <div>
@@ -163,6 +175,7 @@
             <div id="trash-media-grid" class="media-grid"></div>
             <div id="trash-pagination" class="pagination"></div>
         </section>
+
         <section id="ranking-view" class="app-view" hidden>
             <div class="section-heading">
                 <div>
@@ -175,6 +188,7 @@
             </div>
             <div id="ranking-list" class="ranking-list"></div>
         </section>
+
         <section id="settings-view" class="app-view" hidden>
             <div class="section-heading">
                 <div>
@@ -182,6 +196,7 @@
                     <p>Manutenzione dell’archivio, backup e cache delle miniature.</p>
                 </div>
             </div>
+
             <div class="settings-grid">
                 <section class="settings-card settings-card-wide">
                     <div class="settings-card-heading">
@@ -201,6 +216,7 @@
                     <p id="gallery-manager-status" class="status-message"></p>
                     <small>Per aggiungere o cambiare archivio, chiudi H-Gallery e avvia <strong>Reconfigure.bat</strong>. La cartella selezionata diventerà attiva al riavvio.</small>
                 </section>
+
                 <section class="settings-card">
                     <h3>Archivio</h3>
                     <p>Rileggi la struttura delle serie e allinea il database ai file presenti sul disco.</p>
@@ -209,6 +225,7 @@
                         <button id="folder-sync-button" type="button" class="secondary-button">Rileggi cartelle</button>
                     </div>
                 </section>
+
                 <section class="settings-card settings-card-wide">
                     <div class="settings-card-heading">
                         <div>
@@ -217,21 +234,25 @@
                         </div>
                         <button id="refresh-backups-button" type="button" class="secondary-button">Aggiorna elenco</button>
                     </div>
+
                     <dl class="cache-stats">
                         <div><dt>Backup manuali</dt><dd id="manual-backup-count">—</dd></div>
                         <div><dt>Backup automatici</dt><dd id="automatic-backup-count">—</dd></div>
                         <div><dt>Limite automatici</dt><dd id="automatic-backup-limit">10</dd></div>
                         <div><dt>Ultimo backup</dt><dd id="latest-backup-date">—</dd></div>
                     </dl>
+
                     <p id="backup-status" class="status-message"></p>
                     <div class="settings-actions">
                         <button id="create-backup-button" type="button">Crea backup adesso</button>
                         <button id="export-metadata-button" type="button" class="secondary-button">Esporta metadati JSON</button>
                         <button id="open-backups-folder-button" type="button" class="secondary-button">Apri cartella backup</button>
                     </div>
+
                     <div id="backup-list" class="backup-list"></div>
                     <small>I backup automatici vengono creati prima della sincronizzazione, prima dello svuotamento del cestino e prima di un ripristino. Un backup del database non può recuperare file multimediali eliminati definitivamente.</small>
                 </section>
+
                 <section class="settings-card">
                     <div class="settings-card-heading">
                         <div>
@@ -240,6 +261,7 @@
                         </div>
                         <button id="refresh-cache-stats-button" type="button" class="secondary-button">Aggiorna dati</button>
                     </div>
+
                     <dl class="cache-stats">
                         <div><dt>Dimensione</dt><dd id="cache-size">—</dd></div>
                         <div><dt>File cache</dt><dd id="cache-files">—</dd></div>
@@ -248,6 +270,7 @@
                         <div><dt>Formato</dt><dd>WebP · 512 px · qualità 80</dd></div>
                         <div><dt>FFmpeg</dt><dd id="ffmpeg-status">—</dd></div>
                     </dl>
+
                     <p id="cache-status" class="status-message"></p>
                     <div class="settings-actions">
                         <button id="clean-cache-button" type="button">Pulisci cache inutilizzata</button>
@@ -259,6 +282,7 @@
             </div>
         </section>
     </main>
+
     <dialog id="organize-dialog" class="large-dialog">
         <form id="organize-form">
             <div class="dialog-header">
@@ -268,6 +292,7 @@
                 </div>
                 <button id="close-organize-dialog" class="icon-button" type="button" aria-label="Chiudi">×</button>
             </div>
+
             <div class="dialog-layout">
                 <div class="dialog-preview" id="dialog-preview"></div>
                 <div class="dialog-controls">
@@ -279,18 +304,22 @@
                         <input id="organize-character-search" type="search" autocomplete="off" placeholder="Esempio: char">
                         <div id="organize-search-results" class="search-results character-suggestions"></div>
                     </div>
+
                     <p class="field-label">Personaggi selezionati</p>
                     <div id="organize-selected-characters" class="selected-characters"></div>
+
                     <label for="organize-tags-input">Tag</label>
                     <div class="tag-autocomplete">
                         <input id="organize-tags-input" type="text" autocomplete="off" placeholder="Purple Hair, Smile, Armor">
                         <div id="organize-tag-suggestions" class="tag-suggestions" role="listbox"></div>
                     </div>
+
                     <label for="organize-artists-input">Artista</label>
                     <div class="tag-autocomplete">
                         <input id="organize-artists-input" type="text" autocomplete="off" placeholder="Nome dell’artista (facoltativo)">
                         <div id="organize-artist-suggestions" class="tag-suggestions" role="listbox"></div>
                     </div>
+
                     <label class="checkbox-row">
                         <input id="organize-ai-checkbox" type="checkbox">
                         <span>Generato con IA</span>
@@ -300,6 +329,7 @@
                         <input id="organize-keep-duplicates-checkbox" type="checkbox">
                         <span>Conserva anche i duplicati identici</span>
                     </label>
+
                     <p id="organize-status" class="status-message"></p>
                     <div class="dialog-actions">
                         <button id="cancel-organize" type="button" class="secondary-button">Annulla</button>
@@ -309,6 +339,7 @@
             </div>
         </form>
     </dialog>
+
     <dialog id="create-character-dialog" class="small-dialog">
         <form id="create-character-form">
             <div class="dialog-header">
@@ -321,19 +352,23 @@
             <div class="small-dialog-body">
                 <label for="new-character-name">Nome personaggio</label>
                 <input id="new-character-name" type="text" maxlength="120" required>
+
                 <label for="new-character-aliases">Alias</label>
                 <input id="new-character-aliases" type="text" maxlength="500" placeholder="Shirona, シロナ (facoltativo)">
                 <small>Gli alias servono solo per la ricerca e non modificano cartella o nome dei file.</small>
 
                 <label for="franchise-select">Serie</label>
                 <select id="franchise-select" required></select>
+
                 <section id="new-franchise-fields" class="new-franchise-fields" hidden>
                     <label for="new-franchise-name">Nome nuova serie</label>
                     <input id="new-franchise-name" type="text" maxlength="120">
+
                     <label for="new-franchise-code">Codice dei file (automatico)</label>
                     <input id="new-franchise-code" type="text" maxlength="10" placeholder="Viene generato dal nome">
                     <small>Può essere modificato. Se è già occupato, il programma aggiunge 01, 02, 03…</small>
                 </section>
+
                 <p id="create-character-status" class="status-message"></p>
                 <div class="dialog-actions">
                     <button id="cancel-create-character" type="button" class="secondary-button">Annulla</button>
@@ -342,6 +377,7 @@
             </div>
         </form>
     </dialog>
+
     <dialog id="file-dialog" class="large-dialog">
         <form id="file-edit-form">
             <div class="dialog-header">
@@ -355,31 +391,37 @@
                 </div>
                 <button id="close-file-dialog" class="icon-button" type="button" aria-label="Chiudi">×</button>
             </div>
+
             <div class="dialog-layout">
                 <div class="dialog-preview" id="file-dialog-preview"></div>
                 <div class="dialog-controls">
                     <dl id="file-properties" class="file-properties"></dl>
+
                     <label for="edit-character-search">Personaggi presenti</label>
                     <div class="character-autocomplete">
                         <input id="edit-character-search" type="search" autocomplete="off" placeholder="Cerca e aggiungi personaggi">
                         <div id="edit-search-results" class="search-results character-suggestions"></div>
                     </div>
                     <div id="edit-selected-characters" class="selected-characters"></div>
+
                     <label for="edit-tags-input">Tag</label>
                     <div class="tag-autocomplete">
                         <input id="edit-tags-input" type="text" autocomplete="off" placeholder="Tag separati da virgola">
                         <div id="edit-tag-suggestions" class="tag-suggestions" role="listbox"></div>
                     </div>
+
                     <label for="edit-artists-input">Artista</label>
                     <div class="tag-autocomplete">
                         <input id="edit-artists-input" type="text" autocomplete="off" placeholder="Nome dell’artista (facoltativo)">
                         <div id="edit-artist-suggestions" class="tag-suggestions" role="listbox"></div>
                     </div>
+
                     <label class="checkbox-row">
                         <input id="edit-ai-checkbox" type="checkbox">
                         <span>Generato con IA</span>
                     </label>
                     <small>Modificare personaggi o IA può spostare e rinominare il file.</small>
+
                     <p id="file-dialog-status" class="status-message"></p>
                     <div class="dialog-actions split-actions">
                         <div class="dialog-left-actions">
@@ -395,6 +437,7 @@
             </div>
         </form>
     </dialog>
+
     <dialog id="story-dialog" class="story-dialog">
         <form id="story-form">
             <div class="dialog-header">
@@ -404,6 +447,7 @@
                 </div>
                 <button id="close-story-dialog" class="icon-button" type="button" aria-label="Chiudi">×</button>
             </div>
+
             <div class="story-dialog-layout">
                 <section class="story-order-panel">
                     <div class="field-header">
@@ -419,9 +463,11 @@
                     </div>
                     <div id="story-pages-list" class="story-pages-list"></div>
                 </section>
+
                 <section class="story-metadata-panel">
                     <label for="story-title-input">Titolo</label>
                     <input id="story-title-input" type="text" maxlength="120" required placeholder="Titolo della storia">
+
                     <div id="story-new-metadata-fields" class="story-new-metadata-fields">
                         <div class="field-header">
                             <label for="story-character-search">Personaggi</label>
@@ -432,28 +478,36 @@
                             <div id="story-character-results" class="search-results character-suggestions"></div>
                         </div>
                         <div id="story-selected-characters" class="selected-characters"></div>
+
                         <label for="story-tags-input">Tag delle pagine</label>
                         <div class="tag-autocomplete">
                             <input id="story-tags-input" type="text" autocomplete="off" placeholder="Fantasy, Romance, Manga">
                             <div id="story-tag-suggestions" class="tag-suggestions" role="listbox"></div>
                         </div>
+
                         <label for="story-artists-input">Artista</label>
                         <div class="tag-autocomplete">
                             <input id="story-artists-input" type="text" autocomplete="off" placeholder="Nome dell’artista (facoltativo)">
                             <div id="story-artist-suggestions" class="tag-suggestions" role="listbox"></div>
                         </div>
+
                         <label class="checkbox-row">
                             <input id="story-ai-checkbox" type="checkbox">
                             <span>Pagine generate con IA</span>
                         </label>
                     </div>
-                    <select id="story-reading-direction" hidden aria-hidden="true">
-                        <option value="ltr" selected>Compatibilità</option>
+
+                    <label for="story-reading-direction">Direzione di lettura</label>
+                    <select id="story-reading-direction">
+                        <option value="rtl">Destra → sinistra (manga)</option>
+                        <option value="ltr">Sinistra → destra</option>
                     </select>
+
                     <label id="story-duplicates-row" class="checkbox-row" hidden>
                         <input id="story-allow-duplicates" type="checkbox">
                         <span>Conserva anche duplicati identici</span>
                     </label>
+
                     <p id="story-status" class="status-message"></p>
                     <div class="dialog-actions split-actions">
                         <div class="dialog-left-actions">
@@ -468,6 +522,7 @@
             </div>
         </form>
     </dialog>
+
 
     <dialog id="story-page-picker-dialog" class="story-page-picker-dialog">
         <div class="dialog-header">
@@ -492,6 +547,7 @@
             </div>
         </div>
     </dialog>
+
     <dialog id="story-reader-dialog" class="story-reader-dialog">
         <div class="dialog-header">
             <div>
@@ -503,8 +559,7 @@
         <div class="story-reader-toolbar">
             <label>Modalità
                 <select id="story-reader-mode">
-                    <option value="normal">Normale</option>
-                    <option value="manga">Manga</option>
+                    <option value="single">Pagina singola</option>
                     <option value="vertical">Scorrimento verticale</option>
                 </select>
             </label>
@@ -517,6 +572,7 @@
             <button id="story-reader-next" type="button">Successiva →</button>
         </div>
     </dialog>
+
     <dialog id="character-alias-dialog" class="small-dialog">
         <form id="character-alias-form">
             <div class="dialog-header">
@@ -529,6 +585,7 @@
             <div class="small-dialog-body">
                 <label for="character-name-input">Nome personaggio</label>
                 <input id="character-name-input" type="text" maxlength="120" required>
+
                 <label for="character-alias-input">Alias</label>
                 <input id="character-alias-input" type="text" maxlength="1000" placeholder="Shirona, シロナ">
                 <small>Separali con una virgola. I file in !Multiple e !Crossovers mantengono il loro nome generico.</small>
@@ -540,7 +597,7 @@
             </div>
         </form>
     </dialog>
+
     <script src="/static/app.js"></script>
-    <script src="/static/story_reader_modes.js"></script>
 </body>
 </html>
