@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>H-Gallery</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header class="topbar">
+        <div class="brand-block">
+            <h1>H-Gallery</h1>
+            <p>Archivio locale di immagini e video</p>
+        </div>
+        <nav class="main-nav" aria-label="Navigazione principale">
+            <button class="nav-button active" data-view="gallery" type="button">Galleria</button>
+            <button class="nav-button" data-view="todo" type="button">
+                New <span id="todo-badge" class="badge">0</span>
+            </button>
+            <button class="nav-button" data-view="trash" type="button">
+                Cestino <span id="trash-badge" class="badge">0</span>
+            </button>
+            <button class="nav-button" data-view="ranking" type="button">Classifica</button>
+            <button class="nav-button" data-view="settings" type="button">Impostazioni</button>
+        </nav>
+    </header>
+    <main>
+        <p id="global-status" class="status-message global-status"></p>
+
+        <section id="gallery-view" class="app-view">
+            <div class="gallery-toolbar">
+                <div id="breadcrumb" class="breadcrumb">
+                    <button type="button" data-gallery-home>Galleria</button>
+                </div>
+                <div class="global-search-wrap">
+                    <input
+                        id="global-search"
+                        type="search"
+                        autocomplete="off"
+                        placeholder="Cerca personaggio o tag..."
+                    >
+                    <div id="global-search-results" class="floating-results"></div>
+                </div>
+            </div>
+            <section id="overview-panel">
+                <div id="overview-summary" class="stat-grid"></div>
+                <aside id="empty-gallery-guide" class="empty-gallery-guide" hidden>
+                    <div>
+                        <h2>La galleria è vuota</h2>
+                        <p id="empty-gallery-guide-text"></p>
+                    </div>
+                    <button id="empty-gallery-open-new" type="button">Apri New</button>
+                </aside>
+                <div id="franchise-grid" class="collection-grid"></div>
+            </section>
+            <section id="franchise-panel" hidden>
+                <div class="section-heading">
+                    <div>
+                        <h2 id="franchise-title"></h2>
+                        <p id="franchise-subtitle"></p>
+                    </div>
+                    <button id="back-to-overview" class="secondary-button" type="button">Torna alle serie</button>
+                </div>
+                <div id="character-grid" class="collection-grid"></div>
+            </section>
+            <section id="media-panel" hidden>
+                <div class="section-heading media-heading">
+                    <div>
+                        <h2 id="media-title"></h2>
+                        <p id="media-subtitle"></p>
+                    </div>
+                    <div id="character-heading-actions" class="character-heading-actions" hidden>
+                        <div id="character-score-box" class="score-box">
+                            <button id="character-score-minus" type="button" aria-label="Diminuisci punteggio">−</button>
+                            <strong id="character-score-value">0</strong>
+                            <button id="character-score-plus" type="button" aria-label="Aumenta punteggio">+</button>
+                        </div>
+                        <button id="manage-character-aliases" class="secondary-button" type="button">Modifica personaggio</button>
+                    </div>
+                </div>
+                <form id="media-filter-form" class="filter-bar">
+                    <input id="media-search" type="search" placeholder="Cerca nei file, tag o personaggi">
+                    <select id="media-type-filter" aria-label="Tipo di file">
+                        <option value="">Immagini e video</option>
+                        <option value="image">Solo immagini</option>
+                        <option value="video">Solo video</option>
+                    </select>
+                    <select id="media-ai-filter" aria-label="Filtro IA">
+                        <option value="">Tutti</option>
+                        <option value="true">Solo IA</option>
+                        <option value="false">Escludi IA</option>
+                    </select>
+                    <div class="tag-autocomplete">
+                        <input id="media-tag-filter" type="text" autocomplete="off" placeholder="Tag separati da virgola">
+                        <div id="media-tag-suggestions" class="tag-suggestions" role="listbox"></div>
+                    </div>
+                    <select id="media-sort" aria-label="Ordinamento">
+                        <option value="newest">Più recenti</option>
+                        <option value="oldest">Meno recenti</option>
+                        <option value="name_asc">Nome A–Z</option>
+                        <option value="name_desc">Nome Z–A</option>
+                        <option value="size_desc">Più grandi</option>
+                        <option value="size_asc">Più piccoli</option>
+                    </select>
+                    <button type="submit">Applica</button>
+                    <button id="clear-media-filters" class="secondary-button" type="button">Pulisci</button>
+                </form>
+                <section id="story-section" class="story-section" hidden>
+                    <div class="story-section-heading">
+                        <div>
+                            <h3>Storie</h3>
+                            <p id="story-result-summary"></p>
+                        </div>
+                    </div>
+                    <div id="story-grid" class="story-grid"></div>
+                </section>
+                <div id="gallery-selection-toolbar" class="selection-toolbar" hidden>
+                    <strong id="gallery-selection-count">0 immagini selezionate</strong>
+                    <div class="selection-toolbar-actions">
+                        <button id="select-all-gallery" type="button" class="secondary-button">Seleziona immagini della pagina</button>
+                        <button id="clear-gallery-selection" type="button" class="secondary-button">Deseleziona</button>
+                        <button id="create-story-from-gallery" type="button">Crea storia</button>
+                    </div>
+                </div>
+                <p id="media-result-summary" class="result-summary"></p>
+                <div id="gallery-media-grid" class="media-grid"></div>
+                <div id="pagination" class="pagination"></div>
+            </section>
+        </section>
+        <section id="todo-view" class="app-view" hidden>
+            <div class="section-heading">
+                <div>
+                    <h2>New</h2>
+                    <p id="todo-folder-path">File in attesa di organizzazione</p>
+                </div>
+                <button id="refresh-todo-button" type="button">Aggiorna file</button>
+            </div>
+            <p id="todo-file-count" class="result-summary">Caricamento...</p>
+            <div id="todo-selection-toolbar" class="selection-toolbar" hidden>
+                <strong id="todo-selection-count">0 file selezionati</strong>
+                <div class="selection-toolbar-actions">
+                    <button id="select-all-todo" type="button" class="secondary-button">Seleziona tutto</button>
+                    <button id="clear-todo-selection" type="button" class="secondary-button">Deseleziona</button>
+                    <button id="organize-selected-todo" type="button">Organizza insieme</button>
+                    <button id="create-story-from-new" type="button">Crea storia</button>
+                    <button id="trash-selected-todo" type="button" class="danger-button">Cestino</button>
+                </div>
+            </div>
+            <div id="todo-media-grid" class="media-grid"></div>
+        </section>
+        <section id="trash-view" class="app-view" hidden>
+            <div class="section-heading">
+                <div>
+                    <h2>Cestino</h2>
+                    <p>I file restano recuperabili finché non vengono eliminati definitivamente.</p>
+                </div>
+                <div class="heading-actions">
+                    <button id="refresh-trash-button" type="button" class="secondary-button">Aggiorna</button>
+                    <button id="empty-trash-button" type="button" class="danger-button">Svuota cestino</button>
+                </div>
+            </div>
+            <p id="trash-summary" class="result-summary">Caricamento...</p>
+            <div id="trash-media-grid" class="media-grid"></div>
+            <div id="trash-pagination" class="pagination"></div>
+        </section>
+        <section id="ranking-view" class="app-view" hidden>
+            <div class="section-heading">
+                <div>
+                    <h2>Classifica personaggi</h2>
+                    <p>I pulsanti − e + correggono o aumentano il punteggio.</p>
+                </div>
+                <select id="ranking-franchise-filter" aria-label="Filtra per serie">
+                    <option value="">Tutte le serie</option>
+                </select>
+            </div>
+            <div id="ranking-list" class="ranking-list"></div>
+        </section>
+        <section id="settings-view" class="app-view" hidden>
+            <div class="section-heading">
+                <div>
+                    <h2>Impostazioni</h2>
+                    <p>Manutenzione dell’archivio, backup e cache delle miniature.</p>
+                </div>
+            </div>
+            <div class="settings-grid">
+                <section class="settings-card settings-card-wide">
+                    <div class="settings-card-heading">
+                        <div>
+                            <h3>Galleria attiva</h3>
+                            <p>Il programma e l'archivio possono trovarsi in cartelle diverse.</p>
+                        </div>
+                        <button id="refresh-galleries-button" type="button" class="secondary-button">Aggiorna dati</button>
+                    </div>
+                    <dl class="gallery-location-details">
+                        <div><dt>Nome</dt><dd id="active-gallery-name">—</dd></div>
+                        <div><dt>Percorso</dt><dd id="active-gallery-path">—</dd></div>
+                        <div><dt>Configurazione archivio</dt><dd id="active-gallery-config-path">—</dd></div>
+                        <div><dt>Cache</dt><dd id="active-gallery-cache-path">—</dd></div>
+                    </dl>
+                    <div id="registered-gallery-list" class="registered-gallery-list"></div>
+                    <p id="gallery-manager-status" class="status-message"></p>
+                    <small>Per aggiungere o cambiare archivio, chiudi H-Gallery e avvia <strong>Reconfigure.bat</strong>. La cartella selezionata diventerà attiva al riavvio.</small>
+                </section>
+                <section class="settings-card">
+                    <h3>Archivio</h3>
+                    <p>Rileggi la struttura delle serie e allinea il database ai file presenti sul disco.</p>
+                    <div class="settings-actions">
+                        <button id="archive-sync-button" type="button">Sincronizza archivio</button>
+                        <button id="folder-sync-button" type="button" class="secondary-button">Rileggi cartelle</button>
+                    </div>
+                </section>
+                <section class="settings-card settings-card-wide">
+                    <div class="settings-card-heading">
+                        <div>
+                            <h3>Backup e ripristino</h3>
+                            <p>Protegge database, tag, associazioni, punteggi e configurazione. Immagini e video non vengono copiati.</p>
+                        </div>
+                        <button id="refresh-backups-button" type="button" class="secondary-button">Aggiorna elenco</button>
+                    </div>
+                    <dl class="cache-stats">
+                        <div><dt>Backup manuali</dt><dd id="manual-backup-count">—</dd></div>
+                        <div><dt>Backup automatici</dt><dd id="automatic-backup-count">—</dd></div>
+                        <div><dt>Limite automatici</dt><dd id="automatic-backup-limit">10</dd></div>
+                        <div><dt>Ultimo backup</dt><dd id="latest-backup-date">—</dd></div>
+                    </dl>
+                    <p id="backup-status" class="status-message"></p>
+                    <div class="settings-actions">
+                        <button id="create-backup-button" type="button">Crea backup adesso</button>
+                        <button id="export-metadata-button" type="button" class="secondary-button">Esporta metadati JSON</button>
+                        <button id="open-backups-folder-button" type="button" class="secondary-button">Apri cartella backup</button>
+                    </div>
+                    <div id="backup-list" class="backup-list"></div>
+                    <small>I backup automatici vengono creati prima della sincronizzazione, prima dello svuotamento del cestino e prima di un ripristino. Un backup del database non può recuperare file multimediali eliminati definitivamente.</small>
+                </section>
+                <section class="settings-card">
+                    <div class="settings-card-heading">
+                        <div>
+                            <h3>Cache miniature</h3>
+                            <p>Le miniature sono copie temporanee. Gli originali non vengono modificati.</p>
+                        </div>
+                        <button id="refresh-cache-stats-button" type="button" class="secondary-button">Aggiorna dati</button>
+                    </div>
+                    <dl class="cache-stats">
+                        <div><dt>Dimensione</dt><dd id="cache-size">—</dd></div>
+                        <div><dt>File cache</dt><dd id="cache-files">—</dd></div>
+                        <div><dt>Miniature statiche</dt><dd id="cache-static-count">—</dd></div>
+                        <div><dt>Anteprime animate</dt><dd id="cache-preview-count">—</dd></div>
+                        <div><dt>Formato</dt><dd>WebP · 512 px · qualità 80</dd></div>
+                        <div><dt>FFmpeg</dt><dd id="ffmpeg-status">—</dd></div>
+                    </dl>
+                    <p id="cache-status" class="status-message"></p>
+                    <div class="settings-actions">
+                        <button id="clean-cache-button" type="button">Pulisci cache inutilizzata</button>
+                        <button id="regenerate-thumbnails-button" type="button">Rigenera le thumbnail</button>
+                        <button id="clear-cache-button" type="button" class="danger-button">Svuota cache</button>
+                    </div>
+                    <small>Le anteprime animate di GIF e video vengono caricate solo al passaggio del mouse. Senza FFmpeg i video usano una miniatura statica generica.</small>
+                </section>
+            </div>
+        </section>
+    </main>
+    <dialog id="organize-dialog" class="large-dialog">
+        <form id="organize-form">
+            <div class="dialog-header">
+                <div>
+                    <h2 id="organize-dialog-title">Organizza file</h2>
+                    <p id="dialog-filename"></p>
+                </div>
+                <button id="close-organize-dialog" class="icon-button" type="button" aria-label="Chiudi">×</button>
+            </div>
+            <div class="dialog-layout">
+                <div class="dialog-preview" id="dialog-preview"></div>
+                <div class="dialog-controls">
+                    <div class="field-header">
+                        <label for="organize-character-search">Cerca personaggio</label>
+                        <button id="open-create-character" type="button" class="text-button">+ Crea personaggio</button>
+                    </div>
+                    <div class="character-autocomplete">
+                        <input id="organize-character-search" type="search" autocomplete="off" placeholder="Esempio: char">
+                        <div id="organize-search-results" class="search-results character-suggestions"></div>
+                    </div>
+                    <p class="field-label">Personaggi selezionati</p>
+                    <div id="organize-selected-characters" class="selected-characters"></div>
+                    <label for="organize-tags-input">Tag</label>
+                    <div class="tag-autocomplete">
+                        <input id="organize-tags-input" type="text" autocomplete="off" placeholder="Purple Hair, Smile, Armor">
+                        <div id="organize-tag-suggestions" class="tag-suggestions" role="listbox"></div>
+                    </div>
+                    <label for="organize-artists-input">Artista</label>
+                    <div class="tag-autocomplete">
+                        <input id="organize-artists-input" type="text" autocomplete="off" placeholder="Nome dell’artista (facoltativo)">
+                        <div id="organize-artist-suggestions" class="tag-suggestions" role="listbox"></div>
+                    </div>
+                    <label class="checkbox-row">
+                        <input id="organize-ai-checkbox" type="checkbox">
+                        <span>Generato con IA</span>
+                    </label>
+
+                    <label id="organize-keep-duplicates-row" class="checkbox-row" hidden>
+                        <input id="organize-keep-duplicates-checkbox" type="checkbox">
+                        <span>Conserva anche i duplicati identici</span>
+                    </label>
+                    <p id="organize-status" class="status-message"></p>
+                    <div class="dialog-actions">
+                        <button id="cancel-organize" type="button" class="secondary-button">Annulla</button>
+                        <button id="submit-organize" type="submit">Rinomina e sposta</button>
+                    </div>
+                </div>
+            </div>
+        </form>
+    </dialog>
+    <dialog id="create-character-dialog" class="small-dialog">
+        <form id="create-character-form">
+            <div class="dialog-header">
+                <div>
+                    <h2>Crea personaggio</h2>
+                    <p>La cartella viene creata automaticamente.</p>
+                </div>
+                <button id="close-create-character" class="icon-button" type="button" aria-label="Chiudi">×</button>
+            </div>
+            <div class="small-dialog-body">
+                <label for="new-character-name">Nome personaggio</label>
+                <input id="new-character-name" type="text" maxlength="120" required>
+                <label for="new-character-aliases">Alias</label>
+                <input id="new-character-aliases" type="text" maxlength="500" placeholder="Shirona, シロナ (facoltativo)">
+                <small>Gli alias servono solo per la ricerca e non modificano cartella o nome dei file.</small>
+
+                <label for="franchise-select">Serie</label>
+                <select id="franchise-select" required></select>
+                <section id="new-franchise-fields" class="new-franchise-fields" hidden>
+                    <label for="new-franchise-name">Nome nuova serie</label>
+                    <input id="new-franchise-name" type="text" maxlength="120">
+                    <label for="new-franchise-code">Codice dei file (automatico)</label>
+                    <input id="new-franchise-code" type="text" maxlength="10" placeholder="Viene generato dal nome">
+                    <small>Può essere modificato. Se è già occupato, il programma aggiunge 01, 02, 03…</small>
+                </section>
+                <p id="create-character-status" class="status-message"></p>
+                <div class="dialog-actions">
+                    <button id="cancel-create-character" type="button" class="secondary-button">Annulla</button>
+                    <button id="submit-create-character" type="submit">Crea e seleziona</button>
+                </div>
+            </div>
+        </form>
+    </dialog>
+    <dialog id="file-dialog" class="large-dialog">
+        <form id="file-edit-form">
+            <div class="dialog-header">
+                <div class="file-dialog-heading">
+                    <h2 id="file-dialog-title">Dettagli file</h2>
+                    <div class="file-navigation" aria-label="Navigazione tra i file visualizzati">
+                        <button id="file-previous-button" type="button" class="secondary-button">← Precedente</button>
+                        <span id="file-navigation-indicator">—</span>
+                        <button id="file-next-button" type="button" class="secondary-button">Successivo →</button>
+                    </div>
+                </div>
+                <button id="close-file-dialog" class="icon-button" type="button" aria-label="Chiudi">×</button>
+            </div>
+            <div class="dialog-layout">
+                <div class="dialog-preview" id="file-dialog-preview"></div>
+                <div class="dialog-controls">
+                    <dl id="file-properties" class="file-properties"></dl>
+                    <label for="edit-character-search">Personaggi presenti</label>
+                    <div class="character-autocomplete">
+                        <input id="edit-character-search" type="search" autocomplete="off" placeholder="Cerca e aggiungi personaggi">
+                        <div id="edit-search-results" class="search-results character-suggestions"></div>
+                    </div>
+                    <div id="edit-selected-characters" class="selected-characters"></div>
+                    <label for="edit-tags-input">Tag</label>
+                    <div class="tag-autocomplete">
+                        <input id="edit-tags-input" type="text" autocomplete="off" placeholder="Tag separati da virgola">
+                        <div id="edit-tag-suggestions" class="tag-suggestions" role="listbox"></div>
+                    </div>
+                    <label for="edit-artists-input">Artista</label>
+                    <div class="tag-autocomplete">
+                        <input id="edit-artists-input" type="text" autocomplete="off" placeholder="Nome dell’artista (facoltativo)">
+                        <div id="edit-artist-suggestions" class="tag-suggestions" role="listbox"></div>
+                    </div>
+                    <label class="checkbox-row">
+                        <input id="edit-ai-checkbox" type="checkbox">
+                        <span>Generato con IA</span>
+                    </label>
+                    <small>Modificare personaggi o IA può spostare e rinominare il file.</small>
+                    <p id="file-dialog-status" class="status-message"></p>
+                    <div class="dialog-actions split-actions">
+                        <div class="dialog-left-actions">
+                            <button id="reveal-file-button" type="button" class="secondary-button">Mostra in Esplora file</button>
+                            <button id="trash-file-button" type="button" class="danger-button">Sposta nel cestino</button>
+                        </div>
+                        <div>
+                            <button id="cancel-file-edit" type="button" class="secondary-button">Chiudi</button>
+                            <button id="save-file-edit" type="submit">Salva modifiche</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </form>
+    </dialog>
+    <dialog id="story-dialog" class="story-dialog">
+        <form id="story-form">
+            <div class="dialog-header">
+                <div>
+                    <h2 id="story-dialog-title">Crea storia</h2>
+                    <p id="story-dialog-subtitle">Ordina le pagine e assegna i metadati comuni.</p>
+                </div>
+                <button id="close-story-dialog" class="icon-button" type="button" aria-label="Chiudi">×</button>
+            </div>
+            <div class="story-dialog-layout">
+                <section class="story-order-panel">
+                    <div class="field-header">
+                        <div>
+                            <strong>Ordine delle pagine</strong>
+                            <small>Trascina le pagine oppure modifica il numero.</small>
+                        </div>
+                        <div class="story-order-actions">
+                            <button id="add-story-pages" type="button" class="secondary-button" hidden>Aggiungi pagine</button>
+                            <button id="sort-story-pages" type="button" class="secondary-button">Ordina per numero</button>
+                            <button id="reverse-story-pages" type="button" class="secondary-button">Inverti ordine</button>
+                        </div>
+                    </div>
+                    <div id="story-pages-list" class="story-pages-list"></div>
+                </section>
+                <section class="story-metadata-panel">
+                    <label for="story-title-input">Titolo</label>
+                    <input id="story-title-input" type="text" maxlength="120" required placeholder="Titolo della storia">
+                    <div id="story-new-metadata-fields" class="story-new-metadata-fields">
+                        <div class="field-header">
+                            <label for="story-character-search">Personaggi</label>
+                            <button id="story-create-character" type="button" class="text-button">+ Crea personaggio</button>
+                        </div>
+                        <div class="character-autocomplete">
+                            <input id="story-character-search" type="search" autocomplete="off" placeholder="Cerca personaggio">
+                            <div id="story-character-results" class="search-results character-suggestions"></div>
+                        </div>
+                        <div id="story-selected-characters" class="selected-characters"></div>
+                        <label for="story-tags-input">Tag delle pagine</label>
+                        <div class="tag-autocomplete">
+                            <input id="story-tags-input" type="text" autocomplete="off" placeholder="Fantasy, Romance, Manga">
+                            <div id="story-tag-suggestions" class="tag-suggestions" role="listbox"></div>
+                        </div>
+                        <label for="story-artists-input">Artista</label>
+                        <div class="tag-autocomplete">
+                            <input id="story-artists-input" type="text" autocomplete="off" placeholder="Nome dell’artista (facoltativo)">
+                            <div id="story-artist-suggestions" class="tag-suggestions" role="listbox"></div>
+                        </div>
+                        <label class="checkbox-row">
+                            <input id="story-ai-checkbox" type="checkbox">
+                            <span>Pagine generate con IA</span>
+                        </label>
+                    </div>
+                    <label id="story-duplicates-row" class="checkbox-row" hidden>
+                        <input id="story-allow-duplicates" type="checkbox">
+                        <span>Conserva anche duplicati identici</span>
+                    </label>
+                    <p id="story-status" class="status-message"></p>
+                    <div class="dialog-actions split-actions">
+                        <div class="dialog-left-actions">
+                            <button id="dissolve-story" type="button" class="danger-button" hidden>Sciogli storia</button>
+                        </div>
+                        <div>
+                            <button id="cancel-story" type="button" class="secondary-button">Annulla</button>
+                            <button id="submit-story" type="submit">Crea storia</button>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </form>
+    </dialog>
+
+    <dialog id="story-page-picker-dialog" class="story-page-picker-dialog">
+        <div class="dialog-header">
+            <div>
+                <h2>Aggiungi pagine dalla galleria</h2>
+                <p>Seleziona immagini già organizzate. I loro personaggi, tag e artisti vengono mantenuti.</p>
+            </div>
+            <button id="close-story-page-picker" class="icon-button" type="button" aria-label="Chiudi">×</button>
+        </div>
+        <div class="story-page-picker-body">
+            <input id="story-page-picker-search" type="search" autocomplete="off" placeholder="Cerca per file, personaggio, serie o tag">
+            <div class="story-page-picker-summary">
+                <span id="story-page-picker-count">0 immagini selezionate</span>
+                <button id="clear-story-page-picker" type="button" class="text-button">Deseleziona</button>
+            </div>
+            <div id="story-page-picker-grid" class="story-page-picker-grid"></div>
+            <button id="load-more-story-pages" type="button" class="secondary-button" hidden>Carica altre immagini</button>
+            <p id="story-page-picker-status" class="status-message"></p>
+            <div class="dialog-actions">
+                <button id="cancel-story-page-picker" type="button" class="secondary-button">Annulla</button>
+                <button id="confirm-story-page-picker" type="button">Aggiungi selezionate</button>
+            </div>
+        </div>
+    </dialog>
+    <dialog id="story-reader-dialog" class="story-reader-dialog">
+        <div class="dialog-header">
+            <div>
+                <h2 id="story-reader-title">Storia</h2>
+                <p id="story-reader-meta"></p>
+            </div>
+            <button id="close-story-reader" class="icon-button" type="button" aria-label="Chiudi">×</button>
+        </div>
+        <div class="story-reader-toolbar">
+            <label>Modalità
+                <select id="story-reader-mode">
+                    <option value="normal">Normale</option>
+                    <option value="manga">Manga</option>
+                    <option value="vertical">Scorrimento verticale</option>
+                </select>
+            </label>
+            <button id="edit-active-story" type="button" class="secondary-button">Modifica storia</button>
+        </div>
+        <div id="story-reader-content" class="story-reader-content"></div>
+        <div id="story-reader-navigation" class="story-reader-navigation">
+            <button id="story-reader-previous" type="button">← Precedente</button>
+            <strong id="story-reader-indicator">1 / 1</strong>
+            <button id="story-reader-next" type="button">Successiva →</button>
+        </div>
+    </dialog>
+    <dialog id="character-alias-dialog" class="small-dialog">
+        <form id="character-alias-form">
+            <div class="dialog-header">
+                <div>
+                    <h2 id="character-alias-title">Modifica personaggio</h2>
+                    <p>Il nuovo nome viene applicato alla cartella e ai file organizzati del personaggio.</p>
+                </div>
+                <button id="close-character-alias-dialog" class="icon-button" type="button" aria-label="Chiudi">×</button>
+            </div>
+            <div class="small-dialog-body">
+                <label for="character-name-input">Nome personaggio</label>
+                <input id="character-name-input" type="text" maxlength="120" required>
+                <label for="character-alias-input">Alias</label>
+                <input id="character-alias-input" type="text" maxlength="1000" placeholder="Shirona, シロナ">
+                <small>Separali con una virgola. I file in !Multiple e !Crossovers mantengono il loro nome generico.</small>
+                <p id="character-alias-status" class="status-message"></p>
+                <div class="dialog-actions">
+                    <button id="cancel-character-alias" type="button" class="secondary-button">Annulla</button>
+                    <button id="save-character-alias" type="submit">Salva modifiche</button>
+                </div>
+            </div>
+        </form>
+    </dialog>
+    <script src="/static/app.js?v=20260819-m924"></script>
+    <script src="/static/story_reader_modes.js?v=20260819-m924"></script>
+</body>
+</html>

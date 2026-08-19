@@ -54,7 +54,6 @@ internal data class SyncedStoryPageRecord(
 internal data class SyncedStoryRecord(
     val title: String,
     val relativePath: String,
-    val readingDirection: String,
     val aiGenerated: Boolean,
     val cover: SyncedStoryPageRecord?,
     val pages: List<SyncedStoryPageRecord>,
@@ -151,7 +150,7 @@ internal class GalleryIndexDatabase(
     DATABASE_VERSION,
 ) {
     companion object {
-        private const val DATABASE_VERSION = 7
+        private const val DATABASE_VERSION = 8
     }
 
     override fun onConfigure(db: SQLiteDatabase) {
@@ -221,6 +220,10 @@ internal class GalleryIndexDatabase(
             createStorySchema(db)
             refreshInferredStories(db)
         }
+        if (oldVersion < 8) {
+            migrateStorySchemaWithoutReadingDirection(db)
+            refreshInferredStories(db)
+        }
     }
 
     private fun createStorySchema(db: SQLiteDatabase) {
@@ -229,8 +232,6 @@ internal class GalleryIndexDatabase(
             CREATE TABLE IF NOT EXISTS gallery_stories (
                 relative_path TEXT NOT NULL COLLATE NOCASE PRIMARY KEY,
                 title TEXT NOT NULL,
-                reading_direction TEXT NOT NULL DEFAULT 'rtl'
-                    CHECK(reading_direction IN ('ltr', 'rtl')),
                 cover_media_sync_uuid TEXT NOT NULL DEFAULT '',
                 ai_generated INTEGER NOT NULL DEFAULT 0,
                 source TEXT NOT NULL DEFAULT 'inferred'
@@ -256,6 +257,41 @@ internal class GalleryIndexDatabase(
         db.execSQL(
             "CREATE INDEX IF NOT EXISTS idx_story_pages_media ON gallery_story_pages(media_sync_uuid)",
         )
+    }
+
+    private fun migrateStorySchemaWithoutReadingDirection(db: SQLiteDatabase) {
+        val storyColumns = columnNames(db, "gallery_stories")
+        if ("reading_direction" !in storyColumns) {
+            createStorySchema(db)
+            return
+        }
+
+        // Ricrea entrambe le tabelle per mantenere intatte le foreign key anche
+        // sui dispositivi con versioni SQLite che non supportano DROP COLUMN.
+        db.execSQL("DROP INDEX IF EXISTS idx_story_pages_story")
+        db.execSQL("DROP INDEX IF EXISTS idx_story_pages_media")
+        db.execSQL("ALTER TABLE gallery_story_pages RENAME TO gallery_story_pages_v7")
+        db.execSQL("ALTER TABLE gallery_stories RENAME TO gallery_stories_v7")
+        createStorySchema(db)
+        db.execSQL(
+            """
+            INSERT INTO gallery_stories(
+                relative_path, title, cover_media_sync_uuid, ai_generated, source, updated_at_epoch_ms
+            )
+            SELECT relative_path, title, cover_media_sync_uuid, ai_generated, source, updated_at_epoch_ms
+            FROM gallery_stories_v7
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            INSERT INTO gallery_story_pages(story_relative_path, media_sync_uuid, page_number)
+            SELECT story_relative_path, media_sync_uuid, page_number
+            FROM gallery_story_pages_v7
+            ORDER BY story_relative_path COLLATE NOCASE, page_number
+            """.trimIndent(),
+        )
+        db.execSQL("DROP TABLE gallery_story_pages_v7")
+        db.execSQL("DROP TABLE gallery_stories_v7")
     }
 
     private fun createTrashAndSyncSchema(db: SQLiteDatabase) {
@@ -1092,7 +1128,6 @@ internal class GalleryIndexDatabase(
                 val storyValues = ContentValues().apply {
                     put("relative_path", storyPath)
                     put("title", title)
-                    put("reading_direction", "rtl")
                     put("cover_media_sync_uuid", pages.first().first)
                     put("ai_generated", if (pages.any { it.third }) 1 else 0)
                     put("source", "inferred")
@@ -1153,7 +1188,6 @@ internal class GalleryIndexDatabase(
                 val storyValues = ContentValues().apply {
                     put("relative_path", story.relativePath)
                     put("title", story.title.ifBlank { story.relativePath.substringAfterLast('/') })
-                    put("reading_direction", if (story.readingDirection == "ltr") "ltr" else "rtl")
                     put("cover_media_sync_uuid", cover)
                     put("ai_generated", if (story.aiGenerated) 1 else 0)
                     put("source", "synced")
@@ -1267,16 +1301,15 @@ internal class GalleryIndexDatabase(
         val cleanArtist = artist.trim()
         val result = mutableListOf<Map<String, Any>>()
         readableDatabase.rawQuery(
-            "SELECT relative_path, title, reading_direction, cover_media_sync_uuid, ai_generated " +
+            "SELECT relative_path, title, cover_media_sync_uuid, ai_generated " +
                 "FROM gallery_stories ORDER BY relative_path COLLATE NOCASE",
             null,
         ).use { cursor ->
             while (cursor.moveToNext()) {
                 val path = cursor.getString(0)
                 val title = cursor.getString(1)
-                val direction = cursor.getString(2)
-                val cover = cursor.getString(3)
-                val storyAi = cursor.getInt(4) != 0
+                val cover = cursor.getString(2)
+                val storyAi = cursor.getInt(3) != 0
                 val pages = storyPages(path)
                 if (pages.size < 2) continue
                 if (cleanPrefix.isNotEmpty() && !storyMatchesLocation(path, cleanPrefix)) continue
@@ -1290,7 +1323,6 @@ internal class GalleryIndexDatabase(
                 result += mapOf(
                     "title" to title,
                     "relativePath" to path,
-                    "readingDirection" to if (direction == "ltr") "ltr" else "rtl",
                     "pageCount" to pages.size,
                     "coverSyncUuid" to cover.ifBlank { pages.first()["syncUuid"]?.toString().orEmpty() },
                     "aiGenerated" to hasAi,

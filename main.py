@@ -126,7 +126,6 @@ class StoryCreateFromNewRequest(BaseModel):
     tags: list[str] = Field(default_factory=list)
     artists: list[str] = Field(default_factory=list)
     ai_generated: bool = False
-    reading_direction: str = "rtl"
     cover_index: int = Field(default=0, ge=0)
     allow_duplicates: bool = False
 
@@ -134,13 +133,11 @@ class StoryCreateFromNewRequest(BaseModel):
 class StoryCreateFromGalleryRequest(BaseModel):
     file_ids: list[int] = Field(min_length=2, max_length=500)
     title: str = Field(min_length=1, max_length=120)
-    reading_direction: str = "rtl"
     cover_index: int = Field(default=0, ge=0)
 
 
 class StoryUpdateRequest(BaseModel):
     title: str = Field(min_length=1, max_length=120)
-    reading_direction: str = "rtl"
     ordered_file_ids: list[int] = Field(min_length=2, max_length=500)
     cover_file_id: int | None = None
 
@@ -212,7 +209,10 @@ app.mount("/static", StaticFiles(directory=FRONTEND_ROOT), name="static")
 
 @app.get("/", include_in_schema=False)
 def home():
-    return FileResponse(FRONTEND_ROOT / "index.html")
+    return FileResponse(
+        FRONTEND_ROOT / "index.html",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/api/scan")
@@ -402,7 +402,6 @@ def create_new_story(request: StoryCreateFromNewRequest):
             tags=request.tags,
             artists=request.artists,
             ai_generated=request.ai_generated,
-            reading_direction=request.reading_direction,
             cover_index=request.cover_index,
             allow_duplicates=request.allow_duplicates,
         )
@@ -427,7 +426,6 @@ def create_gallery_story(request: StoryCreateFromGalleryRequest):
         result = create_story_from_gallery(
             file_ids=request.file_ids,
             title=request.title,
-            reading_direction=request.reading_direction,
             cover_index=request.cover_index,
         )
         result["automatic_backup"] = backup["id"]
@@ -479,7 +477,6 @@ def edit_story(story_id: int, request: StoryUpdateRequest):
         result = update_story(
             story_id,
             title=request.title,
-            reading_direction=request.reading_direction,
             ordered_file_ids=request.ordered_file_ids,
             cover_file_id=request.cover_file_id,
         )

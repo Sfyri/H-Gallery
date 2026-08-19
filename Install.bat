@@ -48,7 +48,7 @@ if errorlevel 1 goto installation_error
 
 echo.
 echo Configurazione della galleria...
-".venv\Scripts\h-gallery.exe" configure --ensure
+".venv\Scripts\python.exe" -m h_gallery_cli configure --ensure
 if errorlevel 1 goto installation_error
 
 echo.

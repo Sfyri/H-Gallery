@@ -26,7 +26,6 @@ from backend.scanner import (
 from backend.thumbnails import gallery_preview_url, gallery_thumbnail_url
 
 
-VALID_READING_DIRECTIONS = {"ltr", "rtl"}
 MAX_STORY_PAGES = 500
 
 
@@ -54,13 +53,6 @@ def _normalize_story_tags(
     if ai_generated:
         result.append(("AI", "system"))
     return result
-
-
-def _validate_reading_direction(value: str) -> str:
-    direction = str(value or "rtl").strip().casefold()
-    if direction not in VALID_READING_DIRECTIONS:
-        raise ValueError("Direzione di lettura non valida.")
-    return direction
 
 
 def _story_folder_name(title: str) -> str:
@@ -510,7 +502,6 @@ def create_story_from_new(
     tags: list[str],
     artists: list[str],
     ai_generated: bool,
-    reading_direction: str,
     cover_index: int = 0,
     allow_duplicates: bool = False,
 ) -> dict[str, Any]:
@@ -519,7 +510,6 @@ def create_story_from_new(
         return {"status": "duplicate", "duplicates": duplicates}
 
     characters = get_characters_by_ids(character_ids)
-    direction = _validate_reading_direction(reading_direction)
     destination, prefix, category, folder_name = determine_story_destination(
         characters, ai_generated, title
     )
@@ -542,16 +532,15 @@ def create_story_from_new(
                 """
                 INSERT INTO stories(
                     title, folder_name, relative_path, ai_generated,
-                    reading_direction, created_at, updated_at, is_active, metadata_mode
+                    created_at, updated_at, is_active, metadata_mode
                 )
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1, 'page_union')
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1, 'page_union')
                 """,
                 (
                     _story_folder_name(title),
                     folder_name,
                     destination.relative_to(gallery_root).as_posix(),
                     int(ai_generated),
-                    direction,
                 ),
             )
             story_id = int(cursor.lastrowid)
@@ -668,7 +657,6 @@ def create_story_from_gallery(
     *,
     file_ids: list[int],
     title: str,
-    reading_direction: str,
     cover_index: int = 0,
 ) -> dict[str, Any]:
     sources = _load_gallery_sources(file_ids)
@@ -676,7 +664,6 @@ def create_story_from_gallery(
     with get_connection() as connection:
         aggregate = _aggregate_file_metadata(connection, source_ids)
     characters = get_characters_by_ids(aggregate["character_ids"])
-    direction = _validate_reading_direction(reading_direction)
     destination, prefix, category, folder_name = determine_story_destination(
         characters, bool(aggregate["ai_generated"]), title
     )
@@ -699,15 +686,14 @@ def create_story_from_gallery(
                 """
                 INSERT INTO stories(
                     title, folder_name, relative_path, ai_generated,
-                    reading_direction, created_at, updated_at, is_active, metadata_mode
-                ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1, 'page_union')
+                    created_at, updated_at, is_active, metadata_mode
+                ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1, 'page_union')
                 """,
                 (
                     _story_folder_name(title),
                     folder_name,
                     destination.relative_to(gallery_root).as_posix(),
                     int(aggregate["ai_generated"]),
-                    direction,
                 ),
             )
             story_id = int(cursor.lastrowid)
@@ -832,7 +818,6 @@ def _hydrate_story_rows(connection, rows) -> list[dict[str, Any]]:
                 "folder_name": str(row["folder_name"]),
                 "relative_path": str(row["relative_path"]),
                 "ai_generated": bool(row["ai_generated"]),
-                "reading_direction": str(row["reading_direction"]),
                 "cover_file_id": int(row["cover_file_id"]) if row["cover_file_id"] is not None else None,
                 "cover_url": cover_url,
                 "page_count": int(row["page_count"] or 0),
@@ -937,7 +922,7 @@ def list_stories(
         rows = connection.execute(
             f"""
             SELECT s.id, s.title, s.folder_name, s.relative_path,
-                   s.ai_generated, s.reading_direction, s.cover_file_id,
+                   s.ai_generated, s.cover_file_id,
                    s.created_at, s.updated_at,
                    COUNT(sp.file_id) AS page_count,
                    cf.size AS cover_size, cf.modified_at AS cover_modified_at
@@ -1003,7 +988,7 @@ def get_story(story_id: int) -> dict[str, Any]:
         rows = connection.execute(
             """
             SELECT s.id, s.title, s.folder_name, s.relative_path,
-                   s.ai_generated, s.reading_direction, s.cover_file_id,
+                   s.ai_generated, s.cover_file_id,
                    s.created_at, s.updated_at,
                    COUNT(sp.file_id) AS page_count,
                    cf.size AS cover_size, cf.modified_at AS cover_modified_at
@@ -1050,7 +1035,6 @@ def update_story(
     story_id: int,
     *,
     title: str,
-    reading_direction: str,
     ordered_file_ids: list[int],
     cover_file_id: int | None,
 ) -> dict[str, Any]:
@@ -1102,7 +1086,6 @@ def update_story(
         metadata = _file_metadata_by_id(connection, all_ids)
 
     characters = get_characters_by_ids(aggregate["character_ids"])
-    direction = _validate_reading_direction(reading_direction)
     old_story_path = (gallery_root / current["relative_path"]).resolve()
     destination, prefix, _category, folder_name = determine_story_destination(
         characters,
@@ -1191,7 +1174,7 @@ def update_story(
                 """
                 UPDATE stories
                 SET title = ?, folder_name = ?, relative_path = ?, ai_generated = ?,
-                    reading_direction = ?, cover_file_id = ?, metadata_mode = 'page_union',
+                    cover_file_id = ?, metadata_mode = 'page_union',
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
@@ -1200,7 +1183,6 @@ def update_story(
                     folder_name,
                     destination.relative_to(gallery_root).as_posix(),
                     int(aggregate["ai_generated"]),
-                    direction,
                     selected_cover_id,
                     story_id,
                 ),

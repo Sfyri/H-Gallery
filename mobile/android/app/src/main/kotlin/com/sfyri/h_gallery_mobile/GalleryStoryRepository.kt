@@ -23,13 +23,11 @@ internal class GalleryStoryRepository(private val context: Context) {
             }
             if (pages.isEmpty()) continue
             val cover = readIdentity(raw.optJSONObject("cover"), 0)
-            val direction = raw.optString("readingDirection", "rtl").trim().lowercase()
             stories += SyncedStoryRecord(
                 title = raw.optString("title").trim().ifBlank {
                     relativePath.substringAfterLast('/')
                 },
                 relativePath = relativePath,
-                readingDirection = if (direction == "ltr") "ltr" else "rtl",
                 aiGenerated = raw.optBoolean("aiGenerated", false),
                 cover = cover,
                 pages = pages.sortedBy { it.pageNumber },

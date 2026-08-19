@@ -193,7 +193,6 @@ const dom = {
     storyTagSuggestions: byId("story-tag-suggestions"),
     storyArtistsInput: byId("story-artists-input"),
     storyArtistSuggestions: byId("story-artist-suggestions"),
-    storyReadingDirection: byId("story-reading-direction"),
     storyAiCheckbox: byId("story-ai-checkbox"),
     storyDuplicatesRow: byId("story-duplicates-row"),
     storyAllowDuplicates: byId("story-allow-duplicates"),
@@ -1023,7 +1022,7 @@ function renderStoryCards(stories) {
         title.textContent = story.title;
         const details = document.createElement("p");
         details.className = "media-details";
-        details.innerHTML = `<span>${story.page_count} pagine</span><span>${story.reading_direction === "rtl" ? "← Manga" : "Fumetto →"}</span>`;
+        details.innerHTML = `<span>${story.page_count} pagine</span>`;
         const characters = document.createElement("p");
         characters.className = "card-characters";
         characters.textContent = story.characters.map(character => character.name).join(", ");
@@ -3189,7 +3188,6 @@ function openStoryCreator(items, mode) {
     dom.storyCharacterResults.replaceChildren();
     dom.storyTagsInput.value = "";
     dom.storyArtistsInput.value = "";
-    dom.storyReadingDirection.value = "rtl";
     dom.storyAiCheckbox.checked = mode === "gallery" && items.every(item => item.ai_generated);
     configureStoryDialogForMode(mode);
     dom.storyAllowDuplicates.checked = false;
@@ -3218,7 +3216,6 @@ async function openStoryEditor(storyId) {
         dom.storyCharacterResults.replaceChildren();
         dom.storyTagsInput.value = story.tags.filter(tag => tag.type === "general").map(tag => tag.name).join(", ");
         dom.storyArtistsInput.value = story.tags.filter(tag => tag.type === "artist").map(tag => tag.name).join(", ");
-        dom.storyReadingDirection.value = story.reading_direction;
         dom.storyAiCheckbox.checked = story.ai_generated;
         configureStoryDialogForMode("edit");
         dom.dissolveStory.hidden = false;
@@ -3259,10 +3256,7 @@ async function submitStoryForm(allowDuplicates = false) {
 
     dom.submitStory.disabled = true;
     setStatus(dom.storyStatus, "Salvataggio della storia...");
-    const common = {
-        title,
-        reading_direction: dom.storyReadingDirection.value
-    };
+    const common = { title };
     const newPageMetadata = {
         character_ids: state.storyCharacters.map(character => character.id),
         tags: parseTags(dom.storyTagsInput.value),
@@ -3356,8 +3350,9 @@ async function openStoryReader(storyId) {
         dom.storyReaderTitle.textContent = story.title;
         const missingPages = story.pages.filter(page => page.available === false).length;
         const missingLabel = missingPages ? ` · ${missingPages} non disponibili` : "";
-        dom.storyReaderMeta.textContent = `${story.pages.length} pagine${missingLabel} · ${story.characters.map(character => character.name).join(", ")}`;
-        dom.storyReaderMode.value = "single";
+        const characterLabel = story.characters.map(character => character.name).join(", ");
+        dom.storyReaderMeta.textContent = `${story.pages.length} pagine${missingLabel}${characterLabel ? ` · ${characterLabel}` : ""}`;
+        dom.storyReaderMode.value = "normal";
         renderStoryReader();
         dom.storyReaderDialog.showModal();
     } catch (error) {
@@ -3374,11 +3369,34 @@ function createMissingStoryPage(pageNumber = null) {
     return placeholder;
 }
 
+function currentStoryReaderMode() {
+    const mode = dom.storyReaderMode.value;
+    return mode === "manga" || mode === "vertical" ? mode : "normal";
+}
+
+function configureStoryReaderNavigation(mode, index, pageCount) {
+    if (mode === "manga") {
+        // In Manga il lato sinistro avanza, il lato destro torna indietro.
+        dom.storyReaderPrevious.textContent = "← Successiva";
+        dom.storyReaderNext.textContent = "Precedente →";
+        dom.storyReaderPrevious.disabled = index >= pageCount - 1;
+        dom.storyReaderNext.disabled = index <= 0;
+        return;
+    }
+
+    dom.storyReaderPrevious.textContent = "← Precedente";
+    dom.storyReaderNext.textContent = "Successiva →";
+    dom.storyReaderPrevious.disabled = index <= 0;
+    dom.storyReaderNext.disabled = index >= pageCount - 1;
+}
+
 function renderStoryReader() {
     const story = state.readerStory;
     if (!story) return;
+
+    const mode = currentStoryReaderMode();
+    const vertical = mode === "vertical";
     dom.storyReaderContent.replaceChildren();
-    const vertical = dom.storyReaderMode.value === "vertical";
     dom.storyReaderNavigation.hidden = vertical;
 
     if (!story.pages.length) {
@@ -3390,6 +3408,7 @@ function renderStoryReader() {
     if (vertical) {
         const container = document.createElement("div");
         container.className = "story-reader-vertical";
+        // L'ordine canonico resta sempre page_number crescente.
         story.pages.forEach(page => {
             if (page.available === false) {
                 container.appendChild(createMissingStoryPage(page.page_number));
@@ -3399,6 +3418,7 @@ function renderStoryReader() {
             image.src = page.media_url;
             image.alt = `${story.title} — pagina ${page.page_number}`;
             image.loading = "lazy";
+            image.decoding = "async";
             image.classList.toggle("transparent-media", Boolean(page.has_transparency));
             container.appendChild(image);
         });
@@ -3415,19 +3435,27 @@ function renderStoryReader() {
     } else {
         const image = document.createElement("img");
         image.src = page.media_url;
-        image.alt = `${story.title} — pagina ${state.readerPageIndex + 1}`;
+        image.alt = `${story.title} — pagina ${page.page_number || state.readerPageIndex + 1}`;
         image.classList.toggle("transparent-media", Boolean(page.has_transparency));
         container.appendChild(image);
     }
     dom.storyReaderContent.appendChild(container);
-    dom.storyReaderIndicator.textContent = `${state.readerPageIndex + 1} / ${story.pages.length}`;
-    dom.storyReaderPrevious.disabled = state.readerPageIndex <= 0;
-    dom.storyReaderNext.disabled = state.readerPageIndex >= story.pages.length - 1;
+    const displayedPage = Number(page.page_number) || state.readerPageIndex + 1;
+    dom.storyReaderIndicator.textContent = `${displayedPage} / ${story.pages.length}`;
+    configureStoryReaderNavigation(mode, state.readerPageIndex, story.pages.length);
 }
 
 function changeStoryReaderPage(delta) {
-    if (!state.readerStory || dom.storyReaderMode.value !== "single") return;
-    state.readerPageIndex += delta;
+    if (!state.readerStory || currentStoryReaderMode() === "vertical") return;
+
+    // delta descrive il lato fisico: -1 sinistra, +1 destra.
+    // Normale: sinistra indietro / destra avanti.
+    // Manga:   sinistra avanti / destra indietro.
+    const logicalDelta = currentStoryReaderMode() === "manga" ? -delta : delta;
+    const nextIndex = state.readerPageIndex + logicalDelta;
+    if (nextIndex < 0 || nextIndex >= state.readerStory.pages.length) return;
+
+    state.readerPageIndex = nextIndex;
     renderStoryReader();
 }
 
@@ -3626,7 +3654,10 @@ dom.storyPagePickerSearch.addEventListener("input", () => {
     });
 
 dom.closeStoryReader.addEventListener("click", closeStoryReader);
-dom.storyReaderMode.addEventListener("change", renderStoryReader);
+dom.storyReaderMode.addEventListener("change", () => {
+    state.readerPageIndex = 0;
+    renderStoryReader();
+});
 dom.storyReaderPrevious.addEventListener("click", () => changeStoryReaderPage(-1));
 dom.storyReaderNext.addEventListener("click", () => changeStoryReaderPage(1));
 dom.editActiveStory.addEventListener("click", () => {
@@ -3647,15 +3678,16 @@ document.addEventListener("keydown", event => {
     }
 });
 document.addEventListener("keydown", event => {
-    if (!dom.storyReaderDialog.open || dom.storyReaderMode.value !== "single" || !state.readerStory) return;
+    if (!dom.storyReaderDialog.open || currentStoryReaderMode() === "vertical" || !state.readerStory) return;
     if (event.key === "Escape") return;
-    const rtl = state.readerStory.reading_direction === "rtl";
+    const activeElement = document.activeElement;
+    if (activeElement?.matches("input, textarea, select, [contenteditable='true']")) return;
     if (event.key === "ArrowLeft") {
         event.preventDefault();
-        changeStoryReaderPage(rtl ? 1 : -1);
+        changeStoryReaderPage(-1);
     } else if (event.key === "ArrowRight") {
         event.preventDefault();
-        changeStoryReaderPage(rtl ? -1 : 1);
+        changeStoryReaderPage(1);
     }
 });
 

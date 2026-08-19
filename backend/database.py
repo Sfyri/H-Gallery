@@ -167,8 +167,6 @@ def init_database() -> None:
                 folder_name TEXT NOT NULL,
                 relative_path TEXT NOT NULL UNIQUE,
                 ai_generated INTEGER NOT NULL DEFAULT 0,
-                reading_direction TEXT NOT NULL DEFAULT 'rtl'
-                    CHECK(reading_direction IN ('ltr', 'rtl')),
                 cover_file_id INTEGER,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -246,6 +244,12 @@ def init_database() -> None:
             "CREATE INDEX IF NOT EXISTS idx_files_modified ON files(modified_at DESC)"
         )
         story_columns = _column_names(connection, "stories")
+        if "reading_direction" in story_columns:
+            # M9.2.5: la direzione non appartiene più ai dati della storia.
+            # L'ordine canonico è story_pages.page_number; il verso è una scelta
+            # temporanea del reader (Normale/Manga/Verticale).
+            connection.execute("ALTER TABLE stories DROP COLUMN reading_direction")
+            story_columns = _column_names(connection, "stories")
         if "metadata_mode" not in story_columns:
             connection.execute(
                 "ALTER TABLE stories ADD COLUMN metadata_mode TEXT NOT NULL DEFAULT 'legacy'"
