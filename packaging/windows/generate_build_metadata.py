@@ -4,7 +4,7 @@ import argparse
 import re
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+from PIL import Image
 
 
 VERSION_PATTERN = re.compile(
@@ -78,17 +78,32 @@ def write_inno_version(path: Path, display: str, numeric: tuple[int, int, int, i
     )
 
 
-def write_icon(path: Path) -> None:
-    size = 256
-    image = Image.new("RGBA", (size, size), (34, 39, 54, 255))
-    draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle((14, 14, 241, 241), radius=48, fill=(103, 80, 164, 255))
-    draw.rounded_rectangle((64, 49, 94, 207), radius=8, fill=(255, 255, 255, 255))
-    draw.rounded_rectangle((162, 49, 192, 207), radius=8, fill=(255, 255, 255, 255))
-    draw.rounded_rectangle((88, 113, 168, 143), radius=8, fill=(255, 255, 255, 255))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    image.save(path, format="ICO", sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+def write_icon(path: Path, source: Path) -> None:
+    if not source.is_file():
+        raise FileNotFoundError(f"Icona sorgente non trovata: {source}")
 
+    image = Image.open(source).convert("RGBA")
+
+    if image.size != (1024, 1024):
+        raise ValueError(
+            f"L'icona sorgente deve essere 1024x1024, trovata {image.size[0]}x{image.size[1]}"
+        )
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    image.save(
+        path,
+        format="ICO",
+        sizes=[
+            (16, 16),
+            (24, 24),
+            (32, 32),
+            (48, 48),
+            (64, 64),
+            (128, 128),
+            (256, 256),
+        ],
+    )
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Genera i metadati della build Windows.")
@@ -105,7 +120,10 @@ def main() -> int:
     )
     write_pyinstaller_version(output / "version_info.txt", display, numeric)
     write_inno_version(output / "version.iss", display, numeric)
-    write_icon(output / "assets" / "h-gallery.ico")
+    write_icon(
+        output / "assets" / "h-gallery.ico",
+        project_root / "assets" / "icons" / "hgallery_icon_master.png",
+    )
     print(f"Metadati Windows generati per H-Gallery {display}")
     return 0
 

@@ -41,6 +41,7 @@ class _MediaViewerPageState extends State<MediaViewerPage> {
   bool _chromeVisible = true;
   bool _pageSwipeEnabled = true;
   bool _loadingMore = false;
+  bool _viewerLocked = false;
 
   @override
   void initState() {
@@ -65,7 +66,6 @@ class _MediaViewerPageState extends State<MediaViewerPage> {
   Future<void> _loadMoreIfNeeded(int index) async {
     if (_loadingMore || _items.length >= widget.totalCount) return;
     if (index < _items.length - 6) return;
-
     _loadingMore = true;
     try {
       final next = await widget.mediaService.listMedia(
@@ -96,6 +96,7 @@ class _MediaViewerPageState extends State<MediaViewerPage> {
     setState(() {
       _currentIndex = index;
       _pageSwipeEnabled = true;
+      _viewerLocked = false;
     });
     _loadMoreIfNeeded(index);
   }
@@ -107,6 +108,19 @@ class _MediaViewerPageState extends State<MediaViewerPage> {
   void _setZoomed(bool zoomed) {
     if (_pageSwipeEnabled == !zoomed) return;
     setState(() => _pageSwipeEnabled = !zoomed);
+  }
+
+  void _setViewerLocked(bool locked) {
+    if (_viewerLocked == locked || _items.isEmpty) return;
+    if (locked && _items[_currentIndex].isVideo) return;
+    setState(() {
+      _viewerLocked = locked;
+      _chromeVisible = true;
+    });
+  }
+
+  void _toggleViewerLocked() {
+    _setViewerLocked(!_viewerLocked);
   }
 
   Future<void> _showInfo() {
@@ -150,41 +164,54 @@ class _MediaViewerPageState extends State<MediaViewerPage> {
     }
 
     final current = _items[_currentIndex];
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          PageView.builder(
-            controller: _pageController,
-            physics: _pageSwipeEnabled
-                ? const PageScrollPhysics()
-                : const NeverScrollableScrollPhysics(),
-            itemCount: _items.length,
-            onPageChanged: _handlePageChanged,
-            itemBuilder: (context, index) {
-              final item = _items[index];
-              return _ViewerMediaPage(
-                key: ValueKey(item.syncUuid),
-                galleryUuid: widget.gallery.galleryUuid,
-                item: item,
-                active: index == _currentIndex,
-                chromeVisible: _chromeVisible,
-                mediaService: widget.mediaService,
-                onTap: _toggleChrome,
-                onZoomChanged: _setZoomed,
-              );
-            },
-          ),
-          _ViewerTopBar(
-            visible: _chromeVisible,
-            title: current.filename,
-            current: _currentIndex + 1,
-            total: widget.totalCount,
-            onBack: () => Navigator.of(context).maybePop(),
-            onInfo: _showInfo,
-          ),
-        ],
+    final lockAvailable = !current.isVideo;
+
+    return PopScope<Object?>(
+      canPop: !_viewerLocked,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop || !_viewerLocked) return;
+        _setViewerLocked(false);
+      },
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        body: Stack(
+          fit: StackFit.expand,
+          children: [
+            PageView.builder(
+              controller: _pageController,
+              physics: _pageSwipeEnabled && !_viewerLocked
+                  ? const PageScrollPhysics()
+                  : const NeverScrollableScrollPhysics(),
+              itemCount: _items.length,
+              onPageChanged: _handlePageChanged,
+              itemBuilder: (context, index) {
+                final item = _items[index];
+                return _ViewerMediaPage(
+                  key: ValueKey(item.syncUuid),
+                  galleryUuid: widget.gallery.galleryUuid,
+                  item: item,
+                  active: index == _currentIndex,
+                  chromeVisible: _chromeVisible,
+                  locked: _viewerLocked && index == _currentIndex,
+                  mediaService: widget.mediaService,
+                  onTap: _toggleChrome,
+                  onZoomChanged: _setZoomed,
+                );
+              },
+            ),
+            _ViewerTopBar(
+              visible: _chromeVisible,
+              title: current.filename,
+              current: _currentIndex + 1,
+              total: widget.totalCount,
+              lockAvailable: lockAvailable,
+              locked: _viewerLocked,
+              onBack: () => Navigator.of(context).maybePop(),
+              onInfo: _showInfo,
+              onLock: _toggleViewerLocked,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -196,6 +223,7 @@ class _ViewerMediaPage extends StatefulWidget {
     required this.item,
     required this.active,
     required this.chromeVisible,
+    required this.locked,
     required this.mediaService,
     required this.onTap,
     required this.onZoomChanged,
@@ -206,6 +234,7 @@ class _ViewerMediaPage extends StatefulWidget {
   final MediaItem item;
   final bool active;
   final bool chromeVisible;
+  final bool locked;
   final MediaService mediaService;
   final VoidCallback onTap;
   final ValueChanged<bool> onZoomChanged;
@@ -253,7 +282,6 @@ class _ViewerMediaPageState extends State<_ViewerMediaPage> {
         if (source == null) {
           return const Center(child: CircularProgressIndicator());
         }
-
         if (widget.item.isVideo) {
           if (!source.isVideoContentUri) {
             return const _ViewerError(message: 'Sorgente video non valida.');
@@ -265,12 +293,12 @@ class _ViewerMediaPageState extends State<_ViewerMediaPage> {
             onTap: widget.onTap,
           );
         }
-
         if (!source.isImageFile) {
           return const _ViewerError(message: 'Sorgente immagine non valida.');
         }
         return _ImageMediaView(
           source: source,
+          locked: widget.locked,
           onTap: widget.onTap,
           onZoomChanged: widget.onZoomChanged,
         );
@@ -289,11 +317,13 @@ class _ViewerMediaPageState extends State<_ViewerMediaPage> {
 class _ImageMediaView extends StatefulWidget {
   const _ImageMediaView({
     required this.source,
+    required this.locked,
     required this.onTap,
     required this.onZoomChanged,
   });
 
   final ViewerSource source;
+  final bool locked;
   final VoidCallback onTap;
   final ValueChanged<bool> onZoomChanged;
 
@@ -329,22 +359,27 @@ class _ImageMediaViewState extends State<_ImageMediaView> {
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: widget.onTap,
-      onDoubleTap: _zoomed ? _resetZoom : null,
+      onDoubleTap: !widget.locked && _zoomed ? _resetZoom : null,
       child: Center(
-        child: InteractiveViewer(
-          transformationController: _transformationController,
-          minScale: 1,
-          maxScale: 5,
-          clipBehavior: Clip.none,
-          onInteractionUpdate: (_) => _updateZoomState(),
-          onInteractionEnd: (_) => _updateZoomState(),
-          child: Image.file(
-            File(widget.source.value),
-            fit: BoxFit.contain,
-            gaplessPlayback: true,
-            filterQuality: FilterQuality.medium,
-            errorBuilder: (context, error, stackTrace) => const _ViewerError(
-              message: 'Android non riesce a decodificare questa immagine.',
+        child: IgnorePointer(
+          ignoring: widget.locked,
+          child: InteractiveViewer(
+            transformationController: _transformationController,
+            minScale: 1,
+            maxScale: 5,
+            panEnabled: !widget.locked,
+            scaleEnabled: !widget.locked,
+            clipBehavior: Clip.none,
+            onInteractionUpdate: (_) => _updateZoomState(),
+            onInteractionEnd: (_) => _updateZoomState(),
+            child: Image.file(
+              File(widget.source.value),
+              fit: BoxFit.contain,
+              gaplessPlayback: true,
+              filterQuality: FilterQuality.medium,
+              errorBuilder: (context, error, stackTrace) => const _ViewerError(
+                message: 'Android non riesce a decodificare questa immagine.',
+              ),
             ),
           ),
         ),
@@ -457,13 +492,11 @@ class _VideoMediaViewState extends State<_VideoMediaView>
         },
       );
     }
-
     final controller = _controller;
     if (controller == null || !controller.value.isInitialized) {
       if (widget.active && !_initializing) _initialize();
       return const Center(child: CircularProgressIndicator());
     }
-
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: widget.onTap,
@@ -582,7 +615,9 @@ class _VideoControls extends StatelessWidget {
                             ),
                           ),
                           IconButton(
-                            tooltip: value.volume == 0 ? 'Attiva audio' : 'Disattiva audio',
+                            tooltip: value.volume == 0
+                                ? 'Attiva audio'
+                                : 'Disattiva audio',
                             onPressed: () => controller.setVolume(
                               value.volume == 0 ? 1 : 0,
                             ),
@@ -613,16 +648,22 @@ class _ViewerTopBar extends StatelessWidget {
     required this.title,
     required this.current,
     required this.total,
+    required this.lockAvailable,
+    required this.locked,
     required this.onBack,
     required this.onInfo,
+    required this.onLock,
   });
 
   final bool visible;
   final String title;
   final int current;
   final int total;
+  final bool lockAvailable;
+  final bool locked;
   final VoidCallback onBack;
   final VoidCallback onInfo;
+  final VoidCallback onLock;
 
   @override
   Widget build(BuildContext context) {
@@ -636,56 +677,89 @@ class _ViewerTopBar extends StatelessWidget {
         child: AnimatedOpacity(
           opacity: visible ? 1 : 0,
           duration: const Duration(milliseconds: 140),
-          child: SafeArea(
-            bottom: false,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
-              decoration: const BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [Color(0xD9000000), Color(0x00000000)],
-                ),
-              ),
-              child: Row(
-                children: [
-                  IconButton(
-                    tooltip: 'Indietro',
-                    onPressed: onBack,
-                    color: Colors.white,
-                    icon: const Icon(Icons.arrow_back_rounded),
-                  ),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
+          child: IgnorePointer(
+            ignoring: !visible,
+            child: SafeArea(
+              bottom: false,
+              child: locked
+                  ? Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 6,
+                      ),
+                      child: Align(
+                        alignment: Alignment.centerRight,
+                        child: Material(
+                          color: const Color(0x99000000),
+                          shape: const CircleBorder(),
+                          child: IconButton(
+                            tooltip: 'Sblocca visualizzazione',
+                            onPressed: onLock,
                             color: Colors.white,
-                            fontWeight: FontWeight.w600,
+                            icon: const Icon(Icons.lock_rounded),
                           ),
                         ),
-                        Text(
-                          '$current / $total',
-                          style: const TextStyle(
-                            color: Color(0xFFCACACA),
-                            fontSize: 11,
-                          ),
+                      ),
+                    )
+                  : Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 6,
+                      ),
+                      decoration: const BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [Color(0xD9000000), Color(0x00000000)],
                         ),
-                      ],
+                      ),
+                      child: Row(
+                        children: [
+                          IconButton(
+                            tooltip: 'Indietro',
+                            onPressed: onBack,
+                            color: Colors.white,
+                            icon: const Icon(Icons.arrow_back_rounded),
+                          ),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  title,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                Text(
+                                  '$current / $total',
+                                  style: const TextStyle(
+                                    color: Color(0xFFCACACA),
+                                    fontSize: 11,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          IconButton(
+                            tooltip: 'Informazioni',
+                            onPressed: onInfo,
+                            color: Colors.white,
+                            icon: const Icon(Icons.info_outline_rounded),
+                          ),
+                          if (lockAvailable)
+                            IconButton(
+                              tooltip: 'Blocca visualizzazione',
+                              onPressed: onLock,
+                              color: Colors.white,
+                              icon: const Icon(Icons.lock_open_rounded),
+                            ),
+                        ],
+                      ),
                     ),
-                  ),
-                  IconButton(
-                    tooltip: 'Informazioni',
-                    onPressed: onInfo,
-                    color: Colors.white,
-                    icon: const Icon(Icons.info_outline_rounded),
-                  ),
-                ],
-              ),
             ),
           ),
         ),
@@ -711,7 +785,11 @@ class _ViewerError extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.error_outline_rounded, color: AppTheme.error, size: 46),
+            const Icon(
+              Icons.error_outline_rounded,
+              color: AppTheme.error,
+              size: 46,
+            ),
             const SizedBox(height: 14),
             Text(
               message,
