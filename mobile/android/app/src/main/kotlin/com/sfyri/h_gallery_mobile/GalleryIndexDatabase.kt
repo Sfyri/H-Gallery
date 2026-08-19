@@ -44,6 +44,22 @@ internal data class ReconcileResult(
     val removed: Int,
 )
 
+internal data class SyncedStoryPageRecord(
+    val syncUuid: String,
+    val sha256: String,
+    val relativePath: String,
+    val pageNumber: Int,
+)
+
+internal data class SyncedStoryRecord(
+    val title: String,
+    val relativePath: String,
+    val readingDirection: String,
+    val aiGenerated: Boolean,
+    val cover: SyncedStoryPageRecord?,
+    val pages: List<SyncedStoryPageRecord>,
+)
+
 internal data class ViewerMediaRecord(
     val documentUri: String,
     val mediaType: String,
@@ -135,7 +151,7 @@ internal class GalleryIndexDatabase(
     DATABASE_VERSION,
 ) {
     companion object {
-        private const val DATABASE_VERSION = 6
+        private const val DATABASE_VERSION = 7
     }
 
     override fun onConfigure(db: SQLiteDatabase) {
@@ -171,6 +187,7 @@ internal class GalleryIndexDatabase(
         createMediaIndexes(db)
         createMetadataSchema(db)
         createBrowseIndexes(db)
+        createStorySchema(db)
         createTrashAndSyncSchema(db)
     }
 
@@ -200,6 +217,45 @@ internal class GalleryIndexDatabase(
         if (oldVersion < 6) {
             createMetadataBaselineSchema(db)
         }
+        if (oldVersion < 7) {
+            createStorySchema(db)
+            refreshInferredStories(db)
+        }
+    }
+
+    private fun createStorySchema(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS gallery_stories (
+                relative_path TEXT NOT NULL COLLATE NOCASE PRIMARY KEY,
+                title TEXT NOT NULL,
+                reading_direction TEXT NOT NULL DEFAULT 'rtl'
+                    CHECK(reading_direction IN ('ltr', 'rtl')),
+                cover_media_sync_uuid TEXT NOT NULL DEFAULT '',
+                ai_generated INTEGER NOT NULL DEFAULT 0,
+                source TEXT NOT NULL DEFAULT 'inferred'
+                    CHECK(source IN ('inferred', 'synced')),
+                updated_at_epoch_ms INTEGER NOT NULL DEFAULT 0
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS gallery_story_pages (
+                story_relative_path TEXT NOT NULL COLLATE NOCASE,
+                media_sync_uuid TEXT NOT NULL UNIQUE,
+                page_number INTEGER NOT NULL CHECK(page_number >= 1),
+                PRIMARY KEY(story_relative_path, page_number),
+                FOREIGN KEY(story_relative_path) REFERENCES gallery_stories(relative_path) ON DELETE CASCADE
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_story_pages_story ON gallery_story_pages(story_relative_path, page_number)",
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_story_pages_media ON gallery_story_pages(media_sync_uuid)",
+        )
     }
 
     private fun createTrashAndSyncSchema(db: SQLiteDatabase) {
@@ -533,6 +589,7 @@ internal class GalleryIndexDatabase(
         } finally {
             db.endTransaction()
         }
+        refreshInferredStories(db)
 
         return ReconcileResult(
             added = added,
@@ -544,6 +601,10 @@ internal class GalleryIndexDatabase(
 
     fun stats(): Map<String, Any> {
         val db = readableDatabase
+        var total = 0
+        var photos = 0
+        var animated = 0
+        var videos = 0
         db.rawQuery(
             """
             SELECT
@@ -556,14 +617,43 @@ internal class GalleryIndexDatabase(
             """.trimIndent(),
             null,
         ).use { cursor ->
-            cursor.moveToFirst()
-            return mapOf(
-                "total" to cursor.getInt(cursor.getColumnIndexOrThrow("total")),
-                "photos" to cursor.getInt(cursor.getColumnIndexOrThrow("photos")),
-                "animated" to cursor.getInt(cursor.getColumnIndexOrThrow("animated")),
-                "videos" to cursor.getInt(cursor.getColumnIndexOrThrow("videos")),
-            )
+            if (cursor.moveToFirst()) {
+                total = cursor.getInt(cursor.getColumnIndexOrThrow("total"))
+                photos = cursor.getInt(cursor.getColumnIndexOrThrow("photos"))
+                animated = cursor.getInt(cursor.getColumnIndexOrThrow("animated"))
+                videos = cursor.getInt(cursor.getColumnIndexOrThrow("videos"))
+            }
         }
+        val seriesCount = ((browseCatalog()["series"] as? List<*>) ?: emptyList<Any>()).size
+        val storyCount = db.rawQuery(
+            """
+            SELECT COUNT(*) FROM gallery_stories s
+            WHERE EXISTS (
+                SELECT 1 FROM gallery_story_pages sp
+                JOIN media m ON m.sync_uuid = sp.media_sync_uuid
+                WHERE sp.story_relative_path = s.relative_path COLLATE NOCASE
+                  AND m.is_present = 1
+            )
+            """.trimIndent(),
+            null,
+        ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) else 0 }
+        val aiCount = db.rawQuery(
+            """
+            SELECT COUNT(*) FROM media
+            WHERE is_present = 1
+              AND (ai_generated = 1 OR relative_path LIKE '.AI/%' COLLATE NOCASE OR relative_path LIKE '%/.AI/%' COLLATE NOCASE)
+            """.trimIndent(),
+            null,
+        ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) else 0 }
+        return mapOf(
+            "total" to total,
+            "photos" to photos,
+            "animated" to animated,
+            "videos" to videos,
+            "series" to seriesCount,
+            "stories" to storyCount,
+            "ai" to aiCount,
+        )
     }
 
     fun listMedia(limit: Int, offset: Int): List<Map<String, Any>> {
@@ -834,7 +924,10 @@ internal class GalleryIndexDatabase(
         limit: Int,
         offset: Int,
     ): Map<String, Any> {
-        val where = mutableListOf("m.is_present = 1")
+        val where = mutableListOf(
+            "m.is_present = 1",
+            "NOT EXISTS (SELECT 1 FROM gallery_story_pages sp WHERE sp.media_sync_uuid = m.sync_uuid)",
+        )
         val args = mutableListOf<String>()
         val cleanText = text.trim()
         val cleanPrefix = relativePrefix.trim().trim('/')
@@ -949,6 +1042,382 @@ internal class GalleryIndexDatabase(
             }
         }
         return mapOf("total" to total, "items" to items)
+    }
+
+    private fun inferredStoryPath(relativePath: String): String? {
+        val segments = relativePath.split('/').filter { it.isNotBlank() }
+        val index = segments.indexOfFirst { it.equals("!Stories", ignoreCase = true) }
+        if (index < 0 || index + 2 >= segments.size) return null
+        return segments.subList(0, index + 2).joinToString("/")
+    }
+
+    private fun refreshInferredStories(db: SQLiteDatabase = writableDatabase) {
+        createStorySchema(db)
+        val groups = linkedMapOf<String, Pair<String, MutableList<Triple<String, String, Boolean>>>>()
+        db.rawQuery(
+            "SELECT sync_uuid, relative_path, ai_generated FROM media " +
+                "WHERE is_present = 1 AND media_type = 'image' ORDER BY relative_path COLLATE NOCASE",
+            null,
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val syncUuid = cursor.getString(0)
+                val relativePath = cursor.getString(1)
+                val storyPath = inferredStoryPath(relativePath) ?: continue
+                val ai = cursor.getInt(2) != 0 ||
+                    relativePath.split('/').any { it.equals(".AI", ignoreCase = true) }
+                val key = storyPath.lowercase(Locale.ROOT)
+                val group = groups.getOrPut(key) { storyPath to mutableListOf() }
+                group.second += Triple(syncUuid, relativePath, ai)
+            }
+        }
+        val syncedPaths = mutableSetOf<String>()
+        db.rawQuery("SELECT relative_path FROM gallery_stories WHERE source = 'synced'", null).use { cursor ->
+            while (cursor.moveToNext()) syncedPaths += cursor.getString(0).lowercase(Locale.ROOT)
+        }
+        val ownsTransaction = !db.inTransaction()
+        if (ownsTransaction) db.beginTransaction()
+        try {
+            db.execSQL(
+                "DELETE FROM gallery_story_pages WHERE story_relative_path IN " +
+                    "(SELECT relative_path FROM gallery_stories WHERE source = 'inferred')",
+            )
+            db.delete("gallery_stories", "source = ?", arrayOf("inferred"))
+            val now = System.currentTimeMillis()
+            for ((key, value) in groups) {
+                if (key in syncedPaths) continue
+                val storyPath = value.first
+                val pages = value.second.sortedBy { it.second.lowercase(Locale.ROOT) }
+                if (pages.size < 2) continue
+                val title = storyPath.substringAfterLast('/').ifBlank { "Storia" }
+                val storyValues = ContentValues().apply {
+                    put("relative_path", storyPath)
+                    put("title", title)
+                    put("reading_direction", "rtl")
+                    put("cover_media_sync_uuid", pages.first().first)
+                    put("ai_generated", if (pages.any { it.third }) 1 else 0)
+                    put("source", "inferred")
+                    put("updated_at_epoch_ms", now)
+                }
+                db.insertWithOnConflict(
+                    "gallery_stories", null, storyValues, SQLiteDatabase.CONFLICT_REPLACE,
+                )
+                pages.forEachIndexed { index, page ->
+                    val values = ContentValues().apply {
+                        put("story_relative_path", storyPath)
+                        put("media_sync_uuid", page.first)
+                        put("page_number", index + 1)
+                    }
+                    db.insertWithOnConflict(
+                        "gallery_story_pages", null, values, SQLiteDatabase.CONFLICT_REPLACE,
+                    )
+                }
+            }
+            if (ownsTransaction) db.setTransactionSuccessful()
+        } finally {
+            if (ownsTransaction) db.endTransaction()
+        }
+    }
+
+    fun replaceSyncedStories(stories: List<SyncedStoryRecord>) {
+        val db = writableDatabase
+        createStorySchema(db)
+        db.beginTransaction()
+        try {
+            db.execSQL(
+                "DELETE FROM gallery_story_pages WHERE story_relative_path IN " +
+                    "(SELECT relative_path FROM gallery_stories WHERE source = 'synced')",
+            )
+            db.delete("gallery_stories", "source = ?", arrayOf("synced"))
+            val now = System.currentTimeMillis()
+            for (story in stories) {
+                val resolvedPages = story.pages
+                    .sortedBy { it.pageNumber }
+                    .mapNotNull { identity ->
+                        resolveStoryMediaSyncUuid(db, identity)?.let { identity.pageNumber to it }
+                    }
+                    .distinctBy { it.second }
+                if (resolvedPages.size < 2) continue
+                db.delete(
+                    "gallery_story_pages",
+                    "story_relative_path = ? COLLATE NOCASE",
+                    arrayOf(story.relativePath),
+                )
+                db.delete(
+                    "gallery_stories",
+                    "relative_path = ? COLLATE NOCASE",
+                    arrayOf(story.relativePath),
+                )
+                val cover = story.cover?.let { resolveStoryMediaSyncUuid(db, it) }
+                    ?.takeIf { candidate -> resolvedPages.any { it.second == candidate } }
+                    ?: resolvedPages.first().second
+                val storyValues = ContentValues().apply {
+                    put("relative_path", story.relativePath)
+                    put("title", story.title.ifBlank { story.relativePath.substringAfterLast('/') })
+                    put("reading_direction", if (story.readingDirection == "ltr") "ltr" else "rtl")
+                    put("cover_media_sync_uuid", cover)
+                    put("ai_generated", if (story.aiGenerated) 1 else 0)
+                    put("source", "synced")
+                    put("updated_at_epoch_ms", now)
+                }
+                db.insertOrThrow("gallery_stories", null, storyValues)
+                for ((pageNumber, syncUuid) in resolvedPages) {
+                    val pageValues = ContentValues().apply {
+                        put("story_relative_path", story.relativePath)
+                        put("media_sync_uuid", syncUuid)
+                        put("page_number", pageNumber)
+                    }
+                    db.insertOrThrow("gallery_story_pages", null, pageValues)
+                }
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        refreshInferredStories(db)
+    }
+
+    private fun resolveStoryMediaSyncUuid(
+        db: SQLiteDatabase,
+        identity: SyncedStoryPageRecord,
+    ): String? {
+        if (identity.syncUuid.isNotBlank()) {
+            db.rawQuery(
+                "SELECT sync_uuid FROM media WHERE sync_uuid = ? AND is_present = 1 " +
+                    "AND media_type = 'image' LIMIT 1",
+                arrayOf(identity.syncUuid),
+            ).use { cursor -> if (cursor.moveToFirst()) return cursor.getString(0) }
+        }
+        if (identity.sha256.length == 64) {
+            val candidates = mutableListOf<Pair<String, String>>()
+            db.rawQuery(
+                "SELECT sync_uuid, relative_path FROM media WHERE sha256 = ? AND is_present = 1 " +
+                    "AND media_type = 'image' ORDER BY id",
+                arrayOf(identity.sha256.lowercase(Locale.ROOT)),
+            ).use { cursor ->
+                while (cursor.moveToNext()) candidates += cursor.getString(0) to cursor.getString(1)
+            }
+            if (candidates.size == 1) return candidates.single().first
+            if (identity.relativePath.isNotBlank()) {
+                val pathMatches = candidates.filter {
+                    it.second.equals(identity.relativePath, ignoreCase = true)
+                }
+                if (pathMatches.size == 1) return pathMatches.single().first
+            }
+        }
+        if (identity.relativePath.isNotBlank()) {
+            db.rawQuery(
+                "SELECT sync_uuid FROM media WHERE relative_path = ? COLLATE NOCASE " +
+                    "AND is_present = 1 AND media_type = 'image' LIMIT 2",
+                arrayOf(identity.relativePath),
+            ).use { cursor ->
+                if (!cursor.moveToFirst()) return null
+                val first = cursor.getString(0)
+                if (cursor.moveToNext()) return null
+                return first
+            }
+        }
+        return null
+    }
+
+    fun storyPages(relativePath: String): List<Map<String, Any>> {
+        val rows = mutableListOf<Map<String, Any>>()
+        readableDatabase.rawQuery(
+            """
+            SELECT m.sync_uuid, m.relative_path, m.filename, m.extension, m.media_type,
+                   m.is_animated, m.mime_type, m.size_bytes, m.modified_epoch_ms, m.sha256
+            FROM gallery_story_pages sp
+            JOIN media m ON m.sync_uuid = sp.media_sync_uuid
+            WHERE sp.story_relative_path = ? COLLATE NOCASE
+              AND m.is_present = 1
+              AND m.media_type = 'image'
+            ORDER BY sp.page_number ASC
+            """.trimIndent(),
+            arrayOf(relativePath),
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                rows += mapOf(
+                    "syncUuid" to cursor.getString(0),
+                    "relativePath" to cursor.getString(1),
+                    "filename" to cursor.getString(2),
+                    "extension" to cursor.getString(3),
+                    "mediaType" to cursor.getString(4),
+                    "isAnimated" to (cursor.getInt(5) != 0),
+                    "mimeType" to cursor.getString(6),
+                    "sizeBytes" to cursor.getLong(7),
+                    "modifiedEpochMs" to cursor.getLong(8),
+                    "sha256" to cursor.getString(9),
+                )
+            }
+        }
+        return rows
+    }
+
+    fun queryStories(
+        text: String,
+        kind: String,
+        relativePrefix: String,
+        tag: String,
+        artist: String,
+        aiOnly: Boolean,
+    ): List<Map<String, Any>> {
+        if (kind == "video") return emptyList()
+        val cleanText = text.trim()
+        val cleanPrefix = relativePrefix.trim().trim('/')
+        val cleanTag = tag.trim()
+        val cleanArtist = artist.trim()
+        val result = mutableListOf<Map<String, Any>>()
+        readableDatabase.rawQuery(
+            "SELECT relative_path, title, reading_direction, cover_media_sync_uuid, ai_generated " +
+                "FROM gallery_stories ORDER BY relative_path COLLATE NOCASE",
+            null,
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val path = cursor.getString(0)
+                val title = cursor.getString(1)
+                val direction = cursor.getString(2)
+                val cover = cursor.getString(3)
+                val storyAi = cursor.getInt(4) != 0
+                val pages = storyPages(path)
+                if (pages.size < 2) continue
+                if (cleanPrefix.isNotEmpty() && !storyMatchesLocation(path, cleanPrefix)) continue
+                if (kind == "photo" && pages.none { it["isAnimated"] != true }) continue
+                if (kind == "animated" && pages.none { it["isAnimated"] == true }) continue
+                if (cleanTag.isNotEmpty() && !storyHasTag(path, "general", cleanTag)) continue
+                if (cleanArtist.isNotEmpty() && !storyHasTag(path, "artist", cleanArtist)) continue
+                val hasAi = storyAi || storyHasAi(path)
+                if (aiOnly && !hasAi) continue
+                if (cleanText.isNotEmpty() && !storyMatchesText(path, title, pages, cleanText)) continue
+                result += mapOf(
+                    "title" to title,
+                    "relativePath" to path,
+                    "readingDirection" to if (direction == "ltr") "ltr" else "rtl",
+                    "pageCount" to pages.size,
+                    "coverSyncUuid" to cover.ifBlank { pages.first()["syncUuid"]?.toString().orEmpty() },
+                    "aiGenerated" to hasAi,
+                )
+            }
+        }
+        return result
+    }
+
+    private fun storyMatchesLocation(
+        storyRelativePath: String,
+        locationPrefix: String,
+    ): Boolean {
+        val cleanPrefix = locationPrefix.trim().trim('/')
+        if (cleanPrefix.isEmpty()) return true
+
+        // Mantieni il comportamento fisico esistente: una storia sotto la cartella
+        // aperta deve sempre essere visibile.
+        if (storyRelativePath.equals(cleanPrefix, ignoreCase = true) ||
+            storyRelativePath.startsWith("$cleanPrefix/", ignoreCase = true)
+        ) {
+            return true
+        }
+
+        // Le storie possono essere conservate fisicamente in !Multiple/!Stories o
+        // in altre destinazioni speciali. In quel caso Windows le mostra comunque
+        // nelle viste Serie/Personaggio tramite i metadati aggregati delle pagine.
+        // Android deve fare lo stesso, senza dipendere dal percorso fisico.
+        return readableDatabase.rawQuery(
+            """
+            SELECT 1
+            FROM gallery_story_pages sp
+            JOIN media m
+              ON m.sync_uuid = sp.media_sync_uuid
+             AND m.is_present = 1
+            JOIN media_characters mc
+              ON mc.media_sync_uuid = m.sync_uuid
+            JOIN characters c
+              ON c.id = mc.character_id
+             AND c.is_active = 1
+            JOIN franchises f
+              ON f.id = c.franchise_id
+             AND f.is_active = 1
+            WHERE sp.story_relative_path = ? COLLATE NOCASE
+              AND (
+                c.relative_path = ? COLLATE NOCASE OR
+                f.relative_path = ? COLLATE NOCASE
+              )
+            LIMIT 1
+            """.trimIndent(),
+            arrayOf(storyRelativePath, cleanPrefix, cleanPrefix),
+        ).use { it.moveToFirst() }
+    }
+
+    private fun storyHasTag(relativePath: String, type: String, name: String): Boolean {
+        return readableDatabase.rawQuery(
+            """
+            SELECT 1
+            FROM gallery_story_pages sp
+            JOIN media m ON m.sync_uuid = sp.media_sync_uuid AND m.is_present = 1
+            JOIN media_tags mt ON mt.media_sync_uuid = m.sync_uuid
+            JOIN tags t ON t.id = mt.tag_id
+            WHERE sp.story_relative_path = ? COLLATE NOCASE
+              AND t.type = ?
+              AND t.name = ? COLLATE NOCASE
+            LIMIT 1
+            """.trimIndent(),
+            arrayOf(relativePath, type, name),
+        ).use { it.moveToFirst() }
+    }
+
+    private fun storyHasAi(relativePath: String): Boolean {
+        return readableDatabase.rawQuery(
+            """
+            SELECT 1
+            FROM gallery_story_pages sp
+            JOIN media m ON m.sync_uuid = sp.media_sync_uuid
+            WHERE sp.story_relative_path = ? COLLATE NOCASE
+              AND m.is_present = 1
+              AND (m.ai_generated = 1 OR m.relative_path LIKE '.AI/%' COLLATE NOCASE OR m.relative_path LIKE '%/.AI/%' COLLATE NOCASE)
+            LIMIT 1
+            """.trimIndent(),
+            arrayOf(relativePath),
+        ).use { it.moveToFirst() }
+    }
+
+    private fun storyMatchesText(
+        relativePath: String,
+        title: String,
+        pages: List<Map<String, Any>>,
+        text: String,
+    ): Boolean {
+        if (title.contains(text, ignoreCase = true) || relativePath.contains(text, ignoreCase = true)) {
+            return true
+        }
+        if (pages.any {
+                it["filename"]?.toString()?.contains(text, ignoreCase = true) == true ||
+                    it["relativePath"]?.toString()?.contains(text, ignoreCase = true) == true
+            }
+        ) return true
+        val pattern = "%${escapeLike(text)}%"
+        return readableDatabase.rawQuery(
+            """
+            SELECT 1
+            FROM gallery_story_pages sp
+            JOIN media m ON m.sync_uuid = sp.media_sync_uuid AND m.is_present = 1
+            WHERE sp.story_relative_path = ? COLLATE NOCASE
+              AND (
+                EXISTS (
+                    SELECT 1 FROM media_tags mt
+                    JOIN tags t ON t.id = mt.tag_id
+                    WHERE mt.media_sync_uuid = m.sync_uuid
+                      AND t.name LIKE ? ESCAPE '\\' COLLATE NOCASE
+                ) OR
+                EXISTS (
+                    SELECT 1 FROM media_characters mc
+                    JOIN characters c ON c.id = mc.character_id
+                    JOIN franchises f ON f.id = c.franchise_id
+                    WHERE mc.media_sync_uuid = m.sync_uuid
+                      AND (c.name LIKE ? ESCAPE '\\' COLLATE NOCASE OR
+                           f.name LIKE ? ESCAPE '\\' COLLATE NOCASE)
+                )
+              )
+            LIMIT 1
+            """.trimIndent(),
+            arrayOf(relativePath, pattern, pattern, pattern),
+        ).use { it.moveToFirst() }
     }
 
     fun mediaMetadata(syncUuid: String): Map<String, Any> {

@@ -40,6 +40,24 @@ internal class GalleryBrowseRepository(private val context: Context) {
         }
     }
 
+    fun queryStories(
+        galleryUuid: String,
+        text: String,
+        kind: String,
+        relativePrefix: String,
+        tag: String,
+        artist: String,
+        aiOnly: Boolean,
+    ): List<Map<String, Any>> {
+        return withDatabase(galleryUuid) {
+            it.queryStories(text, kind, relativePrefix, tag, artist, aiOnly)
+        }
+    }
+
+    fun storyPages(galleryUuid: String, relativePath: String): List<Map<String, Any>> {
+        return withDatabase(galleryUuid) { it.storyPages(relativePath) }
+    }
+
     fun mediaMetadata(galleryUuid: String, syncUuid: String): Map<String, Any> {
         return withDatabase(galleryUuid) { it.mediaMetadata(syncUuid) }
     }

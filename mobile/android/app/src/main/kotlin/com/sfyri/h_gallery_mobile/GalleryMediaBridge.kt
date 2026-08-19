@@ -129,6 +129,31 @@ internal class GalleryMediaBridge(
                 }
             }
 
+            "queryStories" -> {
+                val galleryUuid = requiredGalleryUuid(call, result) ?: return
+                val text = call.argument<String>("text")?.trim().orEmpty()
+                val kind = call.argument<String>("kind")?.trim().orEmpty()
+                val relativePrefix = call.argument<String>("relativePrefix")?.trim().orEmpty()
+                val tag = call.argument<String>("tag")?.trim().orEmpty()
+                val artist = call.argument<String>("artist")?.trim().orEmpty()
+                val aiOnly = call.argument<Boolean>("aiOnly") ?: false
+                runAsync(result, "STORY_QUERY_FAILED") {
+                    browse.queryStories(
+                        galleryUuid, text, kind, relativePrefix, tag, artist, aiOnly,
+                    )
+                }
+            }
+            "getStoryPages" -> {
+                val galleryUuid = requiredGalleryUuid(call, result) ?: return
+                val relativePath = call.argument<String>("relativePath")?.trim().orEmpty()
+                if (relativePath.isEmpty()) {
+                    result.error("INVALID_STORY", "Storia non valida.", null)
+                    return
+                }
+                runAsync(result, "STORY_PAGES_FAILED") {
+                    browse.storyPages(galleryUuid, relativePath)
+                }
+            }
             "getMediaMetadata" -> {
                 val galleryUuid = requiredGalleryUuid(call, result) ?: return
                 val syncUuid = requiredMediaId(call, result) ?: return

@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import '../models/gallery_browse_models.dart';
 import '../models/media_item.dart';
 import '../models/scan_result.dart';
+import '../models/story_models.dart';
 import '../models/viewer_source.dart';
 import 'media_bridge.dart';
 
@@ -13,7 +14,6 @@ abstract interface class GalleryBrowseService {
     String galleryUuid,
     String relativePath,
   );
-
   Future<GalleryFilterCatalog> getFilterCatalog(String galleryUuid);
 
   Future<({int total, List<MediaItem> items})> queryMedia(
@@ -23,6 +23,16 @@ abstract interface class GalleryBrowseService {
     int offset = 0,
   });
 
+  Future<List<GalleryStorySummary>> queryStories(
+    String galleryUuid,
+    MediaQuerySpec query,
+  );
+
+  Future<List<MediaItem>> getStoryPages(
+    String galleryUuid,
+    String relativePath,
+  );
+
   Future<MediaMetadataInfo> getMediaMetadata(
     String galleryUuid,
     String syncUuid,
@@ -31,11 +41,9 @@ abstract interface class GalleryBrowseService {
 
 class PlatformGalleryBrowseService implements GalleryBrowseService {
   const PlatformGalleryBrowseService();
-
   static const MethodChannel _channel = MethodChannel(
     'com.sfyri.h_gallery_mobile/media',
   );
-
   @override
   Future<GalleryBrowseCatalog> getBrowseCatalog(String galleryUuid) async {
     final value = await _channel.invokeMapMethod<Object?, Object?>(
@@ -50,7 +58,6 @@ class PlatformGalleryBrowseService implements GalleryBrowseService {
     }
     return GalleryBrowseCatalog.fromPlatform(value);
   }
-
   @override
   Future<GallerySeriesDetail> getSeriesDetail(
     String galleryUuid,
@@ -71,7 +78,6 @@ class PlatformGalleryBrowseService implements GalleryBrowseService {
     }
     return GallerySeriesDetail.fromPlatform(value);
   }
-
   @override
   Future<GalleryFilterCatalog> getFilterCatalog(String galleryUuid) async {
     final value = await _channel.invokeMapMethod<Object?, Object?>(
@@ -87,7 +93,6 @@ class PlatformGalleryBrowseService implements GalleryBrowseService {
     }
     return GalleryFilterCatalog.fromPlatform(value);
   }
-
   @override
   Future<({int total, List<MediaItem> items})> queryMedia(
     String galleryUuid,
@@ -116,6 +121,48 @@ class PlatformGalleryBrowseService implements GalleryBrowseService {
       items: parsed.items.map(MediaItem.fromPlatform).toList(growable: false),
     );
   }
+  @override
+  Future<List<GalleryStorySummary>> queryStories(
+    String galleryUuid,
+    MediaQuerySpec query,
+  ) async {
+    final values = await _channel.invokeListMethod<Object?>(
+      'queryStories',
+      <String, Object?>{
+        'galleryUuid': galleryUuid,
+        'text': query.text.trim(),
+        'kind': query.kind,
+        'relativePrefix': query.relativePrefix,
+        'tag': query.tag,
+        'artist': query.artist,
+        'aiOnly': query.aiOnly,
+      },
+    );
+    if (values == null) return const <GalleryStorySummary>[];
+    return values
+        .whereType<Map<Object?, Object?>>()
+        .map(GalleryStorySummary.fromPlatform)
+        .toList(growable: false);
+  }
+
+  @override
+  Future<List<MediaItem>> getStoryPages(
+    String galleryUuid,
+    String relativePath,
+  ) async {
+    final values = await _channel.invokeListMethod<Object?>(
+      'getStoryPages',
+      <String, Object?>{
+        'galleryUuid': galleryUuid,
+        'relativePath': relativePath,
+      },
+    );
+    if (values == null) return const <MediaItem>[];
+    return values
+        .whereType<Map<Object?, Object?>>()
+        .map(MediaItem.fromPlatform)
+        .toList(growable: false);
+  }
 
   @override
   Future<MediaMetadataInfo> getMediaMetadata(
@@ -140,7 +187,6 @@ class PlatformGalleryBrowseService implements GalleryBrowseService {
     return MediaMetadataInfo.fromPlatform(value);
   }
 }
-
 class FilteredMediaService implements MediaService {
   const FilteredMediaService({
     required this.base,
@@ -157,7 +203,6 @@ class FilteredMediaService implements MediaService {
 
   @override
   Future<GalleryStats> getStats(String galleryUuid) => base.getStats(galleryUuid);
-
   @override
   Future<List<MediaItem>> listMedia(
     String galleryUuid, {
@@ -181,7 +226,6 @@ class FilteredMediaService implements MediaService {
   }) {
     return base.loadThumbnail(galleryUuid, syncUuid, maxPx: maxPx);
   }
-
   @override
   Future<ViewerSource> prepareViewerSource(
     String galleryUuid,

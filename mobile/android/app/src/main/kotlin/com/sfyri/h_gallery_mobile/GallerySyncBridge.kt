@@ -136,6 +136,7 @@ internal class GallerySyncBridge(
     private class SyncCancelledException : RuntimeException()
 
     private val repository = GalleryMediaRepository(activity.applicationContext)
+    private val storyRepository = GalleryStoryRepository(activity.applicationContext)
     private val trashRepository = GalleryTrashRepository(activity.applicationContext)
     private val metadataBaselineStore = GalleryMetadataBaselineStore(activity.applicationContext)
     private val executor = Executors.newSingleThreadExecutor()
@@ -566,6 +567,7 @@ internal class GallerySyncBridge(
                 val verifiedLocal = localItems(info.galleryUuid)
                 val verifiedLocalTombstones = localTombstones(info.galleryUuid, info.syncGroupUuid)
                 val verifiedRemoteManifest = fetchManifest(info)
+                var finalStoryManifest = verifiedRemoteManifest
                 val verifiedRemote = parseManifestItems(verifiedRemoteManifest)
                 val verifiedRemoteTombstones = parseManifestTombstones(verifiedRemoteManifest, info.syncGroupUuid)
                 var verifiedLocalBaselines = metadataBaselineStore.read(
@@ -611,6 +613,7 @@ internal class GallerySyncBridge(
                     // i peer. Solo questo secondo controllo rende la sessione
                     // idonea a propagare rimozioni metadata future.
                     val baselineRemoteManifest = fetchManifest(info)
+                    finalStoryManifest = baselineRemoteManifest
                     val baselineRemote = parseManifestItems(baselineRemoteManifest)
                     verifiedLocalBaselines = metadataBaselineStore.read(
                         info.galleryUuid,
@@ -660,6 +663,7 @@ internal class GallerySyncBridge(
                         network = false,
                     )
                 } else {
+                    storyRepository.replaceFromManifest(info.galleryUuid, finalStoryManifest)
                     recordSuccessfulSync(
                         info.galleryUuid,
                         info,
