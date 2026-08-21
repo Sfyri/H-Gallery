@@ -17,7 +17,6 @@ from configure import configure_gallery, ensure_configuration, run_gallery_manag
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
 
-
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="h-gallery",
@@ -28,7 +27,6 @@ def _build_parser() -> argparse.ArgumentParser:
         action="version",
         version=f"H-Gallery {get_display_version()}",
     )
-
     subparsers = parser.add_subparsers(dest="command")
     start = subparsers.add_parser("start", help="avvia il server locale")
     start.add_argument("--gallery", type=Path, help="galleria da usare per questo avvio")
@@ -69,7 +67,6 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("status", help="mostra lo stato del launcher")
     return parser
 
-
 def _normalize_legacy_arguments(argv: Sequence[str]) -> list[str]:
     """Permette anche `h-gallery --gallery ...` senza scrivere `start`."""
 
@@ -92,7 +89,6 @@ def _normalize_legacy_arguments(argv: Sequence[str]) -> list[str]:
         return args
     return ["start", *args]
 
-
 def _select_gallery(path: Path | None) -> dict[str, str]:
     if path is None:
         return ensure_configuration()
@@ -107,7 +103,6 @@ def _browser_url(host: str, port: int) -> str:
         browser_host = "127.0.0.1"
     return f"http://{browser_host}:{port}"
 
-
 def _open_browser_when_ready(host: str, port: int) -> None:
     url = _browser_url(host, port)
     deadline = time.monotonic() + 15
@@ -120,22 +115,19 @@ def _open_browser_when_ready(host: str, port: int) -> None:
         except OSError:
             time.sleep(0.2)
 
-
 def _start_server(args: argparse.Namespace) -> int:
     if not 1 <= args.port <= 65535:
         raise ValueError("La porta deve essere compresa tra 1 e 65535.")
 
     entry = _select_gallery(args.gallery)
-
     # Questi import devono avvenire soltanto dopo la scelta della galleria:
     # backend.paths risolve i percorsi dell'archivio durante l'importazione.
     import uvicorn
-    from main import app
+    from main_android import app
     print(f"H-Gallery {get_display_version()}")
     print(f"Galleria attiva: {entry['name']} — {entry['path']}")
     print(f"Indirizzo: {_browser_url(args.host, args.port)}")
     print("Premi Ctrl+C per arrestare H-Gallery.\n")
-
     if not args.no_browser:
         threading.Thread(
             target=_open_browser_when_ready,
@@ -145,7 +137,6 @@ def _start_server(args: argparse.Namespace) -> int:
 
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return 0
-
 
 def _configure(args: argparse.Namespace) -> int:
     selected_options = sum(bool(value) for value in (args.gallery, args.create, args.ensure))
@@ -166,7 +157,6 @@ def _configure(args: argparse.Namespace) -> int:
     print(f"Galleria attiva: {entry['name']} — {entry['path']}")
     return 0
 
-
 def _list() -> int:
     data = list_galleries()
     results = data.get("results", [])
@@ -182,7 +172,6 @@ def _list() -> int:
 
 def _sync_check() -> int:
     entry = ensure_configuration()
-
     # Come per l'avvio del server, questi import devono avvenire dopo che la
     # galleria attiva è stata risolta, perché backend.paths è gallery-specific.
     from backend.database import get_connection, init_database
@@ -191,7 +180,6 @@ def _sync_check() -> int:
     init_database()
     with get_connection() as connection:
         status = get_sync_foundation_status(connection)
-
     print(f"Galleria: {entry['name']} — {entry['path']}")
     print(f"Sync schema: v{status['schema_version']}")
     print(f"Gallery UUID: {status['gallery_uuid']}")
@@ -203,9 +191,8 @@ def _sync_check() -> int:
     print("Stato: OK" if status["ready"] else "Stato: ERRORE")
     return 0 if status["ready"] else 2
 
-
 def _launcher_command(command: str) -> int:
-    from h_gallery_launcher import launch_detached, send_launcher_command
+    from h_gallery_mobile_launcher import launch_detached, send_launcher_command
     if command == "launcher":
         return launch_detached()
     response = send_launcher_command(command.upper())
@@ -218,7 +205,6 @@ def _launcher_command(command: str) -> int:
     if command == "status":
         print(response)
     return 0
-
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
@@ -239,7 +225,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (OSError, RuntimeError, ValueError) as error:
         print(f"Errore: {error}", file=sys.stderr)
         return 1
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

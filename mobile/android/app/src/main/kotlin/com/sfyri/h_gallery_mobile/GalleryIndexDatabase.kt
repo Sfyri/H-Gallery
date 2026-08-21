@@ -85,6 +85,28 @@ internal data class CharacterRecord(
     val franchiseRelativePath: String,
 )
 
+internal data class PendingCharacterScoreRecord(
+    val characterId: Long,
+    val franchiseName: String,
+    val characterName: String,
+    val sessionId: String,
+    val pendingDelta: Int,
+)
+
+internal data class RemoteCharacterScoreRecord(
+    val franchiseName: String,
+    val characterName: String,
+    val score: Int,
+)
+
+internal data class CharacterScoreSyncAck(
+    val franchiseName: String,
+    val characterName: String,
+    val sessionId: String,
+    val pendingDelta: Int,
+    val score: Int,
+)
+
 internal data class DuplicateMediaRecord(
     val syncUuid: String,
     val filename: String,
@@ -150,7 +172,7 @@ internal class GalleryIndexDatabase(
     DATABASE_VERSION,
 ) {
     companion object {
-        private const val DATABASE_VERSION = 8
+        private const val DATABASE_VERSION = 9
     }
 
     override fun onConfigure(db: SQLiteDatabase) {
@@ -223,6 +245,26 @@ internal class GalleryIndexDatabase(
         if (oldVersion < 8) {
             migrateStorySchemaWithoutReadingDirection(db)
             refreshInferredStories(db)
+        }
+        if (oldVersion < 9) {
+            ensureCharacterScoreColumns(db)
+        }
+    }
+
+    private fun ensureCharacterScoreColumns(db: SQLiteDatabase) {
+        val columns = columnNames(db, "characters")
+        if ("score" !in columns) {
+            db.execSQL("ALTER TABLE characters ADD COLUMN score INTEGER NOT NULL DEFAULT 0")
+        }
+        if ("score_pending_delta" !in columns) {
+            db.execSQL(
+                "ALTER TABLE characters ADD COLUMN score_pending_delta INTEGER NOT NULL DEFAULT 0",
+            )
+        }
+        if ("score_sync_session" !in columns) {
+            db.execSQL(
+                "ALTER TABLE characters ADD COLUMN score_sync_session TEXT NOT NULL DEFAULT ''",
+            )
         }
     }
 
@@ -454,6 +496,9 @@ internal class GalleryIndexDatabase(
                 name TEXT NOT NULL COLLATE NOCASE,
                 relative_path TEXT NOT NULL UNIQUE,
                 is_active INTEGER NOT NULL DEFAULT 1,
+                score INTEGER NOT NULL DEFAULT 0 CHECK(score >= 0),
+                score_pending_delta INTEGER NOT NULL DEFAULT 0,
+                score_sync_session TEXT NOT NULL DEFAULT '',
                 created_at_epoch_ms INTEGER NOT NULL,
                 updated_at_epoch_ms INTEGER NOT NULL,
                 FOREIGN KEY(franchise_id) REFERENCES franchises(id) ON DELETE CASCADE,
@@ -1675,6 +1720,220 @@ internal class GalleryIndexDatabase(
             }
         }
         return uniqueIds.mapNotNull(rows::get)
+    }
+
+    fun rankingFranchises(): List<Map<String, Any>> {
+        return listFranchises().map { franchise ->
+            mapOf(
+                "franchiseId" to franchise.id,
+                "name" to franchise.name,
+            )
+        }
+    }
+
+    fun characterRanking(limit: Int = 500, franchiseId: Long? = null): List<Map<String, Any>> {
+        val safeLimit = limit.coerceIn(1, 500)
+        val whereFranchise = if (franchiseId != null) " AND f.id = ?" else ""
+        val arguments = mutableListOf<String>()
+        if (franchiseId != null) arguments += franchiseId.toString()
+        arguments += safeLimit.toString()
+        val rows = mutableListOf<Map<String, Any>>()
+        readableDatabase.rawQuery(
+            """
+            SELECT c.id, c.name, c.relative_path, c.score,
+                   f.id, f.name, f.relative_path,
+                   COUNT(DISTINCT CASE WHEN m.is_present = 1 THEN m.sync_uuid END) AS media_count
+            FROM characters c
+            JOIN franchises f ON f.id = c.franchise_id
+            LEFT JOIN media_characters mc ON mc.character_id = c.id
+            LEFT JOIN media m ON m.sync_uuid = mc.media_sync_uuid
+            WHERE c.is_active = 1 AND f.is_active = 1$whereFranchise
+            GROUP BY c.id, c.name, c.relative_path, c.score, f.id, f.name, f.relative_path
+            ORDER BY c.score DESC, c.name COLLATE NOCASE, f.name COLLATE NOCASE
+            LIMIT ?
+            """.trimIndent(),
+            arguments.toTypedArray(),
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                rows += mapOf(
+                    "characterId" to cursor.getLong(0),
+                    "name" to cursor.getString(1),
+                    "relativePath" to cursor.getString(2),
+                    "score" to cursor.getInt(3),
+                    "franchiseId" to cursor.getLong(4),
+                    "franchiseName" to cursor.getString(5),
+                    "franchiseRelativePath" to cursor.getString(6),
+                    "mediaCount" to cursor.getInt(7),
+                )
+            }
+        }
+        return rows
+    }
+
+    fun adjustCharacterScore(characterId: Long, delta: Int): Map<String, Any> {
+        require(delta == -1 || delta == 1) { "Il punteggio può cambiare solo di -1 o +1." }
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            var currentScore: Int? = null
+            var pendingDelta = 0
+            var sessionId = ""
+            db.rawQuery(
+                """
+                SELECT score, score_pending_delta, score_sync_session
+                FROM characters
+                WHERE id = ? AND is_active = 1
+                LIMIT 1
+                """.trimIndent(),
+                arrayOf(characterId.toString()),
+            ).use { cursor ->
+                if (cursor.moveToFirst()) {
+                    currentScore = cursor.getInt(0)
+                    pendingDelta = cursor.getInt(1)
+                    sessionId = cursor.getString(2).orEmpty()
+                }
+            }
+            val oldScore = currentScore
+                ?: throw IllegalArgumentException("Personaggio non trovato.")
+            val newScore = (oldScore + delta).coerceAtLeast(0)
+            val effectiveDelta = newScore - oldScore
+            if (effectiveDelta != 0) {
+                val newPendingDelta = pendingDelta + effectiveDelta
+                val newSessionId = when {
+                    newPendingDelta == 0 -> ""
+                    sessionId.isNotBlank() -> sessionId
+                    else -> UUID.randomUUID().toString()
+                }
+                val values = ContentValues().apply {
+                    put("score", newScore)
+                    put("score_pending_delta", newPendingDelta)
+                    put("score_sync_session", newSessionId)
+                }
+                db.update("characters", values, "id = ?", arrayOf(characterId.toString()))
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        return characterRankingEntry(characterId)
+            ?: throw IllegalStateException("Personaggio non leggibile dopo l'aggiornamento del punteggio.")
+    }
+
+    fun pendingCharacterScoreChanges(): List<PendingCharacterScoreRecord> {
+        val rows = mutableListOf<PendingCharacterScoreRecord>()
+        readableDatabase.rawQuery(
+            """
+            SELECT c.id, f.name, c.name, c.score_sync_session, c.score_pending_delta
+            FROM characters c
+            JOIN franchises f ON f.id = c.franchise_id
+            WHERE c.is_active = 1 AND f.is_active = 1
+              AND c.score_pending_delta != 0
+              AND c.score_sync_session != ''
+            ORDER BY f.name COLLATE NOCASE, c.name COLLATE NOCASE
+            """.trimIndent(),
+            null,
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                rows += PendingCharacterScoreRecord(
+                    characterId = cursor.getLong(0),
+                    franchiseName = cursor.getString(1),
+                    characterName = cursor.getString(2),
+                    sessionId = cursor.getString(3),
+                    pendingDelta = cursor.getInt(4),
+                )
+            }
+        }
+        return rows
+    }
+
+    fun applyCharacterScoreSync(
+        remoteScores: List<RemoteCharacterScoreRecord>,
+        acknowledgements: List<CharacterScoreSyncAck>,
+    ) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            for (ack in acknowledgements) {
+                val id = characterIdByNames(db, ack.franchiseName, ack.characterName) ?: continue
+                val values = ContentValues().apply {
+                    put("score", ack.score.coerceAtLeast(0))
+                    put("score_pending_delta", 0)
+                    put("score_sync_session", "")
+                }
+                db.update(
+                    "characters",
+                    values,
+                    "id = ? AND score_sync_session = ? AND score_pending_delta = ?",
+                    arrayOf(id.toString(), ack.sessionId, ack.pendingDelta.toString()),
+                )
+            }
+            for (remote in remoteScores) {
+                val id = characterIdByNames(db, remote.franchiseName, remote.characterName) ?: continue
+                val values = ContentValues().apply {
+                    put("score", remote.score.coerceAtLeast(0))
+                }
+                db.update(
+                    "characters",
+                    values,
+                    "id = ? AND score_pending_delta = 0 AND score_sync_session = ''",
+                    arrayOf(id.toString()),
+                )
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    private fun characterRankingEntry(characterId: Long): Map<String, Any>? {
+        readableDatabase.rawQuery(
+            """
+            SELECT c.id, c.name, c.relative_path, c.score,
+                   f.id, f.name, f.relative_path,
+                   COUNT(DISTINCT CASE WHEN m.is_present = 1 THEN m.sync_uuid END) AS media_count
+            FROM characters c
+            JOIN franchises f ON f.id = c.franchise_id
+            LEFT JOIN media_characters mc ON mc.character_id = c.id
+            LEFT JOIN media m ON m.sync_uuid = mc.media_sync_uuid
+            WHERE c.id = ? AND c.is_active = 1 AND f.is_active = 1
+            GROUP BY c.id, c.name, c.relative_path, c.score, f.id, f.name, f.relative_path
+            LIMIT 1
+            """.trimIndent(),
+            arrayOf(characterId.toString()),
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) return null
+            return mapOf(
+                "characterId" to cursor.getLong(0),
+                "name" to cursor.getString(1),
+                "relativePath" to cursor.getString(2),
+                "score" to cursor.getInt(3),
+                "franchiseId" to cursor.getLong(4),
+                "franchiseName" to cursor.getString(5),
+                "franchiseRelativePath" to cursor.getString(6),
+                "mediaCount" to cursor.getInt(7),
+            )
+        }
+    }
+
+    private fun characterIdByNames(
+        db: SQLiteDatabase,
+        franchiseName: String,
+        characterName: String,
+    ): Long? {
+        db.rawQuery(
+            """
+            SELECT c.id
+            FROM characters c
+            JOIN franchises f ON f.id = c.franchise_id
+            WHERE f.name = ? COLLATE NOCASE
+              AND c.name = ? COLLATE NOCASE
+              AND c.is_active = 1 AND f.is_active = 1
+            LIMIT 1
+            """.trimIndent(),
+            arrayOf(franchiseName, characterName),
+        ).use { cursor ->
+            return if (cursor.moveToFirst()) cursor.getLong(0) else null
+        }
     }
 
     fun listTagNames(type: String): List<String> {

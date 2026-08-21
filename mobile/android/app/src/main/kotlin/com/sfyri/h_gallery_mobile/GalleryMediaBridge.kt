@@ -104,6 +104,39 @@ internal class GalleryMediaBridge(
                 }
             }
 
+            "getRankingFranchises" -> {
+                val galleryUuid = requiredGalleryUuid(call, result) ?: return
+                runAsync(result, "RANKING_FRANCHISES_FAILED") {
+                    browse.rankingFranchises(galleryUuid)
+                }
+            }
+
+            "getCharacterRanking" -> {
+                val galleryUuid = requiredGalleryUuid(call, result) ?: return
+                val limit = (call.argument<Int>("limit") ?: 500).coerceIn(1, 500)
+                val franchiseId = call.argument<Number>("franchiseId")?.toLong()
+                runAsync(result, "CHARACTER_RANKING_FAILED") {
+                    browse.characterRanking(galleryUuid, limit, franchiseId)
+                }
+            }
+
+            "updateCharacterScore" -> {
+                val galleryUuid = requiredGalleryUuid(call, result) ?: return
+                val characterId = call.argument<Number>("characterId")?.toLong()
+                val delta = call.argument<Int>("delta")
+                if (characterId == null || characterId <= 0L || (delta != -1 && delta != 1)) {
+                    result.error(
+                        "INVALID_CHARACTER_SCORE",
+                        "Personaggio o variazione del punteggio non validi.",
+                        null,
+                    )
+                    return
+                }
+                runAsync(result, "CHARACTER_SCORE_UPDATE_FAILED") {
+                    browse.adjustCharacterScore(galleryUuid, characterId, delta)
+                }
+            }
+
             "queryMedia" -> {
                 val galleryUuid = requiredGalleryUuid(call, result) ?: return
                 val text = call.argument<String>("text")?.trim().orEmpty()

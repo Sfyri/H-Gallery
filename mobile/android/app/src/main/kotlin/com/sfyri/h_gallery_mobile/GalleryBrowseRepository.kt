@@ -15,6 +15,26 @@ internal class GalleryBrowseRepository(private val context: Context) {
         return withDatabase(galleryUuid) { it.filterCatalog() }
     }
 
+    fun rankingFranchises(galleryUuid: String): List<Map<String, Any>> {
+        return withDatabase(galleryUuid) { it.rankingFranchises() }
+    }
+
+    fun characterRanking(
+        galleryUuid: String,
+        limit: Int,
+        franchiseId: Long?,
+    ): List<Map<String, Any>> {
+        return withDatabase(galleryUuid) { it.characterRanking(limit, franchiseId) }
+    }
+
+    fun adjustCharacterScore(
+        galleryUuid: String,
+        characterId: Long,
+        delta: Int,
+    ): Map<String, Any> {
+        return withDatabase(galleryUuid) { it.adjustCharacterScore(characterId, delta) }
+    }
+
     fun queryMedia(
         galleryUuid: String,
         text: String,

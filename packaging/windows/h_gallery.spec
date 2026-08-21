@@ -13,9 +13,8 @@ hidden_imports = collect_submodules("uvicorn")
 hidden_imports += [
     "pystray._win32",
 ]
-
 analysis = Analysis(
-    [str(PROJECT_ROOT / "h_gallery_launcher.py")],
+    [str(PROJECT_ROOT / "h_gallery_mobile_launcher.py")],
     pathex=[str(PROJECT_ROOT)],
     binaries=[],
     datas=[
@@ -33,7 +32,6 @@ analysis = Analysis(
 )
 
 pyz = PYZ(analysis.pure)
-
 executable = EXE(
     pyz,
     analysis.scripts,
@@ -53,7 +51,6 @@ executable = EXE(
     icon=str(ICON_PATH),
     version=str(VERSION_PATH),
 )
-
 bundle = COLLECT(
     executable,
     analysis.binaries,

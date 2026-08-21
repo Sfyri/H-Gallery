@@ -121,6 +121,12 @@ internal class GallerySyncBridge(
         val createdCharacters: Int = 0,
     )
 
+    private data class CharacterScoreSyncStats(
+        val appliedOnWindows: Int = 0,
+        val pulledToAndroid: Int = 0,
+        val unresolved: Int = 0,
+    )
+
     private data class TagEnsureResult(
         val id: Long,
         val created: Boolean = false,
@@ -472,6 +478,9 @@ internal class GallerySyncBridge(
         var windowsCreatedCharacters = 0
         var unresolvedWindows = 0
         var windowsCount = remote.size + successfulUploads - windowsDeletion.movedToTrash
+        var characterScoresAppliedWindows = 0
+        var characterScoresPulledAndroid = 0
+        var unresolvedCharacterScores = 0
 
         if (cancelRequested) cancelled = true
         if (!interrupted && !cancelled) {
@@ -544,6 +553,32 @@ internal class GallerySyncBridge(
                 failures += TransferFailure(
                     direction = "metadata",
                     filename = "Windows",
+                    message = readableError(error),
+                    network = network,
+                )
+                if (network) interrupted = true
+            }
+        }
+
+        if (cancelRequested) cancelled = true
+        if (!interrupted && !cancelled) {
+            try {
+                progress("character_scores", 0, 1, "Allineamento classifica personaggi")
+                val scoreStats = syncCharacterScores(info)
+                characterScoresAppliedWindows = scoreStats.appliedOnWindows
+                characterScoresPulledAndroid = scoreStats.pulledToAndroid
+                unresolvedCharacterScores = scoreStats.unresolved
+                if (unresolvedCharacterScores > 0) {
+                    throw IllegalStateException(
+                        "Windows non ha risolto $unresolvedCharacterScores punteggi personaggio.",
+                    )
+                }
+                progress("character_scores", 1, 1, "Classifica personaggi allineata")
+            } catch (error: Exception) {
+                val network = isNetworkFailure(error)
+                failures += TransferFailure(
+                    direction = "character_scores",
+                    filename = "Classifica",
                     message = readableError(error),
                     network = network,
                 )
@@ -729,6 +764,9 @@ internal class GallerySyncBridge(
             "metadataMergedWindows" to metadataMergedWindows,
             "metadataChangedWindows" to metadataChangedWindows,
             "metadataChangedAndroid" to androidMetadata.changedFiles,
+            "characterScoresAppliedWindows" to characterScoresAppliedWindows,
+            "characterScoresPulledAndroid" to characterScoresPulledAndroid,
+            "unresolvedCharacterScores" to unresolvedCharacterScores,
             "createdFranchisesAndroid" to androidMetadata.createdFranchises,
             "createdCharactersAndroid" to androidMetadata.createdCharacters,
             "createdFranchisesWindows" to windowsCreatedFranchises,
@@ -1220,6 +1258,65 @@ internal class GallerySyncBridge(
             "bytesToAndroid" to toAndroid.sumOf { it.sizeBytes.coerceAtLeast(0L) },
             "bytesToWindows" to toWindows.sumOf { it.sizeBytes.coerceAtLeast(0L) },
         )
+    }
+
+    private fun syncCharacterScores(info: ConnectionInfo): CharacterScoreSyncStats {
+        val database = GalleryIndexDatabase(activity.applicationContext, info.galleryUuid)
+        try {
+            val pending = database.pendingCharacterScoreChanges()
+            val payload = basePayload(info).apply {
+                put("items", JSONArray().apply {
+                    pending.forEach { item ->
+                        put(JSONObject().apply {
+                            put("franchiseName", item.franchiseName)
+                            put("characterName", item.characterName)
+                            put("sessionId", item.sessionId)
+                            put("pendingDelta", item.pendingDelta)
+                        })
+                    }
+                })
+            }
+            val response = postJson(info, "/api/mobile/sync/character-scores", payload)
+            val scores = mutableListOf<RemoteCharacterScoreRecord>()
+            val scoreArray = response.optJSONArray("scores") ?: JSONArray()
+            for (index in 0 until scoreArray.length()) {
+                val value = scoreArray.optJSONObject(index) ?: continue
+                val franchiseName = value.optString("franchiseName").trim()
+                val characterName = value.optString("characterName").trim()
+                if (franchiseName.isEmpty() || characterName.isEmpty()) continue
+                scores += RemoteCharacterScoreRecord(
+                    franchiseName = franchiseName,
+                    characterName = characterName,
+                    score = value.optInt("score", 0).coerceAtLeast(0),
+                )
+            }
+
+            val acknowledgements = mutableListOf<CharacterScoreSyncAck>()
+            val appliedArray = response.optJSONArray("applied") ?: JSONArray()
+            for (index in 0 until appliedArray.length()) {
+                val value = appliedArray.optJSONObject(index) ?: continue
+                val franchiseName = value.optString("franchiseName").trim()
+                val characterName = value.optString("characterName").trim()
+                val sessionId = value.optString("sessionId").trim()
+                if (franchiseName.isEmpty() || characterName.isEmpty() || sessionId.isEmpty()) continue
+                acknowledgements += CharacterScoreSyncAck(
+                    franchiseName = franchiseName,
+                    characterName = characterName,
+                    sessionId = sessionId,
+                    pendingDelta = value.optInt("pendingDelta", 0),
+                    score = value.optInt("score", 0).coerceAtLeast(0),
+                )
+            }
+
+            database.applyCharacterScoreSync(scores, acknowledgements)
+            return CharacterScoreSyncStats(
+                appliedOnWindows = acknowledgements.size,
+                pulledToAndroid = scores.size,
+                unresolved = response.optInt("unresolved", 0).coerceAtLeast(0),
+            )
+        } finally {
+            database.close()
+        }
     }
 
     private fun fetchManifest(info: ConnectionInfo): JSONObject =
