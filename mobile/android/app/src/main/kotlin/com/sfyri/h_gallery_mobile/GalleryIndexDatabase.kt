@@ -59,6 +59,32 @@ internal data class SyncedStoryRecord(
     val pages: List<SyncedStoryPageRecord>,
 )
 
+internal data class StorySourceRecord(
+    val syncUuid: String,
+    val relativePath: String,
+    val filename: String,
+    val extension: String,
+    val mimeType: String,
+    val sizeBytes: Long,
+    val modifiedEpochMs: Long,
+    val documentUri: String,
+    val documentId: String,
+    val sha256: String,
+    val aiGenerated: Boolean,
+    val characterIds: List<Long>,
+)
+
+internal data class StoryMovedPageRecord(
+    val syncUuid: String,
+    val originalRelativePath: String,
+    val relativePath: String,
+    val filename: String,
+    val documentUri: String,
+    val documentId: String,
+    val sizeBytes: Long,
+    val modifiedEpochMs: Long,
+)
+
 internal data class ViewerMediaRecord(
     val documentUri: String,
     val mediaType: String,
@@ -2142,6 +2168,520 @@ internal class GalleryIndexDatabase(
                 arrayOf(destinationRelativePath),
             )
             db.delete("media", "sync_uuid = ?", arrayOf(syncUuid))
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun storySource(syncUuid: String): StorySourceRecord? {
+        val db = readableDatabase
+        var relativePath = ""
+        var filename = ""
+        var extension = ""
+        var mimeType = ""
+        var sizeBytes = 0L
+        var modifiedEpochMs = 0L
+        var documentUri = ""
+        var documentId = ""
+        var sha256 = ""
+        var aiGenerated = false
+        var metadataExplicit = false
+        db.rawQuery(
+            """
+            SELECT relative_path, filename, extension, mime_type, size_bytes,
+                   modified_epoch_ms, document_uri, document_id, sha256,
+                   ai_generated, metadata_updated_epoch_ms
+            FROM media
+            WHERE sync_uuid = ? AND is_present = 1 AND media_type = 'image'
+              AND NOT EXISTS (
+                  SELECT 1 FROM gallery_story_pages sp
+                  WHERE sp.media_sync_uuid = media.sync_uuid
+              )
+            LIMIT 1
+            """.trimIndent(),
+            arrayOf(syncUuid),
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) return null
+            relativePath = cursor.getString(0)
+            filename = cursor.getString(1)
+            extension = cursor.getString(2)
+            mimeType = cursor.getString(3)
+            sizeBytes = cursor.getLong(4)
+            modifiedEpochMs = cursor.getLong(5)
+            documentUri = cursor.getString(6)
+            documentId = cursor.getString(7)
+            sha256 = cursor.getString(8)
+            aiGenerated = cursor.getInt(9) != 0
+            metadataExplicit = cursor.getLong(10) > 0L
+        }
+        val characterIds = mutableListOf<Long>()
+        db.rawQuery(
+            """
+            SELECT c.id
+            FROM media_characters mc
+            JOIN characters c ON c.id = mc.character_id AND c.is_active = 1
+            JOIN franchises f ON f.id = c.franchise_id AND f.is_active = 1
+            WHERE mc.media_sync_uuid = ?
+            ORDER BY f.name COLLATE NOCASE, c.name COLLATE NOCASE
+            """.trimIndent(),
+            arrayOf(syncUuid),
+        ).use { cursor ->
+            while (cursor.moveToNext()) characterIds += cursor.getLong(0)
+        }
+        if (!metadataExplicit && characterIds.isEmpty()) {
+            val segments = relativePath.split('/').filter { it.isNotBlank() }
+            if (segments.size >= 3 && !segments[0].startsWith('!') &&
+                !segments[0].startsWith('.') && !segments[1].startsWith('!') &&
+                !segments[1].startsWith('.')
+            ) {
+                db.rawQuery(
+                    """
+                    SELECT c.id
+                    FROM characters c
+                    JOIN franchises f ON f.id = c.franchise_id
+                    WHERE c.is_active = 1 AND f.is_active = 1
+                      AND (f.relative_path = ? COLLATE NOCASE OR f.name = ? COLLATE NOCASE)
+                      AND (c.name = ? COLLATE NOCASE OR c.relative_path = ? COLLATE NOCASE)
+                    LIMIT 1
+                    """.trimIndent(),
+                    arrayOf(segments[0], segments[0], segments[1], "${segments[0]}/${segments[1]}"),
+                ).use { cursor ->
+                    if (cursor.moveToFirst()) characterIds += cursor.getLong(0)
+                }
+            }
+        }
+        if (!metadataExplicit && relativePath.split('/').any { it.equals(".AI", ignoreCase = true) }) {
+            aiGenerated = true
+        }
+        return StorySourceRecord(
+            syncUuid = syncUuid,
+            relativePath = relativePath,
+            filename = filename,
+            extension = extension,
+            mimeType = mimeType,
+            sizeBytes = sizeBytes,
+            modifiedEpochMs = modifiedEpochMs,
+            documentUri = documentUri,
+            documentId = documentId,
+            sha256 = sha256,
+            aiGenerated = aiGenerated,
+            characterIds = characterIds.distinct(),
+        )
+    }
+
+    fun storyPageSyncUuids(relativePath: String): List<String> {
+        val values = mutableListOf<String>()
+        readableDatabase.rawQuery(
+            """
+            SELECT media_sync_uuid
+            FROM gallery_story_pages
+            WHERE story_relative_path = ? COLLATE NOCASE
+            ORDER BY page_number ASC
+            """.trimIndent(),
+            arrayOf(relativePath),
+        ).use { cursor ->
+            while (cursor.moveToNext()) values += cursor.getString(0)
+        }
+        return values
+    }
+
+    fun storyEditSource(syncUuid: String, currentStoryRelativePath: String): StorySourceRecord? {
+        val db = readableDatabase
+        var relativePath = ""
+        var filename = ""
+        var extension = ""
+        var mimeType = ""
+        var sizeBytes = 0L
+        var modifiedEpochMs = 0L
+        var documentUri = ""
+        var documentId = ""
+        var sha256 = ""
+        var aiGenerated = false
+        var metadataExplicit = false
+        db.rawQuery(
+            """
+            SELECT relative_path, filename, extension, mime_type, size_bytes,
+                   modified_epoch_ms, document_uri, document_id, sha256,
+                   ai_generated, metadata_updated_epoch_ms
+            FROM media
+            WHERE sync_uuid = ? AND is_present = 1 AND media_type = 'image'
+              AND NOT EXISTS (
+                  SELECT 1 FROM gallery_story_pages sp
+                  WHERE sp.media_sync_uuid = media.sync_uuid
+                    AND sp.story_relative_path <> ? COLLATE NOCASE
+              )
+            LIMIT 1
+            """.trimIndent(),
+            arrayOf(syncUuid, currentStoryRelativePath),
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) return null
+            relativePath = cursor.getString(0)
+            filename = cursor.getString(1)
+            extension = cursor.getString(2)
+            mimeType = cursor.getString(3)
+            sizeBytes = cursor.getLong(4)
+            modifiedEpochMs = cursor.getLong(5)
+            documentUri = cursor.getString(6)
+            documentId = cursor.getString(7)
+            sha256 = cursor.getString(8)
+            aiGenerated = cursor.getInt(9) != 0
+            metadataExplicit = cursor.getLong(10) > 0L
+        }
+        val characterIds = mutableListOf<Long>()
+        db.rawQuery(
+            """
+            SELECT c.id
+            FROM media_characters mc
+            JOIN characters c ON c.id = mc.character_id AND c.is_active = 1
+            JOIN franchises f ON f.id = c.franchise_id AND f.is_active = 1
+            WHERE mc.media_sync_uuid = ?
+            ORDER BY f.name COLLATE NOCASE, c.name COLLATE NOCASE
+            """.trimIndent(),
+            arrayOf(syncUuid),
+        ).use { cursor ->
+            while (cursor.moveToNext()) characterIds += cursor.getLong(0)
+        }
+        if (!metadataExplicit && characterIds.isEmpty()) {
+            val segments = relativePath.split('/').filter { it.isNotBlank() }
+            if (segments.size >= 3 && !segments[0].startsWith('!') &&
+                !segments[0].startsWith('.') && !segments[1].startsWith('!') &&
+                !segments[1].startsWith('.')
+            ) {
+                db.rawQuery(
+                    """
+                    SELECT c.id
+                    FROM characters c
+                    JOIN franchises f ON f.id = c.franchise_id
+                    WHERE c.is_active = 1 AND f.is_active = 1
+                      AND (f.relative_path = ? COLLATE NOCASE OR f.name = ? COLLATE NOCASE)
+                      AND (c.name = ? COLLATE NOCASE OR c.relative_path = ? COLLATE NOCASE)
+                    LIMIT 1
+                    """.trimIndent(),
+                    arrayOf(segments[0], segments[0], segments[1], "${segments[0]}/${segments[1]}"),
+                ).use { cursor ->
+                    if (cursor.moveToFirst()) characterIds += cursor.getLong(0)
+                }
+            }
+        }
+        if (!metadataExplicit && relativePath.split('/').any { it.equals(".AI", ignoreCase = true) }) {
+            aiGenerated = true
+        }
+        return StorySourceRecord(
+            syncUuid = syncUuid,
+            relativePath = relativePath,
+            filename = filename,
+            extension = extension,
+            mimeType = mimeType,
+            sizeBytes = sizeBytes,
+            modifiedEpochMs = modifiedEpochMs,
+            documentUri = documentUri,
+            documentId = documentId,
+            sha256 = sha256,
+            aiGenerated = aiGenerated,
+            characterIds = characterIds.distinct(),
+        )
+    }
+
+    fun updateStorySourceIdentity(
+        syncUuid: String,
+        documentUri: String,
+        documentId: String,
+        sizeBytes: Long,
+        modifiedEpochMs: Long,
+    ) {
+        val values = ContentValues().apply {
+            put("document_uri", documentUri)
+            put("document_id", documentId)
+            put("size_bytes", sizeBytes)
+            put("modified_epoch_ms", modifiedEpochMs)
+            put("updated_at_epoch_ms", System.currentTimeMillis())
+        }
+        if (writableDatabase.update("media", values, "sync_uuid = ?", arrayOf(syncUuid)) != 1) {
+            throw IllegalStateException("Il database non ha aggiornato l'identità SAF della pagina ripristinata.")
+        }
+    }
+
+    fun recordCreatedStory(
+        title: String,
+        relativePath: String,
+        aiGenerated: Boolean,
+        pages: List<StoryMovedPageRecord>,
+    ) {
+        if (pages.size < 2) throw IllegalArgumentException("Una storia deve contenere almeno due pagine.")
+        val db = writableDatabase
+        val now = System.currentTimeMillis()
+        db.beginTransaction()
+        try {
+            db.rawQuery(
+                "SELECT 1 FROM gallery_stories WHERE relative_path = ? COLLATE NOCASE LIMIT 1",
+                arrayOf(relativePath),
+            ).use { cursor ->
+                if (cursor.moveToFirst()) throw IllegalStateException("La storia di destinazione è già indicizzata.")
+            }
+            val storyValues = ContentValues().apply {
+                put("relative_path", relativePath)
+                put("title", title)
+                put("cover_media_sync_uuid", pages.first().syncUuid)
+                put("ai_generated", if (aiGenerated) 1 else 0)
+                put("source", "inferred")
+                put("updated_at_epoch_ms", now)
+            }
+            db.insertOrThrow("gallery_stories", null, storyValues)
+            pages.forEachIndexed { index, page ->
+                db.rawQuery(
+                    """
+                    SELECT media_type, is_present,
+                           EXISTS(SELECT 1 FROM gallery_story_pages sp WHERE sp.media_sync_uuid = media.sync_uuid)
+                    FROM media WHERE sync_uuid = ? LIMIT 1
+                    """.trimIndent(),
+                    arrayOf(page.syncUuid),
+                ).use { cursor ->
+                    if (!cursor.moveToFirst() || cursor.getInt(1) == 0) {
+                        throw IllegalStateException("Una pagina non è più disponibile nella Gallery.")
+                    }
+                    if (cursor.getString(0) != "image") {
+                        throw IllegalArgumentException("Le storie possono contenere soltanto immagini.")
+                    }
+                    if (cursor.getInt(2) != 0) {
+                        throw IllegalStateException("Una pagina appartiene già a una storia.")
+                    }
+                }
+                db.rawQuery(
+                    "SELECT sync_uuid FROM media WHERE relative_path = ? COLLATE NOCASE AND is_present = 1 LIMIT 1",
+                    arrayOf(page.relativePath),
+                ).use { cursor ->
+                    if (cursor.moveToFirst() && cursor.getString(0) != page.syncUuid) {
+                        throw IllegalStateException("Il percorso di una pagina della storia è già indicizzato.")
+                    }
+                }
+                val mediaValues = ContentValues().apply {
+                    put("relative_path", page.relativePath)
+                    put("filename", page.filename)
+                    put("document_uri", page.documentUri)
+                    put("document_id", page.documentId)
+                    put("size_bytes", page.sizeBytes)
+                    put("modified_epoch_ms", page.modifiedEpochMs)
+                    put("updated_at_epoch_ms", now)
+                }
+                if (db.update("media", mediaValues, "sync_uuid = ?", arrayOf(page.syncUuid)) != 1) {
+                    throw IllegalStateException("Il database non ha aggiornato una pagina della storia.")
+                }
+                val pageValues = ContentValues().apply {
+                    put("story_relative_path", relativePath)
+                    put("media_sync_uuid", page.syncUuid)
+                    put("page_number", index + 1)
+                }
+                db.insertOrThrow("gallery_story_pages", null, pageValues)
+                val operation = ContentValues().apply {
+                    put("operation_type", "story_page_move")
+                    put("source_relative_path", page.originalRelativePath)
+                    put("destination_relative_path", page.relativePath)
+                    put("created_at_epoch_ms", now)
+                }
+                db.insertOrThrow("operations", null, operation)
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun recordUpdatedStory(
+        currentRelativePath: String,
+        title: String,
+        relativePath: String,
+        aiGenerated: Boolean,
+        coverSyncUuid: String,
+        pages: List<StoryMovedPageRecord>,
+        removedPages: List<StoryMovedPageRecord>,
+    ) {
+        if (pages.size < 2) throw IllegalArgumentException("Una storia deve contenere almeno due pagine.")
+        if (pages.map { it.syncUuid }.distinct().size != pages.size) {
+            throw IllegalArgumentException("La stessa immagine non può comparire due volte nella storia.")
+        }
+        if (pages.none { it.syncUuid == coverSyncUuid }) {
+            throw IllegalArgumentException("La copertina deve appartenere alla storia.")
+        }
+        val db = writableDatabase
+        val now = System.currentTimeMillis()
+        db.beginTransaction()
+        try {
+            var existingSource = "inferred"
+            db.rawQuery(
+                "SELECT source FROM gallery_stories WHERE relative_path = ? COLLATE NOCASE LIMIT 1",
+                arrayOf(currentRelativePath),
+            ).use { cursor ->
+                if (!cursor.moveToFirst()) throw IllegalStateException("La storia non è più indicizzata.")
+                existingSource = cursor.getString(0)
+            }
+            db.rawQuery(
+                """
+                SELECT relative_path
+                FROM gallery_stories
+                WHERE relative_path = ? COLLATE NOCASE
+                  AND relative_path <> ? COLLATE NOCASE
+                LIMIT 1
+                """.trimIndent(),
+                arrayOf(relativePath, currentRelativePath),
+            ).use { cursor ->
+                if (cursor.moveToFirst()) {
+                    throw IllegalStateException("La cartella di destinazione appartiene già a un'altra storia.")
+                }
+            }
+
+            val oldPageIds = mutableSetOf<String>()
+            db.rawQuery(
+                "SELECT media_sync_uuid FROM gallery_story_pages WHERE story_relative_path = ? COLLATE NOCASE",
+                arrayOf(currentRelativePath),
+            ).use { cursor ->
+                while (cursor.moveToNext()) oldPageIds += cursor.getString(0)
+            }
+            if (oldPageIds.size < 2) throw IllegalStateException("La storia indicizzata non contiene abbastanza pagine.")
+            val removedIds = removedPages.map { it.syncUuid }.toSet()
+            val finalIds = pages.map { it.syncUuid }.toSet()
+            if ((oldPageIds - finalIds) != removedIds) {
+                throw IllegalStateException("Le pagine rimosse non corrispondono allo stato attuale della storia.")
+            }
+
+            pages.forEach { page ->
+                db.rawQuery(
+                    """
+                    SELECT media_type, is_present,
+                           COALESCE((SELECT story_relative_path FROM gallery_story_pages sp
+                                     WHERE sp.media_sync_uuid = media.sync_uuid LIMIT 1), '')
+                    FROM media WHERE sync_uuid = ? LIMIT 1
+                    """.trimIndent(),
+                    arrayOf(page.syncUuid),
+                ).use { cursor ->
+                    if (!cursor.moveToFirst() || cursor.getInt(1) == 0) {
+                        throw IllegalStateException("Una pagina non è più disponibile nella Gallery.")
+                    }
+                    if (cursor.getString(0) != "image") {
+                        throw IllegalArgumentException("Le storie possono contenere soltanto immagini.")
+                    }
+                    val owner = cursor.getString(2)
+                    if (owner.isNotBlank() && !owner.equals(currentRelativePath, ignoreCase = true)) {
+                        throw IllegalStateException("Una pagina appartiene già a un'altra storia.")
+                    }
+                }
+            }
+
+            db.delete(
+                "gallery_story_pages",
+                "story_relative_path = ? COLLATE NOCASE",
+                arrayOf(currentRelativePath),
+            )
+
+            if (relativePath != currentRelativePath) {
+                db.delete(
+                    "gallery_stories",
+                    "relative_path = ? COLLATE NOCASE",
+                    arrayOf(currentRelativePath),
+                )
+                val storyValues = ContentValues().apply {
+                    put("relative_path", relativePath)
+                    put("title", title)
+                    put("cover_media_sync_uuid", coverSyncUuid)
+                    put("ai_generated", if (aiGenerated) 1 else 0)
+                    put("source", existingSource)
+                    put("updated_at_epoch_ms", now)
+                }
+                db.insertOrThrow("gallery_stories", null, storyValues)
+            } else {
+                val storyValues = ContentValues().apply {
+                    put("title", title)
+                    put("cover_media_sync_uuid", coverSyncUuid)
+                    put("ai_generated", if (aiGenerated) 1 else 0)
+                    put("source", existingSource)
+                    put("updated_at_epoch_ms", now)
+                }
+                if (db.update(
+                        "gallery_stories",
+                        storyValues,
+                        "relative_path = ? COLLATE NOCASE",
+                        arrayOf(currentRelativePath),
+                    ) != 1
+                ) {
+                    throw IllegalStateException("Il database non ha aggiornato la storia.")
+                }
+            }
+
+            val affectedIds = (pages + removedPages).map { it.syncUuid }.distinct()
+            val affectedPlaceholders = affectedIds.joinToString(",") { "?" }
+            fun ensureMediaPathAvailable(page: StoryMovedPageRecord) {
+                val args = mutableListOf<String>()
+                args += page.relativePath
+                args += affectedIds
+                db.rawQuery(
+                    """
+                    SELECT sync_uuid FROM media
+                    WHERE relative_path = ? COLLATE NOCASE
+                      AND sync_uuid NOT IN ($affectedPlaceholders)
+                      AND is_present = 1
+                    LIMIT 1
+                    """.trimIndent(),
+                    args.toTypedArray(),
+                ).use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        throw IllegalStateException("Un percorso di destinazione è già indicizzato.")
+                    }
+                }
+            }
+
+            pages.forEachIndexed { index, page ->
+                ensureMediaPathAvailable(page)
+                val mediaValues = ContentValues().apply {
+                    put("relative_path", page.relativePath)
+                    put("filename", page.filename)
+                    put("document_uri", page.documentUri)
+                    put("document_id", page.documentId)
+                    put("size_bytes", page.sizeBytes)
+                    put("modified_epoch_ms", page.modifiedEpochMs)
+                    put("updated_at_epoch_ms", now)
+                }
+                if (db.update("media", mediaValues, "sync_uuid = ?", arrayOf(page.syncUuid)) != 1) {
+                    throw IllegalStateException("Il database non ha aggiornato una pagina della storia.")
+                }
+                val pageValues = ContentValues().apply {
+                    put("story_relative_path", relativePath)
+                    put("media_sync_uuid", page.syncUuid)
+                    put("page_number", index + 1)
+                }
+                db.insertOrThrow("gallery_story_pages", null, pageValues)
+                if (!page.originalRelativePath.equals(page.relativePath, ignoreCase = true)) {
+                    val operation = ContentValues().apply {
+                        put("operation_type", "story_page_update")
+                        put("source_relative_path", page.originalRelativePath)
+                        put("destination_relative_path", page.relativePath)
+                        put("created_at_epoch_ms", now)
+                    }
+                    db.insertOrThrow("operations", null, operation)
+                }
+            }
+
+            removedPages.forEach { page ->
+                ensureMediaPathAvailable(page)
+                val mediaValues = ContentValues().apply {
+                    put("relative_path", page.relativePath)
+                    put("filename", page.filename)
+                    put("document_uri", page.documentUri)
+                    put("document_id", page.documentId)
+                    put("size_bytes", page.sizeBytes)
+                    put("modified_epoch_ms", page.modifiedEpochMs)
+                    put("updated_at_epoch_ms", now)
+                }
+                if (db.update("media", mediaValues, "sync_uuid = ?", arrayOf(page.syncUuid)) != 1) {
+                    throw IllegalStateException("Il database non ha ripristinato una pagina rimossa dalla storia.")
+                }
+                val operation = ContentValues().apply {
+                    put("operation_type", "story_page_remove")
+                    put("source_relative_path", page.originalRelativePath)
+                    put("destination_relative_path", page.relativePath)
+                    put("created_at_epoch_ms", now)
+                }
+                db.insertOrThrow("operations", null, operation)
+            }
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()

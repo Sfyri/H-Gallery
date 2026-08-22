@@ -8,7 +8,9 @@ import '../models/story_models.dart';
 import '../models/viewer_source.dart';
 import '../services/gallery_browse_service.dart';
 import '../services/media_bridge.dart';
+import '../services/story_management_service.dart';
 import '../theme/app_theme.dart';
+import 'story_editor_page.dart';
 
 enum _StoryReaderMode { normal, manga, vertical }
 
@@ -18,6 +20,7 @@ class StoryReaderPage extends StatefulWidget {
     required this.story,
     required this.mediaService,
     required this.browseService,
+    this.storyService = const PlatformStoryManagementService(),
     super.key,
   });
 
@@ -25,6 +28,7 @@ class StoryReaderPage extends StatefulWidget {
   final GalleryStorySummary story;
   final MediaService mediaService;
   final GalleryBrowseService browseService;
+  final StoryManagementService storyService;
 
   @override
   State<StoryReaderPage> createState() => _StoryReaderPageState();
@@ -33,15 +37,18 @@ class StoryReaderPage extends StatefulWidget {
 class _StoryReaderPageState extends State<StoryReaderPage> {
   late final PageController _pageController;
   late final ScrollController _verticalController;
+  late GalleryStorySummary _story;
   List<MediaItem> _pages = const [];
   _StoryReaderMode _mode = _StoryReaderMode.normal;
   int _currentIndex = 0;
   bool _loading = true;
+  bool _editing = false;
   Object? _error;
 
   @override
   void initState() {
     super.initState();
+    _story = widget.story;
     _pageController = PageController();
     _verticalController = ScrollController();
     _load();
@@ -62,18 +69,49 @@ class _StoryReaderPageState extends State<StoryReaderPage> {
     try {
       final pages = await widget.browseService.getStoryPages(
         widget.gallery.galleryUuid,
-        widget.story.relativePath,
+        _story.relativePath,
       );
       if (!mounted) return;
       setState(() {
         _pages = pages;
         _currentIndex = 0;
       });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        if (_mode == _StoryReaderMode.vertical) {
+          if (_verticalController.hasClients) _verticalController.jumpTo(0);
+        } else if (_pageController.hasClients) {
+          _pageController.jumpToPage(0);
+        }
+      });
     } catch (error) {
       if (!mounted) return;
       setState(() => _error = error);
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _editStory() async {
+    if (_editing || _loading) return;
+    setState(() => _editing = true);
+    try {
+      final updated = await Navigator.of(context).push<GalleryStorySummary>(
+        MaterialPageRoute<GalleryStorySummary>(
+          builder: (context) => StoryEditorPage(
+            gallery: widget.gallery,
+            story: _story,
+            mediaService: widget.mediaService,
+            browseService: widget.browseService,
+            storyService: widget.storyService,
+          ),
+        ),
+      );
+      if (!mounted || updated == null) return;
+      setState(() => _story = updated);
+      await _load();
+    } finally {
+      if (mounted) setState(() => _editing = false);
     }
   }
 
@@ -119,18 +157,29 @@ class _StoryReaderPageState extends State<StoryReaderPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              widget.story.title,
+              _story.title,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
             ),
             Text(
-              '${widget.story.pageCount} pagine',
+              '${_story.pageCount} pagine',
               style: const TextStyle(fontSize: 11, color: AppTheme.muted),
             ),
           ],
         ),
         actions: [
+          IconButton(
+            tooltip: 'Modifica storia',
+            onPressed: _loading || _editing ? null : _editStory,
+            icon: _editing
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.edit_outlined),
+          ),
           PopupMenuButton<_StoryReaderMode>(
             tooltip: 'Modalità di lettura',
             initialValue: _mode,

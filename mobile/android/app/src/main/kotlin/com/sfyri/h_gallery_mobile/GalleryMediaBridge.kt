@@ -224,6 +224,37 @@ internal class GalleryMediaBridge(
                 }
             }
 
+            "updateMediaMetadataBatch" -> {
+                val galleryUuid = requiredGalleryUuid(call, result) ?: return
+                val syncUuids = stringListArgument(call.arguments, "syncUuids")
+                if (syncUuids.isEmpty()) {
+                    result.error("INVALID_MEDIA_SELECTION", "Seleziona almeno un media.", null)
+                    return
+                }
+                val characterMode = call.argument<String>("characterMode")?.trim().orEmpty()
+                val characterIds = numberListArgument(call.arguments, "characterIds")
+                val tagMode = call.argument<String>("tagMode")?.trim().orEmpty()
+                val tags = stringListArgument(call.arguments, "tags")
+                val artistMode = call.argument<String>("artistMode")?.trim().orEmpty()
+                val artists = stringListArgument(call.arguments, "artists")
+                val aiMode = call.argument<String>("aiMode")?.trim().orEmpty()
+                runAsync(result, "MEDIA_METADATA_BATCH_UPDATE_FAILED") {
+                    val value = metadataEditor.updateBatch(
+                        galleryUuid = galleryUuid,
+                        syncUuids = syncUuids,
+                        characterMode = characterMode,
+                        characterIds = characterIds,
+                        tagMode = tagMode,
+                        tags = tags,
+                        artistMode = artistMode,
+                        artists = artists,
+                        aiMode = aiMode,
+                    )
+                    clearGalleryCaches(galleryUuid)
+                    value
+                }
+            }
+
             "loadThumbnail" -> {
                 val galleryUuid = requiredGalleryUuid(call, result) ?: return
                 val syncUuid = requiredMediaId(call, result) ?: return
@@ -307,6 +338,48 @@ internal class GalleryMediaBridge(
                 val name = call.argument<String>("name")?.trim().orEmpty()
                 runAsync(result, "CHARACTER_CREATE_FAILED") {
                     organization.createCharacter(galleryUuid, treeUri, franchiseId, name)
+                }
+            }
+
+            "createStoryFromGallery" -> {
+                val galleryUuid = requiredGalleryUuid(call, result) ?: return
+                val treeUri = resolveTreeUri(galleryUuid, result) ?: return
+                val title = call.argument<String>("title")?.trim().orEmpty()
+                val syncUuids = stringListArgument(call.arguments, "syncUuids")
+                runAsync(result, "STORY_CREATE_FAILED") {
+                    val value = organization.createStoryFromGallery(
+                        galleryUuid = galleryUuid,
+                        treeUri = treeUri,
+                        rawTitle = title,
+                        syncUuids = syncUuids,
+                    )
+                    clearGalleryCaches(galleryUuid)
+                    value
+                }
+            }
+
+            "updateStory" -> {
+                val galleryUuid = requiredGalleryUuid(call, result) ?: return
+                val treeUri = resolveTreeUri(galleryUuid, result) ?: return
+                val currentRelativePath = call.argument<String>("currentRelativePath")?.trim().orEmpty()
+                if (currentRelativePath.isEmpty()) {
+                    result.error("INVALID_STORY", "Storia non valida.", null)
+                    return
+                }
+                val title = call.argument<String>("title")?.trim().orEmpty()
+                val syncUuids = stringListArgument(call.arguments, "syncUuids")
+                val coverSyncUuid = call.argument<String>("coverSyncUuid")?.trim()
+                runAsync(result, "STORY_UPDATE_FAILED") {
+                    val value = organization.updateStory(
+                        galleryUuid = galleryUuid,
+                        treeUri = treeUri,
+                        currentRelativePath = currentRelativePath,
+                        rawTitle = title,
+                        syncUuids = syncUuids,
+                        requestedCoverSyncUuid = coverSyncUuid,
+                    )
+                    clearGalleryCaches(galleryUuid)
+                    value
                 }
             }
 

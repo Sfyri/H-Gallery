@@ -564,6 +564,26 @@ class _ConnectionInfo {
   final String token;
 }
 
+class GallerySyncSelection {
+  const GallerySyncSelection({
+    this.files = true,
+    this.deletions = true,
+    this.metadata = true,
+  });
+
+  final bool files;
+  final bool deletions;
+  final bool metadata;
+
+  bool get anySelected => files || deletions || metadata;
+
+  Map<String, Object?> toPlatform() => <String, Object?>{
+        'syncFiles': files,
+        'syncDeletions': deletions,
+        'syncMetadata': metadata,
+      };
+}
+
 class GallerySyncService {
   GallerySyncService() {
     _channel.setMethodCallHandler(_handleNativeCall);
@@ -810,12 +830,22 @@ class GallerySyncService {
   Future<GallerySyncResult> run(
     GalleryProfile gallery,
     WindowsGalleryProfile windowsGallery,
-    String syncGroupUuid,
-  ) async {
+    String syncGroupUuid, {
+    GallerySyncSelection selection = const GallerySyncSelection(),
+  }) async {
+    if (!selection.anySelected) {
+      throw PlatformException(
+        code: 'SYNC_NOTHING_SELECTED',
+        message: 'Seleziona almeno una categoria da sincronizzare.',
+      );
+    }
     try {
+      final arguments =
+          await _arguments(gallery, windowsGallery, syncGroupUuid);
+      arguments.addAll(selection.toPlatform());
       final value = await _channel.invokeMapMethod<Object?, Object?>(
         'runSync',
-        await _arguments(gallery, windowsGallery, syncGroupUuid),
+        arguments,
       );
       if (value == null) {
         throw PlatformException(

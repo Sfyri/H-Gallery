@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -10,11 +10,13 @@ import '../models/scan_result.dart';
 import '../models/story_models.dart';
 import '../services/gallery_browse_service.dart';
 import '../services/media_bridge.dart';
+import '../services/story_management_service.dart';
 import '../services/trash_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/media_info_sheet.dart';
 import '../widgets/media_thumbnail_tile.dart';
 import '../widgets/story_card.dart';
+import 'batch_metadata_editor_page.dart';
 import 'filtered_media_page.dart';
 import 'media_viewer_page.dart';
 import 'series_browser_page.dart';
@@ -29,6 +31,7 @@ class GalleryMediaTab extends StatefulWidget {
     this.mediaService = const PlatformMediaService(),
     this.browseService = const PlatformGalleryBrowseService(),
     this.trashService = const PlatformTrashService(),
+    this.storyService = const PlatformStoryManagementService(),
     this.onChanged,
     super.key,
   });
@@ -38,6 +41,7 @@ class GalleryMediaTab extends StatefulWidget {
   final MediaService mediaService;
   final GalleryBrowseService browseService;
   final TrashService trashService;
+  final StoryManagementService storyService;
   final VoidCallback? onChanged;
 
   @override
@@ -46,10 +50,12 @@ class GalleryMediaTab extends StatefulWidget {
 
 class _GalleryMediaTabState extends State<GalleryMediaTab> {
   static const int _pageSize = 120;
+  static const int _maxStoryPages = 500;
   static const MediaQuerySpec _allQuery = MediaQuerySpec();
 
   final ScrollController _scrollController = ScrollController();
   final Map<String, Future<Uint8List?>> _coverFutures = {};
+  final Set<String> _selectedSyncUuids = <String>{};
 
   GalleryStats _stats = GalleryStats.empty;
   GalleryBrowseCatalog? _browseCatalog;
@@ -61,6 +67,20 @@ class _GalleryMediaTabState extends State<GalleryMediaTab> {
   bool _initialLoading = true;
   bool _scanning = false;
   bool _loadingMore = false;
+  bool _selectionBusy = false;
+
+  bool get _selectionMode => _selectedSyncUuids.isNotEmpty;
+
+  List<MediaItem> get _selectedItems => _items
+      .where((item) => _selectedSyncUuids.contains(item.syncUuid))
+      .toList(growable: false);
+
+  bool get _canCreateStory {
+    final selected = _selectedItems;
+    return selected.length >= 2 &&
+        selected.length <= _maxStoryPages &&
+        selected.every((item) => item.isImage);
+  }
 
   @override
   void initState() {
@@ -114,6 +134,7 @@ class _GalleryMediaTabState extends State<GalleryMediaTab> {
         _mediaTotal = media.total;
         _stories = stories;
         _browseCatalog = catalog;
+        _pruneSelection();
       });
     } catch (error) {
       if (!mounted) return;
@@ -125,11 +146,12 @@ class _GalleryMediaTabState extends State<GalleryMediaTab> {
 
   Future<void> _refreshFromDatabase() async {
     try {
+      final loadedLimit = _items.length > _pageSize ? _items.length : _pageSize;
       final stats = await widget.mediaService.getStats(widget.gallery.galleryUuid);
       final media = await widget.browseService.queryMedia(
         widget.gallery.galleryUuid,
         _allQuery,
-        limit: _pageSize,
+        limit: loadedLimit,
       );
       final stories = await widget.browseService.queryStories(
         widget.gallery.galleryUuid,
@@ -147,11 +169,17 @@ class _GalleryMediaTabState extends State<GalleryMediaTab> {
         _stories = stories;
         _browseCatalog = catalog;
         _error = null;
+        _pruneSelection();
       });
     } catch (error) {
       if (!mounted) return;
       setState(() => _error = error);
     }
+  }
+
+  void _pruneSelection() {
+    final available = _items.map((item) => item.syncUuid).toSet();
+    _selectedSyncUuids.retainWhere(available.contains);
   }
 
   void _handleScroll() {
@@ -163,7 +191,7 @@ class _GalleryMediaTabState extends State<GalleryMediaTab> {
   }
 
   Future<void> _scan() async {
-    if (_scanning) return;
+    if (_scanning || _selectionBusy || _selectionMode) return;
     setState(() {
       _scanning = true;
       _error = null;
@@ -229,6 +257,65 @@ class _GalleryMediaTabState extends State<GalleryMediaTab> {
     }
   }
 
+  void _startSelection(MediaItem item) {
+    if (_selectionBusy) return;
+    setState(() {
+      _selectedSyncUuids.add(item.syncUuid);
+    });
+  }
+
+  void _toggleSelection(MediaItem item) {
+    if (_selectionBusy) return;
+    setState(() {
+      if (!_selectedSyncUuids.add(item.syncUuid)) {
+        _selectedSyncUuids.remove(item.syncUuid);
+      }
+    });
+  }
+
+  void _clearSelection() {
+    if (_selectionBusy || _selectedSyncUuids.isEmpty) return;
+    setState(_selectedSyncUuids.clear);
+  }
+
+  Future<void> _showSelectedInfo() async {
+    if (_selectionBusy) return;
+    final selected = _selectedItems;
+    if (selected.length != 1) return;
+    final item = selected.single;
+    await showMediaInfoSheet(
+      context: context,
+      galleryUuid: widget.gallery.galleryUuid,
+      item: item,
+      browseService: widget.browseService,
+      onTrash: () => _moveToTrash(item),
+    );
+  }
+
+  Future<void> _editSelectionMetadata() async {
+    if (_selectionBusy) return;
+    final selected = _selectedItems;
+    if (selected.isEmpty) return;
+    final changed = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => BatchMetadataEditorPage(
+          galleryUuid: widget.gallery.galleryUuid,
+          items: List<MediaItem>.unmodifiable(selected),
+        ),
+      ),
+    );
+    if (changed != true || !mounted) return;
+    setState(_selectedSyncUuids.clear);
+    await _refreshFromDatabase();
+    widget.onChanged?.call();
+    if (!mounted) return;
+    _showMessage(
+      selected.length == 1
+          ? 'Metadati aggiornati.'
+          : 'Metadati aggiornati per ${selected.length} media.',
+    );
+  }
+
   Future<void> _moveToTrash(MediaItem item) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -248,13 +335,13 @@ class _GalleryMediaTabState extends State<GalleryMediaTab> {
       ),
     );
     if (confirmed != true || !mounted) return;
-
     try {
       await widget.trashService.moveMediaToTrash(
         widget.gallery.galleryUuid,
         item.syncUuid,
       );
       if (!mounted) return;
+      _selectedSyncUuids.remove(item.syncUuid);
       await _refreshFromDatabase();
       widget.onChanged?.call();
       if (!mounted) return;
@@ -267,6 +354,200 @@ class _GalleryMediaTabState extends State<GalleryMediaTab> {
         SnackBar(content: Text(error.message ?? 'Operazione non riuscita.')),
       );
     }
+  }
+
+  Future<void> _moveSelectionToTrash() async {
+    if (_selectionBusy) return;
+    final selected = _selectedItems;
+    if (selected.isEmpty) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Spostare nel cestino?'),
+        content: Text(
+          selected.length == 1
+              ? selected.single.filename
+              : '${selected.length} media selezionati verranno spostati nel cestino.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Annulla'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: Text(selected.length == 1 ? 'Sposta' : 'Sposta tutti'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _selectionBusy = true);
+    final failedIds = <String>{};
+    final failureMessages = <String>[];
+    var moved = 0;
+    for (final item in selected) {
+      try {
+        await widget.trashService.moveMediaToTrash(
+          widget.gallery.galleryUuid,
+          item.syncUuid,
+        );
+        moved += 1;
+      } on PlatformException catch (error) {
+        failedIds.add(item.syncUuid);
+        failureMessages.add(error.message ?? item.filename);
+      } catch (_) {
+        failedIds.add(item.syncUuid);
+        failureMessages.add(item.filename);
+      }
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _selectionBusy = false;
+      _selectedSyncUuids
+        ..clear()
+        ..addAll(failedIds);
+    });
+    await _refreshFromDatabase();
+    if (moved > 0) widget.onChanged?.call();
+    if (!mounted) return;
+
+    final messenger = ScaffoldMessenger.of(context);
+    if (failureMessages.isEmpty) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            moved == 1
+                ? 'Media spostato nel cestino.'
+                : '$moved media spostati nel cestino.',
+          ),
+        ),
+      );
+    } else {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            '$moved spostati, ${failureMessages.length} non riusciti. '
+            '${failureMessages.first}',
+          ),
+        ),
+      );
+    }
+  }
+
+  Future<void> _createStoryFromSelection() async {
+    if (_selectionBusy) return;
+    final selected = _selectedItems;
+    if (selected.length < 2) {
+      _showMessage('Seleziona almeno due immagini.');
+      return;
+    }
+    if (selected.length > _maxStoryPages) {
+      _showMessage('Una storia può contenere al massimo $_maxStoryPages pagine.');
+      return;
+    }
+    if (selected.any((item) => !item.isImage)) {
+      _showMessage('Le storie possono contenere soltanto immagini.');
+      return;
+    }
+
+    final title = await _askStoryTitle(selected.length);
+    if (title == null || !mounted) return;
+
+    setState(() => _selectionBusy = true);
+    try {
+      final value = await widget.storyService.createFromGallery(
+        widget.gallery.galleryUuid,
+        title: title,
+        syncUuids: selected.map((item) => item.syncUuid).toList(growable: false),
+      );
+      if (!mounted) return;
+      setState(_selectedSyncUuids.clear);
+      await _refreshFromDatabase();
+      widget.onChanged?.call();
+      if (!mounted) return;
+      final pageCount = _readInt(value['pageCount'], fallback: selected.length);
+      final createdTitle = value['title']?.toString().trim();
+      _showMessage(
+        'Storia ${createdTitle == null || createdTitle.isEmpty ? title : createdTitle} '
+        'creata con $pageCount pagine.',
+      );
+    } on PlatformException catch (error) {
+      if (!mounted) return;
+      _showMessage(error.message ?? 'Creazione della storia non riuscita.');
+    } catch (_) {
+      if (!mounted) return;
+      _showMessage('Creazione della storia non riuscita.');
+    } finally {
+      if (mounted) setState(() => _selectionBusy = false);
+    }
+  }
+
+  Future<String?> _askStoryTitle(int pageCount) async {
+    var draftTitle = '';
+    String? validationMessage;
+    return showDialog<String>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Crea storia'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('$pageCount immagini verranno usate nell’ordine della galleria.'),
+              const SizedBox(height: 14),
+              TextField(
+                autofocus: true,
+                textInputAction: TextInputAction.done,
+                decoration: InputDecoration(
+                  labelText: 'Titolo',
+                  errorText: validationMessage,
+                ),
+                onChanged: (value) => draftTitle = value,
+                onSubmitted: (_) {
+                  final title = draftTitle.trim();
+                  if (title.isEmpty) {
+                    setDialogState(() => validationMessage = 'Inserisci un titolo.');
+                    return;
+                  }
+                  Navigator.of(dialogContext).pop(title);
+                },
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Annulla'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final title = draftTitle.trim();
+                if (title.isEmpty) {
+                  setDialogState(() => validationMessage = 'Inserisci un titolo.');
+                  return;
+                }
+                Navigator.of(dialogContext).pop(title);
+              },
+              child: const Text('Crea'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  int _readInt(Object? value, {required int fallback}) {
+    if (value is int) return value;
+    return int.tryParse(value?.toString() ?? '') ?? fallback;
+  }
+
+  void _showMessage(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
   Future<void> _handleNestedChange() async {
@@ -293,6 +574,7 @@ class _GalleryMediaTabState extends State<GalleryMediaTab> {
   }
 
   Future<void> _openStory(GalleryStorySummary story) async {
+    if (_selectionMode) return;
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
         builder: (context) => StoryReaderPage(
@@ -300,9 +582,13 @@ class _GalleryMediaTabState extends State<GalleryMediaTab> {
           story: story,
           mediaService: widget.mediaService,
           browseService: widget.browseService,
+          storyService: widget.storyService,
         ),
       ),
     );
+    if (!mounted) return;
+    await _refreshFromDatabase();
+    widget.onChanged?.call();
   }
 
   Future<Uint8List?> _coverFor(GalleryCollection collection) {
@@ -354,7 +640,6 @@ class _GalleryMediaTabState extends State<GalleryMediaTab> {
     if (_error != null && _items.isEmpty && _stories.isEmpty) {
       return _ErrorState(message: _errorMessage(_error), onRetry: _loadInitial);
     }
-
     return RefreshIndicator(
       onRefresh: _scan,
       child: CustomScrollView(
@@ -384,13 +669,20 @@ class _GalleryMediaTabState extends State<GalleryMediaTab> {
                     ],
                     selected: <_GalleryViewMode>{_viewMode},
                     showSelectedIcon: false,
-                    onSelectionChanged: (value) {
-                      setState(() => _viewMode = value.first);
-                    },
+                    onSelectionChanged: _selectionBusy
+                        ? null
+                        : (value) {
+                            setState(() {
+                              _viewMode = value.first;
+                              if (_viewMode != _GalleryViewMode.all) {
+                                _selectedSyncUuids.clear();
+                              }
+                            });
+                          },
                   ),
                   const SizedBox(height: 10),
                   OutlinedButton.icon(
-                    onPressed: _scanning ? null : _scan,
+                    onPressed: _scanning || _selectionBusy || _selectionMode ? null : _scan,
                     icon: _scanning
                         ? const SizedBox(
                             width: 18,
@@ -398,7 +690,7 @@ class _GalleryMediaTabState extends State<GalleryMediaTab> {
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
                         : const Icon(Icons.refresh_rounded),
-                    label: Text(_scanning ? 'Rilettura in corso窶ｦ' : 'Rileggi cartelle'),
+                    label: Text(_scanning ? 'Rilettura in corso…' : 'Rileggi cartelle'),
                   ),
                 ],
               ),
@@ -427,7 +719,6 @@ class _GalleryMediaTabState extends State<GalleryMediaTab> {
         ),
       ];
     }
-
     return [
       SliverPadding(
         padding: const EdgeInsets.fromLTRB(12, 2, 12, 28),
@@ -463,13 +754,32 @@ class _GalleryMediaTabState extends State<GalleryMediaTab> {
         ),
       ];
     }
-
     return [
+      if (_selectionMode)
+        SliverPersistentHeader(
+          pinned: true,
+          delegate: _SelectionHeaderDelegate(
+            child: _SelectionBar(
+              count: _selectedSyncUuids.length,
+              busy: _selectionBusy,
+              canShowInfo: _selectedSyncUuids.length == 1,
+              canCreateStory: _canCreateStory,
+              onClose: _clearSelection,
+              onInfo: _showSelectedInfo,
+              onEditMetadata: _editSelectionMetadata,
+              onCreateStory: _createStoryFromSelection,
+              onTrash: _moveSelectionToTrash,
+            ),
+          ),
+        ),
       if (_stories.isNotEmpty) ...[
         const SliverToBoxAdapter(
           child: Padding(
             padding: EdgeInsets.fromLTRB(14, 4, 14, 6),
-            child: Text('Storie', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+            child: Text(
+              'Storie',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+            ),
           ),
         ),
         SliverPadding(
@@ -483,7 +793,7 @@ class _GalleryMediaTabState extends State<GalleryMediaTab> {
                   galleryUuid: widget.gallery.galleryUuid,
                   story: story,
                   mediaService: widget.mediaService,
-                  onTap: () => _openStory(story),
+                  onTap: _selectionMode ? () {} : () => _openStory(story),
                 );
               },
               childCount: _stories.length,
@@ -502,7 +812,10 @@ class _GalleryMediaTabState extends State<GalleryMediaTab> {
           const SliverToBoxAdapter(
             child: Padding(
               padding: EdgeInsets.fromLTRB(14, 2, 14, 6),
-              child: Text('Media', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+              child: Text(
+                'Media',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+              ),
             ),
           ),
         SliverPadding(
@@ -511,19 +824,49 @@ class _GalleryMediaTabState extends State<GalleryMediaTab> {
             delegate: SliverChildBuilderDelegate(
               (context, index) {
                 final item = _items[index];
-                return MediaThumbnailTile(
+                final selected = _selectedSyncUuids.contains(item.syncUuid);
+                return Stack(
                   key: ValueKey(item.syncUuid),
-                  galleryUuid: widget.gallery.galleryUuid,
-                  item: item,
-                  mediaService: widget.mediaService,
-                  onTap: () => _openViewer(index),
-                  onLongPress: () => showMediaInfoSheet(
-                    context: context,
-                    galleryUuid: widget.gallery.galleryUuid,
-                    item: item,
-                    browseService: widget.browseService,
-                    onTrash: () => _moveToTrash(item),
-                  ),
+                  fit: StackFit.expand,
+                  children: [
+                    MediaThumbnailTile(
+                      galleryUuid: widget.gallery.galleryUuid,
+                      item: item,
+                      mediaService: widget.mediaService,
+                      onTap: _selectionMode
+                          ? () => _toggleSelection(item)
+                          : () => _openViewer(index),
+                      onLongPress: () => _startSelection(item),
+                    ),
+                    if (selected)
+                      Positioned.fill(
+                        child: IgnorePointer(
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              border: Border.all(color: AppTheme.accent, width: 3),
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                          ),
+                        ),
+                      ),
+                    if (selected)
+                      Positioned(
+                        top: 7,
+                        right: 7,
+                        child: IgnorePointer(
+                          child: Container(
+                            width: 28,
+                            height: 28,
+                            decoration: BoxDecoration(
+                              color: AppTheme.accent,
+                              shape: BoxShape.circle,
+                              border: Border.all(color: AppTheme.panel, width: 2),
+                            ),
+                            child: const Icon(Icons.check_rounded, size: 18),
+                          ),
+                        ),
+                      ),
+                  ],
                 );
               },
               childCount: _items.length,
@@ -550,7 +893,7 @@ class _GalleryMediaTabState extends State<GalleryMediaTab> {
   String _scanSummary(ScanResult result) {
     return 'Rilettura completata: +${result.added} nuovi, '
         '${result.updated} modificati, ${result.moved} spostati, '
-        '${result.removed} non piﾃｹ presenti.';
+        '${result.removed} non più presenti.';
   }
 
   String _errorMessage(Object? error) {
@@ -558,6 +901,123 @@ class _GalleryMediaTabState extends State<GalleryMediaTab> {
       return error.message ?? 'Operazione non riuscita.';
     }
     return 'Operazione non riuscita.';
+  }
+}
+
+class _SelectionHeaderDelegate extends SliverPersistentHeaderDelegate {
+  const _SelectionHeaderDelegate({required this.child});
+
+  final Widget child;
+
+  @override
+  double get minExtent => 80;
+
+  @override
+  double get maxExtent => 80;
+
+  @override
+  Widget build(
+    BuildContext context,
+    double shrinkOffset,
+    bool overlapsContent,
+  ) {
+    return ColoredBox(
+      color: Theme.of(context).scaffoldBackgroundColor,
+      child: child,
+    );
+  }
+
+  @override
+  bool shouldRebuild(covariant _SelectionHeaderDelegate oldDelegate) => true;
+}
+
+class _SelectionBar extends StatelessWidget {
+  const _SelectionBar({
+    required this.count,
+    required this.busy,
+    required this.canShowInfo,
+    required this.canCreateStory,
+    required this.onClose,
+    required this.onInfo,
+    required this.onEditMetadata,
+    required this.onCreateStory,
+    required this.onTrash,
+  });
+
+  final int count;
+  final bool busy;
+  final bool canShowInfo;
+  final bool canCreateStory;
+  final VoidCallback onClose;
+  final Future<void> Function() onInfo;
+  final Future<void> Function() onEditMetadata;
+  final Future<void> Function() onCreateStory;
+  final Future<void> Function() onTrash;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 2, 12, 12),
+      child: Material(
+        color: AppTheme.panel,
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: AppTheme.border),
+          ),
+          child: Row(
+            children: [
+              IconButton(
+                tooltip: 'Chiudi selezione',
+                onPressed: busy ? null : onClose,
+                icon: const Icon(Icons.close_rounded),
+              ),
+              Expanded(
+                child: Text(
+                  '$count selezionat${count == 1 ? 'o' : 'i'}',
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+              ),
+              if (busy)
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 12),
+                  child: SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                )
+              else ...[
+                IconButton(
+                  tooltip: 'Informazioni',
+                  onPressed: canShowInfo ? onInfo : null,
+                  icon: const Icon(Icons.info_outline_rounded),
+                ),
+                IconButton(
+                  tooltip: 'Modifica metadati',
+                  onPressed: onEditMetadata,
+                  icon: const Icon(Icons.edit_note_rounded),
+                ),
+                IconButton(
+                  tooltip: canCreateStory
+                      ? 'Crea storia'
+                      : 'Servono 2–500 immagini',
+                  onPressed: canCreateStory ? onCreateStory : null,
+                  icon: const Icon(Icons.auto_stories_outlined),
+                ),
+                IconButton(
+                  tooltip: 'Sposta nel cestino',
+                  onPressed: onTrash,
+                  icon: const Icon(Icons.delete_outline_rounded),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -713,7 +1173,7 @@ class _EmptySeriesState extends StatelessWidget {
             ),
             SizedBox(height: 7),
             Text(
-              'I media senza una struttura Serie/Personaggio restano disponibili in 窶弋utti窶・',
+              'I media senza una struttura Serie/Personaggio restano disponibili in “Tutti”.',
               textAlign: TextAlign.center,
               style: TextStyle(color: AppTheme.muted, height: 1.4),
             ),
@@ -743,7 +1203,7 @@ class _EmptyGalleryState extends StatelessWidget {
             ),
             SizedBox(height: 7),
             Text(
-              'I file in .toDo non compaiono qui finchﾃｩ non vengono organizzati.',
+              'I file in .toDo non compaiono qui finché non vengono organizzati.',
               textAlign: TextAlign.center,
               style: TextStyle(color: AppTheme.muted, height: 1.4),
             ),
@@ -783,4 +1243,3 @@ class _ErrorState extends StatelessWidget {
     );
   }
 }
-

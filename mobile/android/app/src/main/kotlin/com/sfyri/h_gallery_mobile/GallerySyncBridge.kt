@@ -49,6 +49,15 @@ internal class GallerySyncBridge(
         val windowsGalleryUuid: String,
     )
 
+    private data class SyncSelection(
+        val files: Boolean = true,
+        val deletions: Boolean = true,
+        val metadata: Boolean = true,
+    ) {
+        val anySelected: Boolean
+            get() = files || deletions || metadata
+    }
+
     private data class SyncItem(
         val syncUuid: String,
         val relativePath: String,
@@ -165,7 +174,7 @@ internal class GallerySyncBridge(
             }
             "runSync" -> runAsync(result, "SYNC_RUN_FAILED") {
                 val info = connectionInfo(call)
-                runSync(info)
+                runSync(info, syncSelection(call))
             }
             "getSyncGroup" -> runAsync(result, "SYNC_GROUP_READ_FAILED") {
                 val galleryUuid = call.argument<String>("galleryUuid")?.trim().orEmpty()
@@ -222,6 +231,18 @@ internal class GallerySyncBridge(
         )
     }
 
+    private fun syncSelection(call: MethodCall): SyncSelection {
+        val selection = SyncSelection(
+            files = call.argument<Boolean>("syncFiles") ?: true,
+            deletions = call.argument<Boolean>("syncDeletions") ?: true,
+            metadata = call.argument<Boolean>("syncMetadata") ?: true,
+        )
+        require(selection.anySelected) {
+            "Seleziona almeno una categoria da sincronizzare."
+        }
+        return selection
+    }
+
     private fun analyze(info: ConnectionInfo): Map<String, Any> {
         progress("scan", 0, 1, "Indicizzazione galleria Android")
         repository.scanGallery(info.galleryUuid, info.treeUri)
@@ -252,7 +273,7 @@ internal class GallerySyncBridge(
         }
     }
 
-    private fun runSync(info: ConnectionInfo): Map<String, Any> {
+    private fun runSync(info: ConnectionInfo, selection: SyncSelection): Map<String, Any> {
         val started = System.currentTimeMillis()
         cancelRequested = false
         progress("scan", 0, 1, "Aggiornamento indice Android")
@@ -280,54 +301,62 @@ internal class GallerySyncBridge(
         val initialDeletionConflicts = (initialPlan["deletionConflicts"] as? Int) ?: 0
         val initialMetadataResolutionConflicts =
             (initialPlan["metadataResolutionConflicts"] as? Int) ?: 0
-        if (initialDeletionConflicts > 0) {
+        if (selection.deletions && initialDeletionConflicts > 0) {
             throw IllegalStateException(
                 "M7.5 ha rilevato $initialDeletionConflicts cancellazioni ambigue. " +
                     "Nessun file è stato modificato: risolvi i conflitti indicati e analizza di nuovo.",
             )
         }
-        if (initialMetadataResolutionConflicts > 0) {
+        if (selection.metadata && initialMetadataResolutionConflicts > 0) {
             throw IllegalStateException(
                 "M7.6 ha rilevato $initialMetadataResolutionConflicts modifiche metadata concorrenti. " +
                     "Nessun merge viene avviato: risolvi manualmente il conflitto indicato e analizza di nuovo.",
             )
         }
 
-        // Preflight incrociato PRIMA di qualsiasi mutazione. Entrambi i lati
-        // devono dimostrare che ogni tombstone ha un bersaglio non ambiguo.
-        // La validazione viene ripetuta anche durante l'applicazione per
-        // proteggere da cambiamenti avvenuti tra preflight e commit.
-        progress("deletions", 0, 2, "Verifica eliminazioni su entrambi i dispositivi")
-        val windowsPreflightConflicts = validateLocalTombstonesOnWindows(info, initialLocalTombstones)
-        val androidPreflightConflicts = preflightRemoteTombstones(info, remoteTombstones).conflicts
-        val crossPreflightConflicts = windowsPreflightConflicts + androidPreflightConflicts
-        if (crossPreflightConflicts.isNotEmpty()) {
-            throw IllegalStateException(
-                "M7.5 ha bloccato ${crossPreflightConflicts.size} cancellazioni prima di modificare i file. " +
-                    crossPreflightConflicts.first()["message"].orEmpty(),
-            )
+        var windowsDeletion = DeletionApplyStats()
+        var androidDeletion = DeletionApplyStats()
+
+        if (selection.deletions) {
+            // Preflight incrociato PRIMA di qualsiasi mutazione.
+            progress("deletions", 0, 2, "Verifica eliminazioni su entrambi i dispositivi")
+            val windowsPreflightConflicts =
+                validateLocalTombstonesOnWindows(info, initialLocalTombstones)
+            val androidPreflightConflicts =
+                preflightRemoteTombstones(info, remoteTombstones).conflicts
+            val crossPreflightConflicts =
+                windowsPreflightConflicts + androidPreflightConflicts
+            if (crossPreflightConflicts.isNotEmpty()) {
+                throw IllegalStateException(
+                    "M7.5 ha bloccato ${crossPreflightConflicts.size} cancellazioni prima di modificare i file. " +
+                        crossPreflightConflicts.first()["message"].orEmpty(),
+                )
+            }
         }
 
-        // Il backup Windows resta il punto di ingresso della sessione. Le
-        // cancellazioni vengono applicate solo dopo preflight completo e backup.
+        // Il backup Windows resta il punto di ingresso della sessione per
+        // qualsiasi categoria selezionata.
         postJson(info, "/api/mobile/sync/begin", basePayload(info))
 
-        val windowsDeletion = sendLocalTombstonesToWindows(info, initialLocalTombstones)
-        if (windowsDeletion.conflicts.isNotEmpty()) {
-            throw IllegalStateException(
-                "Windows ha bloccato ${windowsDeletion.conflicts.size} cancellazioni per sicurezza. " +
-                    windowsDeletion.conflicts.first()["message"].orEmpty(),
-            )
+        if (selection.deletions) {
+            windowsDeletion =
+                sendLocalTombstonesToWindows(info, initialLocalTombstones)
+            if (windowsDeletion.conflicts.isNotEmpty()) {
+                throw IllegalStateException(
+                    "Windows ha bloccato ${windowsDeletion.conflicts.size} cancellazioni per sicurezza. " +
+                        windowsDeletion.conflicts.first()["message"].orEmpty(),
+                )
+            }
+            progress("deletions", 1, 2, "Applicazione eliminazioni su Android")
+            androidDeletion = applyRemoteTombstones(info, remoteTombstones)
+            if (androidDeletion.conflicts.isNotEmpty()) {
+                throw IllegalStateException(
+                    "Android ha bloccato ${androidDeletion.conflicts.size} cancellazioni per sicurezza. " +
+                        androidDeletion.conflicts.first()["message"].orEmpty(),
+                )
+            }
+            progress("deletions", 2, 2, "Eliminazioni allineate")
         }
-        progress("deletions", 1, 2, "Applicazione eliminazioni su Android")
-        val androidDeletion = applyRemoteTombstones(info, remoteTombstones)
-        if (androidDeletion.conflicts.isNotEmpty()) {
-            throw IllegalStateException(
-                "Android ha bloccato ${androidDeletion.conflicts.size} cancellazioni per sicurezza. " +
-                    androidDeletion.conflicts.first()["message"].orEmpty(),
-            )
-        }
-        progress("deletions", 2, 2, "Eliminazioni allineate")
 
         // Ricalcola entrambi gli inventari dopo la fase distruttiva. In questo
         // modo nessun media appena eliminato può rientrare nei trasferimenti.
@@ -347,8 +376,16 @@ internal class GallerySyncBridge(
             .associateBy { it.sha256.lowercase(Locale.ROOT) }
         val remoteByHash = liveRemote.filter { it.sha256.isNotBlank() }
             .associateBy { it.sha256.lowercase(Locale.ROOT) }
-        val downloads = remoteByHash.filterKeys { it !in localByHash }.values.toList()
-        val uploads = localByHash.filterKeys { it !in remoteByHash }.values.toList()
+        val downloads = if (selection.files) {
+            remoteByHash.filterKeys { it !in localByHash }.values.toList()
+        } else {
+            emptyList()
+        }
+        val uploads = if (selection.files) {
+            localByHash.filterKeys { it !in remoteByHash }.values.toList()
+        } else {
+            emptyList()
+        }
 
         val downloaded = mutableListOf<DownloadedItem>()
         val failures = mutableListOf<TransferFailure>()
@@ -418,12 +455,16 @@ internal class GallerySyncBridge(
             info.windowsGalleryUuid,
         )
         remoteBaselines = parseManifestBaselines(remoteManifest, info.galleryUuid)
-        val desiredAndroidMetadata = resolvedMetadataItems(
-            localForMetadata,
-            remoteForMetadata,
-            localBaselines,
-            remoteBaselines,
-        )
+        val desiredAndroidMetadata = if (selection.metadata) {
+            resolvedMetadataItems(
+                localForMetadata,
+                remoteForMetadata,
+                localBaselines,
+                remoteBaselines,
+            )
+        } else {
+            emptyList()
+        }
         val androidMetadataTotal = desiredAndroidMetadata.size.coerceAtLeast(1)
         progress("metadata_android", 0, androidMetadataTotal, "Allineamento metadata su Android")
         val androidMetadata = mergeRemoteMetadata(info.galleryUuid, desiredAndroidMetadata)
@@ -506,12 +547,16 @@ internal class GallerySyncBridge(
                     info.windowsGalleryUuid,
                 )
                 remoteBaselines = parseManifestBaselines(metadataRemoteManifest, info.galleryUuid)
-                val desiredWindowsMetadata = resolvedMetadataItems(
-                    localAfterFinalize,
-                    remoteAfterFinalize,
-                    localBaselines,
-                    remoteBaselines,
-                )
+                val desiredWindowsMetadata = if (selection.metadata) {
+                    resolvedMetadataItems(
+                        localAfterFinalize,
+                        remoteAfterFinalize,
+                        localBaselines,
+                        remoteBaselines,
+                    )
+                } else {
+                    emptyList()
+                }
                 val chunks = desiredWindowsMetadata.chunked(100)
                 chunks.forEachIndexed { index, chunk ->
                     if (cancelRequested) throw SyncCancelledException()
@@ -536,7 +581,7 @@ internal class GallerySyncBridge(
                     windowsCreatedFranchises += response.optInt("createdFranchises", 0)
                     windowsCreatedCharacters += response.optInt("createdCharacters", 0)
                     unresolvedWindows += response.optInt("unresolvedCharacters", 0)
-                    if (response.optInt("deletionConflicts", 0) > 0) {
+                    if (selection.deletions && response.optInt("deletionConflicts", 0) > 0) {
                         throw IllegalStateException("Windows ha rilevato un conflitto di cancellazione durante il merge metadata.")
                     }
                     progress(
@@ -561,7 +606,7 @@ internal class GallerySyncBridge(
         }
 
         if (cancelRequested) cancelled = true
-        if (!interrupted && !cancelled) {
+        if (!interrupted && !cancelled && selection.metadata) {
             try {
                 progress("character_scores", 0, 1, "Allineamento classifica personaggi")
                 val scoreStats = syncCharacterScores(info)
@@ -587,6 +632,7 @@ internal class GallerySyncBridge(
         }
 
         var verifiedSynced = false
+        var selectedOperationsVerified = false
         var metadataDifferencesAfter = (initialPlan["metadataDifferences"] as? Int) ?: 0
         var metadataBaselinePendingAfter = (initialPlan["metadataBaselinePending"] as? Int) ?: 0
         var metadataResolutionConflictsAfter = initialMetadataResolutionConflicts
@@ -634,13 +680,12 @@ internal class GallerySyncBridge(
                 var remainingFiles = ((verifiedPlan["toAndroid"] as? Int) ?: 0) +
                     ((verifiedPlan["toWindows"] as? Int) ?: 0)
 
-                val contentAligned = remainingFiles == 0 &&
-                    metadataDifferencesAfter == 0 &&
-                    metadataResolutionConflictsAfter == 0 &&
-                    deletionPendingAfter == 0 &&
-                    deletionConflictsAfter == 0
+                val metadataReadyForBaseline =
+                    selection.metadata &&
+                        metadataDifferencesAfter == 0 &&
+                        metadataResolutionConflictsAfter == 0
 
-                if (contentAligned) {
+                if (metadataReadyForBaseline && metadataBaselinePendingAfter > 0) {
                     progress("metadata_baseline", 0, 1, "Salvataggio baseline metadata verificato")
                     establishMetadataBaselines(info, verifiedLocal, verifiedRemote)
 
@@ -686,18 +731,32 @@ internal class GallerySyncBridge(
                     metadataResolutionConflictsAfter == 0 &&
                     deletionPendingAfter == 0 &&
                     deletionConflictsAfter == 0
-                if (!verifiedSynced) {
+
+                selectedOperationsVerified =
+                    (!selection.files || remainingFiles == 0) &&
+                        (!selection.metadata ||
+                            (metadataDifferencesAfter == 0 &&
+                                metadataBaselinePendingAfter == 0 &&
+                                metadataResolutionConflictsAfter == 0)) &&
+                        (!selection.deletions ||
+                            (deletionPendingAfter == 0 &&
+                                deletionConflictsAfter == 0))
+
+                if (!selectedOperationsVerified) {
                     failures += TransferFailure(
                         direction = "verify",
-                        filename = "Gruppo",
-                        message = "La verifica finale rileva ancora $remainingFiles file, " +
+                        filename = "Operazioni selezionate",
+                        message = "La verifica rileva ancora differenze nelle categorie selezionate: " +
+                            "$remainingFiles file, " +
                             "$metadataDifferencesAfter media con metadata differenti, " +
                             "$metadataBaselinePendingAfter baseline metadata da inizializzare, " +
                             "$metadataResolutionConflictsAfter conflitti metadata e " +
                             "$deletionPendingAfter eliminazioni da allineare.",
                         network = false,
                     )
-                } else {
+                }
+
+                if (verifiedSynced) {
                     storyRepository.replaceFromManifest(info.galleryUuid, finalStoryManifest)
                     recordSuccessfulSync(
                         info.galleryUuid,
@@ -706,7 +765,13 @@ internal class GallerySyncBridge(
                         windowsCount,
                     )
                 }
-                progress("verify", 1, 1, if (verifiedSynced) "Gallerie verificate" else "Differenze residue")
+
+                val verifyMessage = when {
+                    verifiedSynced -> "Gallerie verificate"
+                    selectedOperationsVerified -> "Operazioni selezionate verificate"
+                    else -> "Differenze selezionate residue"
+                }
+                progress("verify", 1, 1, verifyMessage)
             } catch (error: Exception) {
                 val network = isNetworkFailure(error)
                 failures += TransferFailure(
@@ -728,7 +793,8 @@ internal class GallerySyncBridge(
         val pendingDownloads = (downloads.size - attemptedDownloads).coerceAtLeast(0)
         val pendingUploads = (uploads.size - attemptedUploads).coerceAtLeast(0)
         val complete = !interrupted && !cancelled && failures.isEmpty() &&
-            pendingDownloads == 0 && pendingUploads == 0 && verifiedSynced
+            pendingDownloads == 0 && pendingUploads == 0 &&
+            selectedOperationsVerified
         val finalPhase = when {
             cancelled -> "cancelled"
             interrupted -> "interrupted"
@@ -738,8 +804,9 @@ internal class GallerySyncBridge(
         val finalMessage = when {
             cancelled -> "Sincronizzazione interrotta. Le operazioni già confermate restano valide."
             interrupted -> "Connessione interrotta. Riavvia la sincronizzazione quando il PC è raggiungibile."
-            complete -> "Sincronizzazione completata e verificata"
-            else -> "Sincronizzazione parziale: restano differenze da riallineare."
+            complete && verifiedSynced -> "Sincronizzazione completata e verificata"
+            complete -> "Operazioni selezionate completate. Restano categorie non allineate."
+            else -> "Sincronizzazione parziale: restano differenze selezionate da riallineare."
         }
         progress(finalPhase, 1, 1, finalMessage, successfulDownloads + successfulUploads, failures.size)
 

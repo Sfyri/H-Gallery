@@ -482,6 +482,9 @@ class _GalleryMergePageState extends State<GalleryMergePage> {
   bool _analyzing = false;
   bool _syncing = false;
   bool _cancelling = false;
+  bool _syncFiles = true;
+  bool _syncDeletions = true;
+  bool _syncMetadata = true;
 
   @override
   void initState() {
@@ -523,75 +526,105 @@ class _GalleryMergePageState extends State<GalleryMergePage> {
   Future<void> _sync() async {
     final plan = _plan;
     if (plan == null || _syncing) return;
-    if (plan.deletionConflicts > 0) {
+
+    if (!_hasSyncSelection) {
+      _error('Seleziona almeno una categoria da sincronizzare.');
+      return;
+    }
+    if (_syncDeletions && plan.deletionConflicts > 0) {
       _error(
         'M7.5 ha bloccato ${plan.deletionConflicts} cancellazioni ambigue. '
-        'Apri “Dettaglio eliminazioni” e risolvi i conflitti prima del merge.',
+        'Deseleziona “Eliminazioni” oppure apri “Dettaglio eliminazioni” e risolvi i conflitti.',
       );
       return;
     }
-    if (plan.metadataResolutionConflicts > 0) {
+    if (_syncMetadata && plan.metadataResolutionConflicts > 0) {
       _error(
         'M7.6 ha bloccato ${plan.metadataResolutionConflicts} modifiche metadata concorrenti. '
-        'Apri “Dettaglio metadata” e risolvi manualmente il conflitto prima del merge.',
+        'Deseleziona “Metadata e classifica” oppure risolvi manualmente il conflitto.',
       );
       return;
     }
 
-    final hasDeletions = plan.pendingDeletions > 0;
+    final selectedFileCount = plan.toAndroid + plan.toWindows;
+    final hasSkippedWork =
+        (!_syncFiles && selectedFileCount > 0) ||
+        (!_syncDeletions &&
+            (plan.pendingDeletions > 0 || plan.deletionConflicts > 0)) ||
+        (!_syncMetadata &&
+            (plan.metadataDifferences > 0 ||
+                plan.metadataBaselinePending > 0 ||
+                plan.metadataResolutionConflicts > 0));
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text(
-          hasDeletions
-              ? 'Sincronizzare e applicare le eliminazioni?'
-              : 'Sincronizzare il gruppo?',
-        ),
+        title: const Text('Eseguire le operazioni selezionate?'),
         content: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                'Verranno copiati ${plan.toAndroid} media su Android e '
-                '${plan.toWindows} su Windows. ${plan.metadataDifferences} media '
-                'hanno metadata differenti. M7.6 applica aggiunte e rimozioni '
-                'solo quando la modifica è determinabile dal baseline verificato.',
-                style: const TextStyle(height: 1.4),
-              ),
-              if (plan.metadataBaselinePending > 0) ...[
-                const SizedBox(height: 10),
+              if (_syncFiles)
                 Text(
-                  '${plan.metadataBaselinePending} media non hanno ancora un baseline '
-                  'metadata condiviso. Per questi media la sessione resta additiva; '
-                  'a verifica conclusa verrà creato il baseline per le sincronizzazioni future.',
-                  style: const TextStyle(color: AppTheme.muted, fontSize: 12, height: 1.4),
+                  'File: ${plan.toAndroid} verso Android · '
+                  '${plan.toWindows} verso Windows.',
+                  style: const TextStyle(height: 1.4),
+                ),
+              if (_syncDeletions) ...[
+                if (_syncFiles) const SizedBox(height: 8),
+                Text(
+                  'Eliminazioni: ${plan.pendingDeletions} da propagare '
+                  '(${plan.deleteOnAndroid} su Android · '
+                  '${plan.deleteOnWindows} su Windows).',
+                  style: const TextStyle(height: 1.4),
                 ),
               ],
-              if (hasDeletions) ...[
+              if (_syncMetadata) ...[
+                if (_syncFiles || _syncDeletions) const SizedBox(height: 8),
+                Text(
+                  'Metadata e classifica: ${plan.metadataDifferences} media differenti · '
+                  '${plan.metadataBaselinePending} baseline da inizializzare.',
+                  style: const TextStyle(height: 1.4),
+                ),
+              ],
+              if (hasSkippedWork) ...[
                 const SizedBox(height: 14),
-                Text(
-                  'Eliminazioni da propagare: ${plan.pendingDeletions}. '
-                  'Di queste, ${plan.deleteOnAndroid} sposteranno un media nel '
-                  'Cestino Android e ${plan.deleteOnWindows} nel Cestino Windows.',
-                  style: const TextStyle(fontWeight: FontWeight.w700, height: 1.4),
-                ),
-                const SizedBox(height: 8),
                 const Text(
-                  'M7.5 non distrugge definitivamente la copia sul dispositivo '
-                  'ricevente: la sposta nel suo Cestino. Solo una eliminazione '
-                  'definitiva eseguita dentro H-Gallery genera una cancellazione '
-                  'sincronizzabile.',
-                  style: TextStyle(height: 1.4),
+                  'Le categorie deselezionate non verranno applicate e resteranno '
+                  'in attesa per una sincronizzazione successiva.',
+                  style: TextStyle(
+                    color: AppTheme.muted,
+                    fontSize: 12,
+                    height: 1.4,
+                  ),
                 ),
               ],
-              const SizedBox(height: 14),
-              const Text(
-                'Le rimozioni metadata vengono propagate solo con un baseline '
-                'condiviso e verificato. In assenza di baseline M7.6 non interpreta '
-                'mai una semplice assenza come cancellazione.',
-                style: TextStyle(color: AppTheme.muted, fontSize: 12, height: 1.4),
-              ),
+              if (!_syncMetadata && selectedFileCount > 0) ...[
+                const SizedBox(height: 10),
+                const Text(
+                  'Con Metadata deselezionato, i file gia presenti non ricevono '
+                  'modifiche metadata come effetto collaterale dei trasferimenti.',
+                  style: TextStyle(
+                    color: AppTheme.muted,
+                    fontSize: 12,
+                    height: 1.4,
+                  ),
+                ),
+              ],
+              if (!_syncDeletions &&
+                  (plan.pendingDeletions > 0 || plan.deletionConflicts > 0)) ...[
+                const SizedBox(height: 10),
+                const Text(
+                  'Le tombstone restano comunque protette: un media in attesa di '
+                  'eliminazione non viene ricopiato per errore da un altro dispositivo.',
+                  style: TextStyle(
+                    color: AppTheme.muted,
+                    fontSize: 12,
+                    height: 1.4,
+                  ),
+                ),
+              ],
             ],
           ),
         ),
@@ -602,17 +635,14 @@ class _GalleryMergePageState extends State<GalleryMergePage> {
           ),
           FilledButton.icon(
             onPressed: () => Navigator.of(context).pop(true),
-            icon: Icon(
-              hasDeletions ? Icons.delete_sweep_rounded : Icons.sync_rounded,
-            ),
-            label: Text(
-              hasDeletions ? 'Sincronizza ed elimina' : 'Avvia merge',
-            ),
+            icon: const Icon(Icons.sync_rounded),
+            label: const Text('Esegui selezionate'),
           ),
         ],
       ),
     );
     if (confirmed != true || !mounted) return;
+
     setState(() {
       _syncing = true;
       _cancelling = false;
@@ -624,23 +654,36 @@ class _GalleryMergePageState extends State<GalleryMergePage> {
         current: 'Preparazione sincronizzazione',
       );
     });
+
     try {
       final result = await _syncService.run(
         widget.androidGallery,
         widget.windowsGallery,
         widget.syncGroupUuid,
+        selection: GallerySyncSelection(
+          files: _syncFiles,
+          deletions: _syncDeletions,
+          metadata: _syncMetadata,
+        ),
       );
       if (!mounted) return;
       setState(() => _result = result);
+
       if (result.complete) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Sincronizzazione completata.')),
+          SnackBar(
+            content: Text(
+              result.verifiedSynced
+                  ? 'Sincronizzazione completata e verificata.'
+                  : 'Operazioni selezionate completate. Restano categorie non allineate.',
+            ),
+          ),
         );
       } else if (result.cancelled) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
-              'Sincronizzazione interrotta. Le operazioni già confermate sono al sicuro.',
+              'Sincronizzazione interrotta. Le operazioni gia confermate sono al sicuro.',
             ),
           ),
         );
@@ -656,7 +699,7 @@ class _GalleryMergePageState extends State<GalleryMergePage> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
-              'Merge parziale: restano operazioni da verificare o ripetere.',
+              'Merge parziale: restano operazioni selezionate da verificare o ripetere.',
             ),
           ),
         );
@@ -671,13 +714,13 @@ class _GalleryMergePageState extends State<GalleryMergePage> {
           );
           if (mounted) setState(() => _plan = refreshed);
         } on PlatformException {
-          // Il risultato del merge rimane visibile; l'utente può rilanciare Analizza.
+          // Il risultato rimane visibile; l'utente puo rilanciare Analizza.
         }
       }
     } on PlatformException catch (error) {
       _error(
         error.message ??
-            'Sincronizzazione non avviata: è presente un conflitto che richiede risoluzione manuale.',
+            'Sincronizzazione non avviata: controlla le categorie selezionate e riprova.',
       );
     } finally {
       if (mounted) {
@@ -707,6 +750,29 @@ class _GalleryMergePageState extends State<GalleryMergePage> {
   void _error(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  bool get _hasSyncSelection =>
+      _syncFiles || _syncDeletions || _syncMetadata;
+
+  bool _selectedBlockingConflicts(GallerySyncPlan plan) =>
+      (_syncDeletions && plan.deletionConflicts > 0) ||
+      (_syncMetadata && plan.metadataResolutionConflicts > 0);
+
+  String _selectionStatus(GallerySyncPlan plan) {
+    if (!_hasSyncSelection) {
+      return 'Seleziona almeno una categoria.';
+    }
+    if (_syncDeletions && plan.deletionConflicts > 0) {
+      return '${plan.deletionConflicts} cancellazioni selezionate sono bloccate per sicurezza.';
+    }
+    if (_syncMetadata && plan.metadataResolutionConflicts > 0) {
+      return '${plan.metadataResolutionConflicts} conflitti metadata selezionati richiedono una risoluzione manuale.';
+    }
+    if (plan.synchronized) {
+      return 'Gallerie e baseline metadata gia allineati.';
+    }
+    return 'Verranno eseguite solo le categorie selezionate.';
   }
 
   String _bytes(int value) {
@@ -817,6 +883,19 @@ class _GalleryMergePageState extends State<GalleryMergePage> {
           if (plan != null) ...[
             const SizedBox(height: 22),
             _PlanCard(plan: plan, bytes: _bytes),
+            const SizedBox(height: 10),
+            _SyncSelectionCard(
+              plan: plan,
+              files: _syncFiles,
+              deletions: _syncDeletions,
+              metadata: _syncMetadata,
+              enabled: !_syncing,
+              onFilesChanged: (value) => setState(() => _syncFiles = value),
+              onDeletionsChanged: (value) =>
+                  setState(() => _syncDeletions = value),
+              onMetadataChanged: (value) =>
+                  setState(() => _syncMetadata = value),
+            ),
             if (plan.metadataDifferences > 0 ||
                 plan.metadataBaselinePending > 0 ||
                 plan.metadataResolutionConflicts > 0) ...[
@@ -855,12 +934,12 @@ class _GalleryMergePageState extends State<GalleryMergePage> {
             Row(
               children: [
                 Icon(
-                  plan.hasBlockingConflicts
+                  _selectedBlockingConflicts(plan)
                       ? Icons.block_rounded
                       : plan.synchronized
                           ? Icons.check_circle_rounded
-                          : Icons.sync_problem_rounded,
-                  color: plan.hasBlockingConflicts
+                          : Icons.tune_rounded,
+                  color: _selectedBlockingConflicts(plan)
                       ? Theme.of(context).colorScheme.error
                       : plan.synchronized
                           ? AppTheme.success
@@ -869,13 +948,7 @@ class _GalleryMergePageState extends State<GalleryMergePage> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    plan.deletionConflicts > 0
-                        ? '${plan.deletionConflicts} cancellazioni bloccate per sicurezza.'
-                        : plan.metadataResolutionConflicts > 0
-                            ? '${plan.metadataResolutionConflicts} conflitti metadata richiedono una risoluzione manuale.'
-                            : plan.synchronized
-                                ? 'Gallerie e baseline metadata già allineati.'
-                                : '${plan.pendingChanges} operazioni o baseline da sincronizzare.',
+                    _selectionStatus(plan),
                     style: const TextStyle(fontWeight: FontWeight.w600),
                   ),
                 ),
@@ -883,35 +956,20 @@ class _GalleryMergePageState extends State<GalleryMergePage> {
             ),
             const SizedBox(height: 14),
             FilledButton.icon(
-              onPressed: _syncing || plan.hasBlockingConflicts ? null : _sync,
-              icon: Icon(
-                plan.pendingDeletions > 0
-                    ? Icons.delete_sweep_rounded
-                    : Icons.sync_rounded,
-              ),
+              onPressed: _syncing ||
+                      !_hasSyncSelection ||
+                      _selectedBlockingConflicts(plan)
+                  ? null
+                  : _sync,
+              icon: const Icon(Icons.sync_rounded),
               label: Text(
-                plan.deletionConflicts > 0
-                    ? 'Risolvi i conflitti di eliminazione'
-                    : plan.metadataResolutionConflicts > 0
-                        ? 'Risolvi i conflitti metadata'
+                !_hasSyncSelection
+                    ? 'Seleziona almeno una categoria'
+                    : _selectedBlockingConflicts(plan)
+                        ? 'Risolvi i conflitti selezionati'
                         : plan.synchronized
                             ? 'Verifica sincronizzazione'
-                            : plan.metadataBaselinePending > 0 &&
-                                    plan.toAndroid == 0 &&
-                                    plan.toWindows == 0 &&
-                                    plan.metadataDifferences == 0 &&
-                                    plan.pendingDeletions == 0
-                                ? 'Inizializza baseline metadata'
-                                : plan.pendingDeletions > 0 &&
-                                        plan.toAndroid == 0 &&
-                                        plan.toWindows == 0 &&
-                                        plan.metadataDifferences == 0
-                                    ? 'Sincronizza eliminazioni'
-                                    : plan.pendingDeletions > 0
-                                        ? 'Sincronizza ed elimina'
-                                        : plan.toAndroid == 0 && plan.toWindows == 0
-                                            ? 'Sincronizza metadata'
-                                            : 'Sincronizza gallerie',
+                            : 'Esegui operazioni selezionate',
               ),
             ),
           ],
@@ -971,6 +1029,102 @@ class _GalleryMergePageState extends State<GalleryMergePage> {
   }
 }
 
+class _SyncSelectionCard extends StatelessWidget {
+  const _SyncSelectionCard({
+    required this.plan,
+    required this.files,
+    required this.deletions,
+    required this.metadata,
+    required this.enabled,
+    required this.onFilesChanged,
+    required this.onDeletionsChanged,
+    required this.onMetadataChanged,
+  });
+
+  final GallerySyncPlan plan;
+  final bool files;
+  final bool deletions;
+  final bool metadata;
+  final bool enabled;
+  final ValueChanged<bool> onFilesChanged;
+  final ValueChanged<bool> onDeletionsChanged;
+  final ValueChanged<bool> onMetadataChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final fileCount = plan.toAndroid + plan.toWindows;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(8, 10, 8, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(12, 4, 12, 6),
+              child: Text(
+                'Operazioni da eseguire',
+                style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
+              ),
+            ),
+            CheckboxListTile(
+              value: files,
+              onChanged: enabled
+                  ? (value) => onFilesChanged(value ?? false)
+                  : null,
+              title: Text('File · $fileCount'),
+              subtitle: Text(
+                '${plan.toAndroid} verso Android · '
+                '${plan.toWindows} verso Windows',
+              ),
+              controlAffinity: ListTileControlAffinity.leading,
+            ),
+            CheckboxListTile(
+              value: deletions,
+              onChanged: enabled
+                  ? (value) => onDeletionsChanged(value ?? false)
+                  : null,
+              title: Text('Eliminazioni · ${plan.pendingDeletions}'),
+              subtitle: Text(
+                '${plan.deleteOnAndroid} su Android · '
+                '${plan.deleteOnWindows} su Windows'
+                '${plan.deletionConflicts > 0 ? ' · ${plan.deletionConflicts} conflitti' : ''}',
+              ),
+              controlAffinity: ListTileControlAffinity.leading,
+            ),
+            CheckboxListTile(
+              value: metadata,
+              onChanged: enabled
+                  ? (value) => onMetadataChanged(value ?? false)
+                  : null,
+              title: Text(
+                'Metadata e classifica · ${plan.metadataDifferences}',
+              ),
+              subtitle: Text(
+                '${plan.metadataBaselinePending} baseline da inizializzare'
+                '${plan.metadataResolutionConflicts > 0 ? ' · ${plan.metadataResolutionConflicts} conflitti' : ''}',
+              ),
+              controlAffinity: ListTileControlAffinity.leading,
+            ),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(12, 4, 12, 0),
+              child: Text(
+                'Le categorie deselezionate non vengono modificate. '
+                'Le tombstone continuano soltanto a impedire che un file eliminato '
+                'venga ricreato per errore.',
+                style: TextStyle(
+                  color: AppTheme.muted,
+                  fontSize: 12,
+                  height: 1.4,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _SyncResultCard extends StatelessWidget {
   const _SyncResultCard({required this.result});
 
@@ -979,7 +1133,9 @@ class _SyncResultCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final title = result.complete
-        ? 'Ultimo merge completato'
+        ? (result.verifiedSynced
+            ? 'Sincronizzazione completata'
+            : 'Operazioni selezionate completate')
         : result.cancelled
             ? 'Merge interrotto'
             : result.interrupted
@@ -1044,10 +1200,12 @@ class _SyncResultCard extends StatelessWidget {
             Text(
               result.verifiedSynced
                   ? 'Verifica finale: file, metadata, baseline ed eliminazioni allineati'
-                  : 'Verifica finale: ${result.metadataDifferencesAfter} differenze metadata, '
-                      '${result.metadataBaselinePendingAfter} baseline da inizializzare, '
-                      '${result.metadataResolutionConflictsAfter} conflitti metadata e '
-                      '${result.deletionPendingAfter} eliminazioni ancora da allineare',
+                  : result.complete
+                      ? 'Le operazioni selezionate sono complete; le categorie deselezionate restano in attesa.'
+                      : 'Verifica finale: ${result.metadataDifferencesAfter} differenze metadata, '
+                          '${result.metadataBaselinePendingAfter} baseline da inizializzare, '
+                          '${result.metadataResolutionConflictsAfter} conflitti metadata e '
+                          '${result.deletionPendingAfter} eliminazioni ancora da allineare',
             ),
             if (result.failed > 0) Text('Trasferimenti falliti: ${result.failed}'),
             if (result.pending > 0) Text('Non ancora tentati: ${result.pending}'),

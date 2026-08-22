@@ -88,6 +88,46 @@ class EditableMediaMetadata {
   }
 }
 
+enum BatchMetadataMode {
+  keep,
+  add,
+  remove,
+  replace;
+
+  String get wireName => name;
+}
+
+enum BatchAiMode {
+  keep,
+  enable,
+  disable;
+
+  String get wireName => name;
+}
+
+class BatchMetadataUpdateResult {
+  const BatchMetadataUpdateResult({
+    required this.requestedCount,
+    required this.updatedCount,
+  });
+
+  final int requestedCount;
+  final int updatedCount;
+
+  factory BatchMetadataUpdateResult.fromPlatform(Map<Object?, Object?> value) {
+    int readInt(String key) {
+      final raw = value[key];
+      if (raw is num) return raw.toInt();
+      return int.tryParse(raw?.toString() ?? '') ?? 0;
+    }
+
+    return BatchMetadataUpdateResult(
+      requestedCount: readInt('requestedCount'),
+      updatedCount: readInt('updatedCount'),
+    );
+  }
+}
+
 class MediaMetadataEditorService {
   const MediaMetadataEditorService();
 
@@ -141,5 +181,39 @@ class MediaMetadataEditorService {
       );
     }
     return EditableMediaMetadata.fromPlatform(value);
+  }
+
+  Future<BatchMetadataUpdateResult> updateBatchMetadata(
+    String galleryUuid,
+    List<String> syncUuids, {
+    required BatchMetadataMode characterMode,
+    required List<int> characterIds,
+    required BatchMetadataMode tagMode,
+    required List<String> tags,
+    required BatchMetadataMode artistMode,
+    required List<String> artists,
+    required BatchAiMode aiMode,
+  }) async {
+    final value = await _channel.invokeMapMethod<Object?, Object?>(
+      'updateMediaMetadataBatch',
+      <String, Object?>{
+        'galleryUuid': galleryUuid,
+        'syncUuids': syncUuids,
+        'characterMode': characterMode.wireName,
+        'characterIds': characterIds,
+        'tagMode': tagMode.wireName,
+        'tags': tags,
+        'artistMode': artistMode.wireName,
+        'artists': artists,
+        'aiMode': aiMode.wireName,
+      },
+    );
+    if (value == null) {
+      throw PlatformException(
+        code: 'EMPTY_MEDIA_METADATA_BATCH_UPDATE',
+        message: 'L’aggiornamento multiplo non ha restituito un risultato.',
+      );
+    }
+    return BatchMetadataUpdateResult.fromPlatform(value);
   }
 }

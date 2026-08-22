@@ -57,6 +57,12 @@ internal class GalleryOrganizationRepository(private val context: Context) {
         val duplicate: DuplicateMediaRecord?,
     )
 
+    private data class PreparedStoryPage(
+        val source: StorySourceRecord,
+        val targetUri: Uri,
+        val moved: StoryMovedPageRecord,
+    )
+
     @Synchronized
     fun getCatalog(galleryUuid: String, treeUri: Uri): Map<String, Any> {
         val database = GalleryIndexDatabase(context, galleryUuid)
@@ -125,6 +131,525 @@ internal class GalleryOrganizationRepository(private val context: Context) {
             ensureDirectory(franchiseDirectory, name)
             val relativePath = joinRelative(franchise.relativePath, name)
             return characterToMap(database.createCharacter(franchiseId, name, relativePath))
+        } finally {
+            database.close()
+        }
+    }
+
+    @Synchronized
+    fun createStoryFromGallery(
+        galleryUuid: String,
+        treeUri: Uri,
+        rawTitle: String,
+        syncUuids: List<String>,
+    ): Map<String, Any> {
+        val orderedIds = syncUuids.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        if (orderedIds.size < 2) {
+            throw IllegalArgumentException("Seleziona almeno due immagini per creare una storia.")
+        }
+        if (orderedIds.size > MAX_BATCH) {
+            throw IllegalArgumentException("Una storia può contenere al massimo $MAX_BATCH pagine.")
+        }
+        val title = validateFolderName(rawTitle, "storia")
+        val database = GalleryIndexDatabase(context, galleryUuid)
+        var storyDirectory: Uri? = null
+        val prepared = mutableListOf<PreparedStoryPage>()
+        val deletedSources = mutableListOf<PreparedStoryPage>()
+        try {
+            discoverEntities(treeUri, database)
+            val sources = orderedIds.map { syncUuid ->
+                database.storySource(syncUuid)
+                    ?: throw IllegalArgumentException(
+                        "Una o più immagini non sono disponibili oppure appartengono già a una storia.",
+                    )
+            }
+            val withoutCharacters = sources.filter { it.characterIds.isEmpty() }
+            if (withoutCharacters.isNotEmpty()) {
+                throw IllegalArgumentException(
+                    "Ogni pagina deve avere almeno un personaggio prima di essere inserita nella storia.",
+                )
+            }
+            for (source in sources) {
+                if (!documentExists(Uri.parse(source.documentUri))) {
+                    throw IllegalStateException("File non più disponibile: ${source.relativePath}")
+                }
+            }
+            val characters = requireCharacters(database, sources.flatMap { it.characterIds }.distinct())
+            val aiGenerated = sources.all { it.aiGenerated }
+            val destination = determineDestination(characters, aiGenerated)
+            val root = rootDocumentUri(treeUri)
+            val baseDirectory = ensurePath(root, destination.folderRelativePath)
+            val storiesDirectory = ensureDirectory(baseDirectory, STORIES_FOLDER)
+            val (createdStoryDirectory, folderName) = createUniqueStoryDirectory(storiesDirectory, title)
+            storyDirectory = createdStoryDirectory
+            val storyRelativePath = joinRelative(
+                destination.folderRelativePath,
+                joinRelative(STORIES_FOLDER, folderName),
+            )
+            val pagePrefix = "${destination.prefix}_${normalizeFilenameComponent(title)}"
+
+            for ((index, source) in sources.withIndex()) {
+                val extension = source.extension.lowercase(Locale.ROOT).filter(::isAsciiAlphanumeric)
+                if (extension.isEmpty()) {
+                    throw IllegalArgumentException("Estensione non valida: ${source.relativePath}")
+                }
+                val filename = "${pagePrefix}_${(index + 1).toString().padStart(3, '0')}.$extension"
+                val mimeType = source.mimeType.ifBlank { mimeTypeForExtension(extension) }
+                val target = DocumentsContract.createDocument(
+                    context.contentResolver,
+                    createdStoryDirectory,
+                    mimeType,
+                    filename,
+                ) ?: throw IllegalStateException("Android non ha creato una pagina della storia.")
+                try {
+                    copyDocument(Uri.parse(source.documentUri), target)
+                    val copiedSha = calculateSha256(target)
+                    if (!copiedSha.equals(source.sha256, ignoreCase = true)) {
+                        throw IllegalStateException("La verifica SHA-256 di una pagina della storia non è riuscita.")
+                    }
+                    val metadata = queryDocument(target)
+                    val relativePath = joinRelative(storyRelativePath, filename)
+                    prepared += PreparedStoryPage(
+                        source = source,
+                        targetUri = target,
+                        moved = StoryMovedPageRecord(
+                            syncUuid = source.syncUuid,
+                            originalRelativePath = source.relativePath,
+                            relativePath = relativePath,
+                            filename = filename,
+                            documentUri = target.toString(),
+                            documentId = DocumentsContract.getDocumentId(target),
+                            sizeBytes = metadata?.sizeBytes?.coerceAtLeast(0L) ?: source.sizeBytes,
+                            modifiedEpochMs = metadata?.modifiedEpochMs?.coerceAtLeast(0L)
+                                ?: System.currentTimeMillis(),
+                        ),
+                    )
+                } catch (error: Exception) {
+                    try { DocumentsContract.deleteDocument(context.contentResolver, target) } catch (_: Exception) {}
+                    throw error
+                }
+            }
+
+            try {
+                for (page in prepared) {
+                    if (!DocumentsContract.deleteDocument(
+                            context.contentResolver,
+                            Uri.parse(page.source.documentUri),
+                        )
+                    ) {
+                        throw IllegalStateException("Android non ha rimosso una pagina dalla posizione originale.")
+                    }
+                    deletedSources += page
+                }
+                database.recordCreatedStory(
+                    title = folderName,
+                    relativePath = storyRelativePath,
+                    aiGenerated = aiGenerated,
+                    pages = prepared.map { it.moved },
+                )
+            } catch (error: Exception) {
+                val restorationErrors = mutableListOf<String>()
+                for (page in deletedSources.asReversed()) {
+                    try {
+                        val restored = restoreStorySource(root, page)
+                        database.updateStorySourceIdentity(
+                            syncUuid = page.source.syncUuid,
+                            documentUri = restored.uri.toString(),
+                            documentId = restored.documentId,
+                            sizeBytes = restored.sizeBytes,
+                            modifiedEpochMs = restored.modifiedEpochMs,
+                        )
+                    } catch (restoreError: Exception) {
+                        restorationErrors += safeMessage(restoreError)
+                    }
+                }
+                if (restorationErrors.isEmpty()) {
+                    cleanupPreparedStory(prepared, createdStoryDirectory)
+                }
+                if (restorationErrors.isNotEmpty()) {
+                    throw IllegalStateException(
+                        "${safeMessage(error)} Il ripristino automatico di una o più pagine non è riuscito; " +
+                            "le copie nella cartella della storia sono state conservate.",
+                        error,
+                    )
+                }
+                throw error
+            }
+
+            return mapOf(
+                "status" to "created",
+                "title" to folderName,
+                "folderName" to folderName,
+                "relativePath" to storyRelativePath,
+                "pageCount" to prepared.size,
+                "category" to destination.category,
+                "aiGenerated" to aiGenerated,
+            )
+        } catch (error: Exception) {
+            if (deletedSources.isEmpty() && prepared.isNotEmpty()) {
+                val directory = storyDirectory
+                if (directory != null) cleanupPreparedStory(prepared, directory)
+            } else if (prepared.isEmpty()) {
+                val directory = storyDirectory
+                if (directory != null) {
+                    try { DocumentsContract.deleteDocument(context.contentResolver, directory) } catch (_: Exception) {}
+                }
+            }
+            throw error
+        } finally {
+            database.close()
+        }
+    }
+
+    @Synchronized
+    fun updateStory(
+        galleryUuid: String,
+        treeUri: Uri,
+        currentRelativePath: String,
+        rawTitle: String,
+        syncUuids: List<String>,
+        requestedCoverSyncUuid: String?,
+    ): Map<String, Any> {
+        val orderedIds = syncUuids.map { it.trim() }.filter { it.isNotEmpty() }
+        if (orderedIds.size < 2) {
+            throw IllegalArgumentException(
+                "Una storia deve contenere almeno due pagine. Rimuovi soltanto le pagine che vuoi riportare in galleria.",
+            )
+        }
+        if (orderedIds.size > MAX_BATCH) {
+            throw IllegalArgumentException("Una storia può contenere al massimo $MAX_BATCH pagine.")
+        }
+        if (orderedIds.distinct().size != orderedIds.size) {
+            throw IllegalArgumentException("La stessa immagine non può essere inserita due volte nella storia.")
+        }
+        val title = validateFolderName(rawTitle, "storia")
+        val database = GalleryIndexDatabase(context, galleryUuid)
+        val preparedStory = mutableListOf<PreparedStoryPage>()
+        val preparedRemoved = mutableListOf<PreparedStoryPage>()
+        val deletedSources = mutableListOf<PreparedStoryPage>()
+        var stagingDirectory: Uri? = null
+        var finalStoryDirectory: Uri? = null
+        var oldStoryDirectory: Uri? = null
+        var oldStoryBackupDirectory: Uri? = null
+        try {
+            discoverEntities(treeUri, database)
+            val currentIds = database.storyPageSyncUuids(currentRelativePath)
+            if (currentIds.size < 2) throw IllegalArgumentException("Storia non trovata oppure non modificabile.")
+            val currentSet = currentIds.toSet()
+            val allIds = (currentIds + orderedIds).distinct()
+            val sources = allIds.associateWith { syncUuid ->
+                database.storyEditSource(syncUuid, currentRelativePath)
+                    ?: throw IllegalArgumentException(
+                        "Una o più immagini non sono disponibili oppure appartengono già a un'altra storia.",
+                    )
+            }
+            for (source in sources.values) {
+                if (!documentExists(Uri.parse(source.documentUri))) {
+                    throw IllegalStateException("File non più disponibile: ${source.relativePath}")
+                }
+            }
+            val finalSources = orderedIds.map { sources.getValue(it) }
+            if (finalSources.any { it.characterIds.isEmpty() }) {
+                throw IllegalArgumentException(
+                    "Ogni pagina della storia deve avere almeno un personaggio associato.",
+                )
+            }
+            val removedIds = currentIds.filter { it !in orderedIds.toSet() }
+            val removedSources = removedIds.map { sources.getValue(it) }
+            if (removedSources.any { it.characterIds.isEmpty() }) {
+                throw IllegalArgumentException(
+                    "Una pagina rimossa non ha personaggi associati e non può essere ricollocata.",
+                )
+            }
+
+            val root = rootDocumentUri(treeUri)
+            val currentDirectory = findPath(root, currentRelativePath)
+                ?: throw IllegalStateException("La cartella corrente della storia non è più disponibile.")
+            oldStoryDirectory = currentDirectory
+            val currentDocumentIds = currentIds.map { sources.getValue(it).documentId }.toSet()
+            val unexpectedChildren = queryChildren(currentDirectory).filter {
+                it.documentId !in currentDocumentIds
+            }
+            if (unexpectedChildren.isNotEmpty()) {
+                throw IllegalStateException(
+                    "La cartella della storia contiene elementi non indicizzati. Rimuovili o esegui una nuova scansione prima di modificarla.",
+                )
+            }
+
+            val characters = requireCharacters(database, finalSources.flatMap { it.characterIds }.distinct())
+            val aiGenerated = finalSources.all { it.aiGenerated }
+            val destination = determineDestination(characters, aiGenerated)
+            val baseDirectory = ensurePath(root, destination.folderRelativePath)
+            val storiesDirectory = ensureDirectory(baseDirectory, STORIES_FOLDER)
+            val currentDirectoryId = DocumentsContract.getDocumentId(currentDirectory)
+
+            var folderCounter = 0
+            var folderName: String
+            while (true) {
+                folderName = if (folderCounter == 0) title else "$title ${folderCounter.toString().padStart(2, '0')}"
+                val existing = findChild(storiesDirectory, folderName)
+                if (existing == null || existing.documentId == currentDirectoryId) break
+                folderCounter += 1
+            }
+            val storyRelativePath = joinRelative(
+                destination.folderRelativePath,
+                joinRelative(STORIES_FOLDER, folderName),
+            )
+            val pagePrefix = "${destination.prefix}_${normalizeFilenameComponent(title)}"
+
+            val stagingName = ".hg-story-edit-${UUID.randomUUID().toString().take(8)}"
+            val createdStaging = DocumentsContract.createDocument(
+                context.contentResolver,
+                storiesDirectory,
+                DocumentsContract.Document.MIME_TYPE_DIR,
+                stagingName,
+            ) ?: throw IllegalStateException("Android non ha creato l'area temporanea della storia.")
+            stagingDirectory = createdStaging
+
+            fun prepareCopy(
+                source: StorySourceRecord,
+                parent: Uri,
+                relativePath: String,
+                filename: String,
+            ): PreparedStoryPage {
+                val extension = source.extension.lowercase(Locale.ROOT).filter(::isAsciiAlphanumeric)
+                if (extension.isEmpty()) throw IllegalArgumentException("Estensione non valida: ${source.relativePath}")
+                val mimeType = source.mimeType.ifBlank { mimeTypeForExtension(extension) }
+                val target = DocumentsContract.createDocument(
+                    context.contentResolver,
+                    parent,
+                    mimeType,
+                    filename,
+                ) ?: throw IllegalStateException("Android non ha creato una copia temporanea della pagina.")
+                try {
+                    copyDocument(Uri.parse(source.documentUri), target)
+                    if (!calculateSha256(target).equals(source.sha256, ignoreCase = true)) {
+                        throw IllegalStateException("La verifica SHA-256 di una pagina non è riuscita.")
+                    }
+                    val metadata = queryDocument(target)
+                        ?: throw IllegalStateException("Android non ha restituito i dati della pagina copiata.")
+                    if (!metadata.displayName.equals(filename, ignoreCase = false)) {
+                        throw IllegalStateException("Il provider Android ha modificato il nome del file di destinazione.")
+                    }
+                    return PreparedStoryPage(
+                        source = source,
+                        targetUri = target,
+                        moved = StoryMovedPageRecord(
+                            syncUuid = source.syncUuid,
+                            originalRelativePath = source.relativePath,
+                            relativePath = relativePath,
+                            filename = filename,
+                            documentUri = target.toString(),
+                            documentId = metadata.documentId,
+                            sizeBytes = metadata.sizeBytes.coerceAtLeast(0L),
+                            modifiedEpochMs = metadata.modifiedEpochMs.coerceAtLeast(0L),
+                        ),
+                    )
+                } catch (error: Exception) {
+                    try { DocumentsContract.deleteDocument(context.contentResolver, target) } catch (_: Exception) {}
+                    throw error
+                }
+            }
+
+            for ((index, source) in finalSources.withIndex()) {
+                val extension = source.extension.lowercase(Locale.ROOT).filter(::isAsciiAlphanumeric)
+                val filename = "${pagePrefix}_${(index + 1).toString().padStart(3, '0')}.$extension"
+                preparedStory += prepareCopy(
+                    source,
+                    createdStaging,
+                    joinRelative(storyRelativePath, filename),
+                    filename,
+                )
+            }
+
+            val nextCounters = mutableMapOf<String, Int>()
+            for (source in removedSources) {
+                val pageCharacters = requireCharacters(database, source.characterIds)
+                val pageDestination = determineDestination(pageCharacters, source.aiGenerated)
+                val key = "${pageDestination.logicalRootRelativePath}|${pageDestination.prefix}"
+                val next = nextCounters[key] ?: run {
+                    val logicalRoot = findPath(root, pageDestination.logicalRootRelativePath)
+                    findMaximumCounter(logicalRoot, pageDestination.prefix) + 1
+                }
+                val extension = source.extension.lowercase(Locale.ROOT).filter(::isAsciiAlphanumeric)
+                if (extension.isEmpty()) throw IllegalArgumentException("Estensione non valida: ${source.relativePath}")
+                val filename = "${pageDestination.prefix}_${next.toString().padStart(6, '0')}.$extension"
+                nextCounters[key] = next + 1
+                val pageDirectory = ensurePath(root, pageDestination.folderRelativePath)
+                preparedRemoved += prepareCopy(
+                    source,
+                    pageDirectory,
+                    joinRelative(pageDestination.folderRelativePath, filename),
+                    filename,
+                )
+            }
+
+            val preparedById = (preparedStory + preparedRemoved).associateBy { it.source.syncUuid }
+            try {
+                for (syncUuid in allIds) {
+                    val page = preparedById.getValue(syncUuid)
+                    if (!DocumentsContract.deleteDocument(
+                            context.contentResolver,
+                            Uri.parse(page.source.documentUri),
+                        )
+                    ) {
+                        throw IllegalStateException("Android non ha rimosso una pagina dalla posizione originale.")
+                    }
+                    deletedSources += page
+                }
+
+                val sameFinalDirectory = storyRelativePath.equals(currentRelativePath, ignoreCase = true)
+                if (sameFinalDirectory) {
+                    val backupName = ".hg-story-old-${UUID.randomUUID().toString().take(8)}"
+                    val renamedOld = DocumentsContract.renameDocument(
+                        context.contentResolver,
+                        currentDirectory,
+                        backupName,
+                    ) ?: throw IllegalStateException("Android non ha liberato la cartella corrente della storia.")
+                    oldStoryBackupDirectory = renamedOld
+                    oldStoryDirectory = renamedOld
+                }
+
+                val renamed = DocumentsContract.renameDocument(
+                    context.contentResolver,
+                    createdStaging,
+                    folderName,
+                ) ?: throw IllegalStateException("Android non ha rinominato la nuova cartella della storia.")
+                finalStoryDirectory = findChild(storiesDirectory, folderName)?.uri ?: renamed
+                val finalDirectoryInfo = queryDocument(finalStoryDirectory!!)
+                    ?: throw IllegalStateException("Android non ha restituito la nuova cartella della storia.")
+                if (!finalDirectoryInfo.displayName.equals(folderName, ignoreCase = false)) {
+                    throw IllegalStateException("Il provider Android ha modificato il nome della cartella della storia.")
+                }
+                stagingDirectory = null
+                val finalChildren = queryChildren(finalStoryDirectory!!).associateBy { it.displayName.lowercase(Locale.ROOT) }
+                val reboundStory = preparedStory.map { page ->
+                    val child = finalChildren[page.moved.filename.lowercase(Locale.ROOT)]
+                        ?: throw IllegalStateException("Una pagina non è stata ritrovata dopo la rinomina della storia.")
+                    page.copy(
+                        targetUri = child.uri,
+                        moved = page.moved.copy(
+                            documentUri = child.uri.toString(),
+                            documentId = child.documentId,
+                            sizeBytes = child.sizeBytes.coerceAtLeast(0L),
+                            modifiedEpochMs = child.modifiedEpochMs.coerceAtLeast(0L),
+                        ),
+                    )
+                }
+                preparedStory.clear()
+                preparedStory.addAll(reboundStory)
+
+                val requestedCover = requestedCoverSyncUuid?.trim().orEmpty()
+                val coverSyncUuid = when {
+                    requestedCover.isNotEmpty() && requestedCover in orderedIds -> requestedCover
+                    else -> orderedIds.first()
+                }
+                database.recordUpdatedStory(
+                    currentRelativePath = currentRelativePath,
+                    title = folderName,
+                    relativePath = storyRelativePath,
+                    aiGenerated = aiGenerated,
+                    coverSyncUuid = coverSyncUuid,
+                    pages = preparedStory.map { it.moved },
+                    removedPages = preparedRemoved.map { it.moved },
+                )
+
+                val oldDirectory = oldStoryDirectory
+                if (oldDirectory != null && documentExists(oldDirectory) &&
+                    DocumentsContract.getDocumentId(oldDirectory) != DocumentsContract.getDocumentId(finalStoryDirectory!!)
+                ) {
+                    try { DocumentsContract.deleteDocument(context.contentResolver, oldDirectory) } catch (_: Exception) {}
+                }
+
+                return mapOf(
+                    "status" to "updated",
+                    "title" to folderName,
+                    "folderName" to folderName,
+                    "relativePath" to storyRelativePath,
+                    "pageCount" to orderedIds.size,
+                    "coverSyncUuid" to coverSyncUuid,
+                    "aiGenerated" to aiGenerated,
+                    "addedPages" to orderedIds.count { it !in currentSet },
+                    "removedPages" to removedIds.size,
+                )
+            } catch (error: Exception) {
+                var rollbackStoryPages = preparedStory.toList()
+                var rollbackDirectory = finalStoryDirectory
+                if (rollbackDirectory != null &&
+                    storyRelativePath.equals(currentRelativePath, ignoreCase = true)
+                ) {
+                    try {
+                        val rollbackName = ".hg-story-rollback-${UUID.randomUUID().toString().take(8)}"
+                        val renamedRollback = DocumentsContract.renameDocument(
+                            context.contentResolver,
+                            rollbackDirectory,
+                            rollbackName,
+                        )
+                        if (renamedRollback != null) {
+                            rollbackDirectory = renamedRollback
+                            val children = queryChildren(rollbackDirectory).associateBy {
+                                it.displayName.lowercase(Locale.ROOT)
+                            }
+                            rollbackStoryPages = rollbackStoryPages.map { page ->
+                                val child = children[page.moved.filename.lowercase(Locale.ROOT)] ?: return@map page
+                                page.copy(targetUri = child.uri)
+                            }
+                        }
+                    } catch (_: Exception) {
+                        // Il ripristino tenterà comunque di usare gli URI già disponibili.
+                    }
+                }
+                val rollbackById = (rollbackStoryPages + preparedRemoved).associateBy { it.source.syncUuid }
+                val restorationErrors = mutableListOf<String>()
+                for (deleted in deletedSources.asReversed()) {
+                    val sourceCopy = rollbackById[deleted.source.syncUuid] ?: deleted
+                    try {
+                        val restored = restoreStorySource(root, sourceCopy)
+                        database.updateStorySourceIdentity(
+                            syncUuid = deleted.source.syncUuid,
+                            documentUri = restored.uri.toString(),
+                            documentId = restored.documentId,
+                            sizeBytes = restored.sizeBytes,
+                            modifiedEpochMs = restored.modifiedEpochMs,
+                        )
+                    } catch (restoreError: Exception) {
+                        restorationErrors += safeMessage(restoreError)
+                    }
+                }
+                if (restorationErrors.isEmpty()) {
+                    rollbackDirectory?.let { directory ->
+                        try { DocumentsContract.deleteDocument(context.contentResolver, directory) } catch (_: Exception) {}
+                    }
+                    stagingDirectory?.let { directory ->
+                        try { DocumentsContract.deleteDocument(context.contentResolver, directory) } catch (_: Exception) {}
+                    }
+                    for (page in preparedRemoved) {
+                        try { DocumentsContract.deleteDocument(context.contentResolver, page.targetUri) } catch (_: Exception) {}
+                    }
+                    val backup = oldStoryBackupDirectory
+                    if (backup != null && documentExists(backup)) {
+                        try { DocumentsContract.deleteDocument(context.contentResolver, backup) } catch (_: Exception) {}
+                    }
+                }
+                if (restorationErrors.isNotEmpty()) {
+                    throw IllegalStateException(
+                        "${safeMessage(error)} Il ripristino automatico di una o più pagine non è riuscito; " +
+                            "le copie di sicurezza sono state conservate.",
+                        error,
+                    )
+                }
+                throw error
+            }
+        } catch (error: Exception) {
+            if (deletedSources.isEmpty()) {
+                stagingDirectory?.let { directory ->
+                    try { DocumentsContract.deleteDocument(context.contentResolver, directory) } catch (_: Exception) {}
+                }
+                for (page in preparedRemoved) {
+                    try { DocumentsContract.deleteDocument(context.contentResolver, page.targetUri) } catch (_: Exception) {}
+                }
+            }
+            throw error
         } finally {
             database.close()
         }
@@ -742,6 +1267,57 @@ internal class GalleryOrganizationRepository(private val context: Context) {
         return MimeTypeMap.getSingleton()
             .getMimeTypeFromExtension(extension.lowercase(Locale.ROOT))
             ?: "application/octet-stream"
+    }
+
+    private fun createUniqueStoryDirectory(parent: Uri, title: String): Pair<Uri, String> {
+        var counter = 0
+        while (true) {
+            val name = if (counter == 0) title else "$title ${counter.toString().padStart(2, '0')}"
+            if (findChild(parent, name) == null) {
+                val uri = DocumentsContract.createDocument(
+                    context.contentResolver,
+                    parent,
+                    DocumentsContract.Document.MIME_TYPE_DIR,
+                    name,
+                ) ?: throw IllegalStateException("Android non ha creato la cartella della storia.")
+                return uri to name
+            }
+            counter += 1
+        }
+    }
+
+    private fun restoreStorySource(root: Uri, page: PreparedStoryPage): ChildEntry {
+        val source = page.source
+        val parentPath = source.relativePath.substringBeforeLast('/', "")
+        val parent = ensurePath(root, parentPath)
+        if (findChild(parent, source.filename) != null) {
+            throw IllegalStateException("Non posso ripristinare ${source.filename}: il nome è già occupato.")
+        }
+        val mimeType = source.mimeType.ifBlank { mimeTypeForExtension(source.extension) }
+        val restored = DocumentsContract.createDocument(
+            context.contentResolver,
+            parent,
+            mimeType,
+            source.filename,
+        ) ?: throw IllegalStateException("Android non ha ricreato ${source.filename}.")
+        try {
+            copyDocument(page.targetUri, restored)
+            if (!calculateSha256(restored).equals(source.sha256, ignoreCase = true)) {
+                throw IllegalStateException("La verifica SHA-256 del ripristino non è riuscita.")
+            }
+            return queryDocument(restored)
+                ?: throw IllegalStateException("Android non ha restituito i dati del file ripristinato.")
+        } catch (error: Exception) {
+            try { DocumentsContract.deleteDocument(context.contentResolver, restored) } catch (_: Exception) {}
+            throw error
+        }
+    }
+
+    private fun cleanupPreparedStory(pages: List<PreparedStoryPage>, directory: Uri) {
+        for (page in pages.asReversed()) {
+            try { DocumentsContract.deleteDocument(context.contentResolver, page.targetUri) } catch (_: Exception) {}
+        }
+        try { DocumentsContract.deleteDocument(context.contentResolver, directory) } catch (_: Exception) {}
     }
 
     private fun validateFolderName(raw: String, kind: String): String {
