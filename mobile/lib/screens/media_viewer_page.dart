@@ -331,13 +331,96 @@ class _ImageMediaView extends StatefulWidget {
   State<_ImageMediaView> createState() => _ImageMediaViewState();
 }
 
-class _ImageMediaViewState extends State<_ImageMediaView> {
+class _ImageMediaViewState extends State<_ImageMediaView>
+    with SingleTickerProviderStateMixin {
   final TransformationController _transformationController =
       TransformationController();
+
+  late final AnimationController _lockedTapController;
+  late final Animation<double> _pumpScale;
+  late final Animation<double> _heartOpacity;
+  late final Animation<double> _heartScale;
+
   bool _zoomed = false;
 
   @override
+  void initState() {
+    super.initState();
+
+    _lockedTapController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 420),
+    );
+
+    _pumpScale = TweenSequence<double>([
+      TweenSequenceItem(
+        tween: Tween<double>(begin: 1, end: 0.965).chain(
+          CurveTween(curve: Curves.easeOut),
+        ),
+        weight: 18,
+      ),
+      TweenSequenceItem(
+        tween: Tween<double>(begin: 0.965, end: 1.04).chain(
+          CurveTween(curve: Curves.easeOutBack),
+        ),
+        weight: 32,
+      ),
+      TweenSequenceItem(
+        tween: Tween<double>(begin: 1.04, end: 1).chain(
+          CurveTween(curve: Curves.easeOutCubic),
+        ),
+        weight: 50,
+      ),
+    ]).animate(_lockedTapController);
+
+    _heartOpacity = TweenSequence<double>([
+      TweenSequenceItem(
+        tween: Tween<double>(begin: 0, end: 1).chain(
+          CurveTween(curve: Curves.easeOut),
+        ),
+        weight: 18,
+      ),
+      TweenSequenceItem(
+        tween: ConstantTween<double>(1),
+        weight: 32,
+      ),
+      TweenSequenceItem(
+        tween: Tween<double>(begin: 1, end: 0).chain(
+          CurveTween(curve: Curves.easeInCubic),
+        ),
+        weight: 50,
+      ),
+    ]).animate(_lockedTapController);
+
+    _heartScale = TweenSequence<double>([
+      TweenSequenceItem(
+        tween: Tween<double>(begin: 0.92, end: 1.035).chain(
+          CurveTween(curve: Curves.easeOutBack),
+        ),
+        weight: 44,
+      ),
+      TweenSequenceItem(
+        tween: Tween<double>(begin: 1.035, end: 1).chain(
+          CurveTween(curve: Curves.easeOutCubic),
+        ),
+        weight: 56,
+      ),
+    ]).animate(_lockedTapController);
+  }
+
+  @override
+  void didUpdateWidget(covariant _ImageMediaView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.locked && !widget.locked) {
+      _lockedTapController
+        ..stop()
+        ..value = 0;
+    }
+  }
+
+  @override
   void dispose() {
+    _lockedTapController.dispose();
     _transformationController.dispose();
     super.dispose();
   }
@@ -354,13 +437,48 @@ class _ImageMediaViewState extends State<_ImageMediaView> {
     _updateZoomState();
   }
 
+  void _handleTap() {
+    if (widget.locked) {
+      _lockedTapController.forward(from: 0);
+      return;
+    }
+    widget.onTap();
+  }
+
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
-      onTap: widget.onTap,
+      onTap: _handleTap,
       onDoubleTap: !widget.locked && _zoomed ? _resetZoom : null,
-      child: Center(
+      child: AnimatedBuilder(
+        animation: _lockedTapController,
+        builder: (context, child) {
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              Center(
+                child: Transform.scale(
+                  scale: widget.locked ? _pumpScale.value : 1,
+                  child: child,
+                ),
+              ),
+              if (widget.locked && _lockedTapController.value > 0)
+                IgnorePointer(
+                  child: Opacity(
+                    opacity: _heartOpacity.value,
+                    child: Transform.scale(
+                      scale: _heartScale.value,
+                      child: const CustomPaint(
+                        painter: _HeartFramePainter(),
+                        child: SizedBox.expand(),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          );
+        },
         child: IgnorePointer(
           ignoring: widget.locked,
           child: InteractiveViewer(
@@ -386,6 +504,97 @@ class _ImageMediaViewState extends State<_ImageMediaView> {
       ),
     );
   }
+}
+
+class _HeartFramePainter extends CustomPainter {
+  const _HeartFramePainter();
+
+  static const Color _heartColor = Color(0xFFFF5CA8);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.isEmpty) return;
+
+    final width = size.width * 0.88;
+    final height = size.height * 0.76;
+    final left = (size.width - width) / 2;
+    final top = (size.height - height) / 2;
+    final right = left + width;
+    final bottom = top + height;
+    final centerX = size.width / 2;
+
+    final path = Path()
+      ..moveTo(centerX, bottom)
+      ..cubicTo(
+        left + width * 0.08,
+        top + height * 0.70,
+        left,
+        top + height * 0.46,
+        left,
+        top + height * 0.29,
+      )
+      ..cubicTo(
+        left,
+        top + height * 0.10,
+        left + width * 0.14,
+        top,
+        left + width * 0.30,
+        top,
+      )
+      ..cubicTo(
+        left + width * 0.42,
+        top,
+        centerX,
+        top + height * 0.11,
+        centerX,
+        top + height * 0.22,
+      )
+      ..cubicTo(
+        centerX,
+        top + height * 0.11,
+        right - width * 0.42,
+        top,
+        right - width * 0.30,
+        top,
+      )
+      ..cubicTo(
+        right - width * 0.14,
+        top,
+        right,
+        top + height * 0.10,
+        right,
+        top + height * 0.29,
+      )
+      ..cubicTo(
+        right,
+        top + height * 0.46,
+        right - width * 0.08,
+        top + height * 0.70,
+        centerX,
+        bottom,
+      )
+      ..close();
+
+    final glowPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 14
+      ..strokeJoin = StrokeJoin.round
+      ..strokeCap = StrokeCap.round
+      ..color = _heartColor.withValues(alpha: 0.28);
+
+    final borderPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 6
+      ..strokeJoin = StrokeJoin.round
+      ..strokeCap = StrokeCap.round
+      ..color = _heartColor;
+
+    canvas.drawPath(path, glowPaint);
+    canvas.drawPath(path, borderPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _HeartFramePainter oldDelegate) => false;
 }
 
 class _VideoMediaView extends StatefulWidget {

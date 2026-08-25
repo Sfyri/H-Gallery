@@ -34,12 +34,20 @@ class _TrashMediaTabState extends State<TrashMediaTab> {
   static const int _pageSize = 120;
 
   final ScrollController _scrollController = ScrollController();
+  final Set<int> _selectedTrashIds = <int>{};
+
   TrashStats _stats = const TrashStats(total: 0, totalBytes: 0);
   List<TrashItem> _items = const [];
   bool _loading = true;
   bool _loadingMore = false;
   bool _busy = false;
   Object? _error;
+
+  bool get _selectionMode => _selectedTrashIds.isNotEmpty;
+
+  List<TrashItem> get _selectedItems => _items
+      .where((item) => _selectedTrashIds.contains(item.trashId))
+      .toList(growable: false);
 
   @override
   void initState() {
@@ -71,6 +79,30 @@ class _TrashMediaTabState extends State<TrashMediaTab> {
     }
   }
 
+  void _pruneSelection() {
+    final available = _items.map((item) => item.trashId).toSet();
+    _selectedTrashIds.retainWhere(available.contains);
+  }
+
+  void _startSelection(TrashItem item) {
+    if (_busy) return;
+    setState(() => _selectedTrashIds.add(item.trashId));
+  }
+
+  void _toggleSelection(TrashItem item) {
+    if (_busy) return;
+    setState(() {
+      if (!_selectedTrashIds.add(item.trashId)) {
+        _selectedTrashIds.remove(item.trashId);
+      }
+    });
+  }
+
+  void _clearSelection() {
+    if (_busy || _selectedTrashIds.isEmpty) return;
+    setState(_selectedTrashIds.clear);
+  }
+
   Future<void> _reload() async {
     setState(() {
       _loading = true;
@@ -86,6 +118,7 @@ class _TrashMediaTabState extends State<TrashMediaTab> {
       setState(() {
         _stats = stats;
         _items = items;
+        _pruneSelection();
       });
     } catch (error) {
       if (!mounted) return;
@@ -115,6 +148,7 @@ class _TrashMediaTabState extends State<TrashMediaTab> {
   }
 
   Future<void> _openViewer(int index) async {
+    if (_selectionMode) return;
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
         builder: (context) => MediaViewerPage(
@@ -123,64 +157,6 @@ class _TrashMediaTabState extends State<TrashMediaTab> {
           initialIndex: index,
           totalCount: _stats.total,
           mediaService: widget.mediaService,
-        ),
-      ),
-    );
-  }
-
-  Future<void> _showActions(TrashItem item) async {
-    await showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      backgroundColor: AppTheme.panel,
-      builder: (sheetContext) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text(
-                item.media.filename,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w700),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Origine: ${item.originalRelativePath}',
-                style: const TextStyle(color: AppTheme.muted),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'Eliminato: ${_formatDate(item.deletedAtEpochMs)}',
-                style: const TextStyle(color: AppTheme.muted),
-              ),
-              const SizedBox(height: 18),
-              FilledButton.icon(
-                onPressed: _busy
-                    ? null
-                    : () {
-                        Navigator.of(sheetContext).pop();
-                        unawaited(_restore(item));
-                      },
-                icon: const Icon(Icons.restore_rounded),
-                label: const Text('Ripristina'),
-              ),
-              const SizedBox(height: 8),
-              OutlinedButton.icon(
-                onPressed: _busy
-                    ? null
-                    : () {
-                        Navigator.of(sheetContext).pop();
-                        unawaited(_deletePermanently(item));
-                      },
-                style: OutlinedButton.styleFrom(foregroundColor: AppTheme.error),
-                icon: const Icon(Icons.delete_forever_outlined),
-                label: const Text('Elimina definitivamente'),
-              ),
-            ],
-          ),
         ),
       ),
     );
@@ -243,13 +219,22 @@ class _TrashMediaTabState extends State<TrashMediaTab> {
     }
   }
 
-  Future<void> _deletePermanently(TrashItem item) async {
+
+  Future<void> _deleteSelectionPermanently() async {
+    if (_busy) return;
+    final selected = _selectedItems;
+    if (selected.isEmpty) return;
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Eliminare definitivamente?'),
         content: Text(
-          '${item.media.filename}\n\nQuesta operazione non può essere annullata.',
+          selected.length == 1
+              ? '${selected.single.media.filename}\n\n'
+                  'Questa operazione non può essere annullata.'
+              : 'Verranno eliminati definitivamente ${selected.length} media selezionati. '
+                  'Questa operazione non può essere annullata.',
         ),
         actions: [
           TextButton(
@@ -264,26 +249,60 @@ class _TrashMediaTabState extends State<TrashMediaTab> {
         ],
       ),
     );
-    if (confirmed != true || !mounted || _busy) return;
+    if (confirmed != true || !mounted) return;
 
     setState(() => _busy = true);
-    try {
-      await widget.trashService.permanentlyDelete(
-        widget.gallery.galleryUuid,
-        item.trashId,
-      );
-      if (!mounted) return;
-      widget.onChanged?.call();
-      await _reload();
-      if (!mounted) return;
+    final failedIds = <int>{};
+    final failureMessages = <String>[];
+    var deleted = 0;
+
+    for (final item in selected) {
+      try {
+        await widget.trashService.permanentlyDelete(
+          widget.gallery.galleryUuid,
+          item.trashId,
+        );
+        deleted += 1;
+      } on PlatformException catch (error) {
+        failedIds.add(item.trashId);
+        failureMessages.add(error.message ?? item.media.filename);
+      } catch (_) {
+        failedIds.add(item.trashId);
+        failureMessages.add(item.media.filename);
+      }
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      _selectedTrashIds
+        ..clear()
+        ..addAll(failedIds);
+    });
+
+    if (deleted > 0) widget.onChanged?.call();
+    await _reload();
+    if (!mounted) return;
+
+    if (failureMessages.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Media eliminato definitivamente.')),
+        SnackBar(
+          content: Text(
+            deleted == 1
+                ? 'Media eliminato definitivamente.'
+                : '$deleted media eliminati definitivamente.',
+          ),
+        ),
       );
-    } on PlatformException catch (error) {
-      if (!mounted) return;
-      _showError(error.message ?? 'Eliminazione non riuscita.');
-    } finally {
-      if (mounted) setState(() => _busy = false);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '$deleted eliminati, ${failureMessages.length} non riusciti. '
+            '${failureMessages.first}',
+          ),
+        ),
+      );
     }
   }
 
@@ -353,11 +372,22 @@ class _TrashMediaTabState extends State<TrashMediaTab> {
               padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
               child: _TrashHeader(
                 stats: _stats,
-                busy: _busy,
+                busy: _busy || _selectionMode,
                 onEmpty: _emptyTrash,
               ),
             ),
           ),
+          if (_selectionMode)
+            SliverToBoxAdapter(
+              child: _TrashSelectionBar(
+                count: _selectedTrashIds.length,
+                busy: _busy,
+                canRestore: _selectedTrashIds.length == 1,
+                onClose: _clearSelection,
+                onRestore: () => _restore(_selectedItems.single),
+                onDelete: _deleteSelectionPermanently,
+              ),
+            ),
           if (_items.isEmpty)
             const SliverFillRemaining(
               hasScrollBody: false,
@@ -370,13 +400,18 @@ class _TrashMediaTabState extends State<TrashMediaTab> {
                 delegate: SliverChildBuilderDelegate(
                   (context, index) {
                     final item = _items[index];
+                    final selected = _selectedTrashIds.contains(item.trashId);
                     return MediaThumbnailTile(
                       key: ValueKey(item.media.syncUuid),
                       galleryUuid: widget.gallery.galleryUuid,
                       item: item.media,
                       mediaService: widget.mediaService,
-                      onTap: () => _openViewer(index),
-                      onLongPress: () => _showActions(item),
+                      selected: selected,
+                      selectionMode: _selectionMode,
+                      onTap: _selectionMode
+                          ? () => _toggleSelection(item)
+                          : () => _openViewer(index),
+                      onLongPress: () => _startSelection(item),
                     );
                   },
                   childCount: _items.length,
@@ -408,12 +443,80 @@ class _TrashMediaTabState extends State<TrashMediaTab> {
     return 'Impossibile leggere il cestino.';
   }
 
-  String _formatDate(int epochMs) {
-    if (epochMs <= 0) return '—';
-    final value = DateTime.fromMillisecondsSinceEpoch(epochMs).toLocal();
-    String two(int number) => number.toString().padLeft(2, '0');
-    return '${two(value.day)}/${two(value.month)}/${value.year} '
-        '${two(value.hour)}:${two(value.minute)}';
+}
+
+class _TrashSelectionBar extends StatelessWidget {
+  const _TrashSelectionBar({
+    required this.count,
+    required this.busy,
+    required this.canRestore,
+    required this.onClose,
+    required this.onRestore,
+    required this.onDelete,
+  });
+
+  final int count;
+  final bool busy;
+  final bool canRestore;
+  final VoidCallback onClose;
+  final Future<void> Function() onRestore;
+  final Future<void> Function() onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+      child: Material(
+        color: AppTheme.panel,
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: AppTheme.border),
+          ),
+          child: Row(
+            children: [
+              IconButton(
+                tooltip: 'Chiudi selezione',
+                onPressed: busy ? null : onClose,
+                icon: const Icon(Icons.close_rounded),
+              ),
+              Expanded(
+                child: Text(
+                  '$count selezionat${count == 1 ? 'o' : 'i'}',
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+              ),
+              if (busy)
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 12),
+                  child: SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                )
+              else ...[
+                IconButton(
+                  tooltip: 'Ripristina',
+                  onPressed: canRestore ? onRestore : null,
+                  icon: const Icon(Icons.restore_rounded),
+                ),
+                IconButton(
+                  tooltip: 'Elimina definitivamente',
+                  onPressed: onDelete,
+                  icon: const Icon(
+                    Icons.delete_forever_outlined,
+                    color: AppTheme.error,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 
