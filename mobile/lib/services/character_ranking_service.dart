@@ -50,7 +50,7 @@ class PlatformCharacterRankingService implements CharacterRankingService {
       <String, Object?>{
         'galleryUuid': galleryUuid,
         'limit': limit.clamp(1, 500).toInt(),
-        if (franchiseId != null) 'franchiseId': franchiseId,
+        'franchiseId': ?franchiseId,
       },
     );
     if (values == null) return const <CharacterRankingEntry>[];

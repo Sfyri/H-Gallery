@@ -32,7 +32,7 @@ class _BatchMetadataEditorPageState extends State<BatchMetadataEditorPage> {
   BatchMetadataMode _tagMode = BatchMetadataMode.keep;
   BatchMetadataMode _artistMode = BatchMetadataMode.keep;
   BatchAiMode _aiMode = BatchAiMode.keep;
-  Set<int> _selectedCharacterIds = <int>{};
+  final Set<int> _selectedCharacterIds = <int>{};
   bool _loading = true;
   bool _saving = false;
   String? _error;

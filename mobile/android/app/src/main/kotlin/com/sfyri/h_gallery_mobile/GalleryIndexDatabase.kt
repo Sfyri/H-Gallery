@@ -1045,13 +1045,13 @@ internal class GalleryIndexDatabase(
             val pattern = "%${escapeLike(cleanText)}%"
             where += """
                 (
-                    m.filename LIKE ? ESCAPE '\\' COLLATE NOCASE OR
-                    m.relative_path LIKE ? ESCAPE '\\' COLLATE NOCASE OR
+                    m.filename LIKE ? ESCAPE '\' COLLATE NOCASE OR
+                    m.relative_path LIKE ? ESCAPE '\' COLLATE NOCASE OR
                     EXISTS (
                         SELECT 1 FROM media_tags mt
                         JOIN tags t ON t.id = mt.tag_id
                         WHERE mt.media_sync_uuid = m.sync_uuid
-                          AND t.name LIKE ? ESCAPE '\\' COLLATE NOCASE
+                          AND t.name LIKE ? ESCAPE '\' COLLATE NOCASE
                     ) OR
                     EXISTS (
                         SELECT 1 FROM media_characters mc
@@ -1059,8 +1059,8 @@ internal class GalleryIndexDatabase(
                         JOIN franchises f ON f.id = c.franchise_id
                         WHERE mc.media_sync_uuid = m.sync_uuid
                           AND (
-                              c.name LIKE ? ESCAPE '\\' COLLATE NOCASE OR
-                              f.name LIKE ? ESCAPE '\\' COLLATE NOCASE
+                              c.name LIKE ? ESCAPE '\' COLLATE NOCASE OR
+                              f.name LIKE ? ESCAPE '\' COLLATE NOCASE
                           )
                     )
                 )
@@ -1506,15 +1506,15 @@ internal class GalleryIndexDatabase(
                     SELECT 1 FROM media_tags mt
                     JOIN tags t ON t.id = mt.tag_id
                     WHERE mt.media_sync_uuid = m.sync_uuid
-                      AND t.name LIKE ? ESCAPE '\\' COLLATE NOCASE
+                      AND t.name LIKE ? ESCAPE '\' COLLATE NOCASE
                 ) OR
                 EXISTS (
                     SELECT 1 FROM media_characters mc
                     JOIN characters c ON c.id = mc.character_id
                     JOIN franchises f ON f.id = c.franchise_id
                     WHERE mc.media_sync_uuid = m.sync_uuid
-                      AND (c.name LIKE ? ESCAPE '\\' COLLATE NOCASE OR
-                           f.name LIKE ? ESCAPE '\\' COLLATE NOCASE)
+                      AND (c.name LIKE ? ESCAPE '\' COLLATE NOCASE OR
+                           f.name LIKE ? ESCAPE '\' COLLATE NOCASE)
                 )
               )
             LIMIT 1

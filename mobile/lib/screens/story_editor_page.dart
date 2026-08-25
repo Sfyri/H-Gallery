@@ -137,9 +137,8 @@ class _StoryEditorPageState extends State<StoryEditorPage> {
     });
   }
 
-  void _reorder(int oldIndex, int newIndex) {
+  void _reorderItem(int oldIndex, int newIndex) {
     if (_saving) return;
-    if (newIndex > oldIndex) newIndex -= 1;
     setState(() {
       final page = _pages.removeAt(oldIndex);
       _pages.insert(newIndex, page);
@@ -265,7 +264,7 @@ class _StoryEditorPageState extends State<StoryEditorPage> {
       canPop: _allowPop || !_structureDirty,
       onPopInvokedWithResult: (didPop, result) async {
         if (didPop || _saving) return;
-        if (await _confirmDiscard() && mounted) {
+        if (await _confirmDiscard() && context.mounted) {
           setState(() => _allowPop = true);
           Navigator.of(context).pop();
         }
@@ -356,7 +355,7 @@ class _StoryEditorPageState extends State<StoryEditorPage> {
           child: ReorderableListView.builder(
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 28),
             itemCount: _pages.length,
-            onReorder: _reorder,
+            onReorderItem: _reorderItem,
             buildDefaultDragHandles: false,
             itemBuilder: (context, index) {
               final page = _pages[index];
