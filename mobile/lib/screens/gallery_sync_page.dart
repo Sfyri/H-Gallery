@@ -271,14 +271,6 @@ class _GallerySyncPageState extends State<GallerySyncPage> {
           : ListView(
               padding: const EdgeInsets.fromLTRB(20, 20, 20, 96),
               children: [
-                const Text('M7.6 · Gruppi di sincronizzazione', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
-                const SizedBox(height: 8),
-                const Text(
-                  'Ogni gruppo collega esplicitamente una galleria Android e una Windows. '
-                  'M7.6 sincronizza file, eliminazioni e metadata con un baseline verificato, e conserva la data dell’ultima verifica riuscita.',
-                  style: TextStyle(color: AppTheme.muted, height: 1.45),
-                ),
-                const SizedBox(height: 22),
                 if (pairs.isEmpty)
                   const Card(
                     child: Padding(
@@ -832,11 +824,6 @@ class _GalleryMergePageState extends State<GalleryMergePage> {
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [
-          const Text(
-            'Merge bidirezionale',
-            style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
-          ),
-          const SizedBox(height: 12),
           Card(
             child: Padding(
               padding: const EdgeInsets.all(18),
@@ -1104,19 +1091,6 @@ class _SyncSelectionCard extends StatelessWidget {
                 '${plan.metadataResolutionConflicts > 0 ? ' · ${plan.metadataResolutionConflicts} conflitti' : ''}',
               ),
               controlAffinity: ListTileControlAffinity.leading,
-            ),
-            const Padding(
-              padding: EdgeInsets.fromLTRB(12, 4, 12, 0),
-              child: Text(
-                'Le categorie deselezionate non vengono modificate. '
-                'Le tombstone continuano soltanto a impedire che un file eliminato '
-                'venga ricreato per errore.',
-                style: TextStyle(
-                  color: AppTheme.muted,
-                  fontSize: 12,
-                  height: 1.4,
-                ),
-              ),
             ),
           ],
         ),

@@ -40,7 +40,6 @@ class _SearchMediaTabState extends State<SearchMediaTab> {
 
   String _selectedSeries = '';
   String _selectedCharacter = '';
-  String _selectedSpecial = '';
 
   @override
   void initState() {
@@ -91,11 +90,9 @@ class _SearchMediaTabState extends State<SearchMediaTab> {
 
     final series = catalog.locations.where((entry) => entry.kind == 'series');
     final characters = catalog.locations.where((entry) => entry.kind == 'character');
-    final special = catalog.locations.where((entry) => entry.kind != 'series' && entry.kind != 'character');
 
     if (!exists(_selectedSeries, series)) _selectedSeries = '';
     if (!exists(_selectedCharacter, characters)) _selectedCharacter = '';
-    if (!exists(_selectedSpecial, special)) _selectedSpecial = '';
   }
 
   void _onSearchChanged(String value) {
@@ -120,7 +117,6 @@ class _SearchMediaTabState extends State<SearchMediaTab> {
       _query = const MediaQuerySpec();
       _selectedSeries = '';
       _selectedCharacter = '';
-      _selectedSpecial = '';
     });
   }
 
@@ -130,7 +126,6 @@ class _SearchMediaTabState extends State<SearchMediaTab> {
 
     var seriesPath = _selectedSeries;
     var characterPath = _selectedCharacter;
-    var specialPath = _selectedSpecial;
     var tag = _query.tag;
     var artist = _query.artist;
     var aiOnly = _query.aiOnly;
@@ -140,9 +135,6 @@ class _SearchMediaTabState extends State<SearchMediaTab> {
         .toList(growable: false);
     final allCharacterLocations = catalog.locations
         .where((entry) => entry.kind == 'character')
-        .toList(growable: false);
-    final specialLocations = catalog.locations
-        .where((entry) => entry.kind != 'series' && entry.kind != 'character')
         .toList(growable: false);
 
     if (!catalog.tags.contains(tag)) tag = '';
@@ -199,7 +191,6 @@ class _SearchMediaTabState extends State<SearchMediaTab> {
                         .toList(growable: false),
                     onChanged: (value) => setSheetState(() {
                       seriesPath = value ?? '';
-                      specialPath = '';
                       if (characterPath.isNotEmpty &&
                           !characterPath.startsWith('$seriesPath/')) {
                         characterPath = '';
@@ -227,7 +218,6 @@ class _SearchMediaTabState extends State<SearchMediaTab> {
                         ? null
                         : (value) => setSheetState(() {
                               characterPath = value ?? '';
-                              specialPath = '';
                               if (characterPath.isNotEmpty) {
                                 final parent = characterPath.contains('/')
                                     ? characterPath.substring(0, characterPath.lastIndexOf('/'))
@@ -239,30 +229,6 @@ class _SearchMediaTabState extends State<SearchMediaTab> {
                               }
                             }),
                   ),
-                  if (specialLocations.isNotEmpty) ...[
-                    const SizedBox(height: 12),
-                    DropdownButtonFormField<String>(
-                      key: ValueKey<String>('special:$specialPath'),
-                      initialValue: specialPath.isEmpty ? null : specialPath,
-                      isExpanded: true,
-                      decoration: const InputDecoration(labelText: 'Cartella speciale'),
-                      items: specialLocations
-                          .map(
-                            (value) => DropdownMenuItem<String>(
-                              value: value.relativePath,
-                              child: Text(value.label, overflow: TextOverflow.ellipsis),
-                            ),
-                          )
-                          .toList(growable: false),
-                      onChanged: (value) => setSheetState(() {
-                        specialPath = value ?? '';
-                        if (specialPath.isNotEmpty) {
-                          seriesPath = '';
-                          characterPath = '';
-                        }
-                      }),
-                    ),
-                  ],
                   const SizedBox(height: 12),
                   DropdownButtonFormField<String>(
                     key: ValueKey<String>('tag:$tag'),
@@ -310,8 +276,7 @@ class _SearchMediaTabState extends State<SearchMediaTab> {
                           onPressed: () => setSheetState(() {
                             seriesPath = '';
                             characterPath = '';
-                            specialPath = '';
-                            tag = '';
+                                  tag = '';
                             artist = '';
                             aiOnly = false;
                           }),
@@ -336,15 +301,11 @@ class _SearchMediaTabState extends State<SearchMediaTab> {
     );
 
     if (applied == true && mounted) {
-      final effectiveLocation = characterPath.isNotEmpty
-          ? characterPath
-          : specialPath.isNotEmpty
-              ? specialPath
-              : seriesPath;
+      final effectiveLocation =
+          characterPath.isNotEmpty ? characterPath : seriesPath;
       setState(() {
         _selectedSeries = seriesPath;
         _selectedCharacter = characterPath;
-        _selectedSpecial = specialPath;
         _query = _query.copyWith(
           relativePrefix: effectiveLocation,
           tag: tag,

@@ -680,18 +680,6 @@ class _GalleryMediaTabState extends State<GalleryMediaTab> {
                             });
                           },
                   ),
-                  const SizedBox(height: 10),
-                  OutlinedButton.icon(
-                    onPressed: _scanning || _selectionBusy || _selectionMode ? null : _scan,
-                    icon: _scanning
-                        ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.refresh_rounded),
-                    label: Text(_scanning ? 'Rilettura in corso…' : 'Rileggi cartelle'),
-                  ),
                 ],
               ),
             ),
@@ -998,7 +986,7 @@ class _SelectionBar extends StatelessWidget {
                 IconButton(
                   tooltip: 'Modifica metadati',
                   onPressed: onEditMetadata,
-                  icon: const Icon(Icons.edit_note_rounded),
+                  icon: const Icon(Icons.edit_rounded),
                 ),
                 IconButton(
                   tooltip: canCreateStory

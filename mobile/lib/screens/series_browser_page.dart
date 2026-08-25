@@ -119,11 +119,10 @@ class _SeriesBrowserPageState extends State<SeriesBrowserPage> {
             sliver: SliverToBoxAdapter(
               child: _SeriesHeader(
                 name: detail.name,
-                count: detail.mediaCount,
-                onOpenAll: () => _openCollection(
-                  'Tutti · ${detail.name}',
-                  detail.relativePath,
-                ),
+                characterCount: detail.collections
+                    .where((collection) => collection.kind == 'character')
+                    .length,
+                mediaCount: detail.mediaCount,
               ),
             ),
           ),
@@ -179,13 +178,13 @@ class _SeriesBrowserPageState extends State<SeriesBrowserPage> {
 class _SeriesHeader extends StatelessWidget {
   const _SeriesHeader({
     required this.name,
-    required this.count,
-    required this.onOpenAll,
+    required this.characterCount,
+    required this.mediaCount,
   });
 
   final String name;
-  final int count;
-  final VoidCallback onOpenAll;
+  final int characterCount;
+  final int mediaCount;
 
   @override
   Widget build(BuildContext context) {
@@ -209,11 +208,14 @@ class _SeriesHeader extends StatelessWidget {
                   style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w700),
                 ),
                 const SizedBox(height: 2),
-                Text('$count media', style: const TextStyle(color: AppTheme.muted)),
+                Text(
+                  '$characterCount ${characterCount == 1 ? 'personaggio' : 'personaggi'} · '
+                  '$mediaCount media',
+                  style: const TextStyle(color: AppTheme.muted),
+                ),
               ],
             ),
           ),
-          TextButton(onPressed: onOpenAll, child: const Text('Tutti')),
         ],
       ),
     );

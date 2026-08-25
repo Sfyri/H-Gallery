@@ -289,43 +289,25 @@ class _TrashMediaTabState extends State<TrashMediaTab> {
 
   Future<void> _emptyTrash() async {
     if (_stats.total == 0 || _busy) return;
-    var confirmation = '';
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: const Text('Svuota cestino'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Verranno eliminati definitivamente ${_stats.total} media. '
-                'Per confermare scrivi ELIMINA.',
-              ),
-              const SizedBox(height: 14),
-              TextField(
-                autofocus: true,
-                textCapitalization: TextCapitalization.characters,
-                onChanged: (value) => setDialogState(() => confirmation = value),
-                decoration: const InputDecoration(hintText: 'ELIMINA'),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(false),
-              child: const Text('Annulla'),
-            ),
-            FilledButton(
-              onPressed: confirmation.trim().toUpperCase() == 'ELIMINA'
-                  ? () => Navigator.of(dialogContext).pop(true)
-                  : null,
-              style: FilledButton.styleFrom(backgroundColor: AppTheme.error),
-              child: const Text('Svuota'),
-            ),
-          ],
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Svuota cestino'),
+        content: Text(
+          'Verranno eliminati definitivamente ${_stats.total} media. '
+          'Questa operazione non può essere annullata.',
         ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Annulla'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            style: FilledButton.styleFrom(backgroundColor: AppTheme.error),
+            child: const Text('Conferma'),
+          ),
+        ],
       ),
     );
     if (confirmed != true || !mounted) return;

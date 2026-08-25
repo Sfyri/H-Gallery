@@ -639,8 +639,8 @@ class _MediaQueryGridState extends State<MediaQueryGrid> {
                         },
                         childCount: _items.length,
                       ),
-                      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                        maxCrossAxisExtent: 190,
+                      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: 3,
                         mainAxisSpacing: 8,
                         crossAxisSpacing: 8,
                         childAspectRatio: 0.82,
@@ -748,7 +748,7 @@ class _SelectionBar extends StatelessWidget {
                 IconButton(
                   tooltip: 'Modifica metadati',
                   onPressed: onEditMetadata,
-                  icon: const Icon(Icons.edit_note_rounded),
+                  icon: const Icon(Icons.edit_rounded),
                 ),
                 IconButton(
                   tooltip: canCreateStory

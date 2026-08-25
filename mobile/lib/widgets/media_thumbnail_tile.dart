@@ -102,11 +102,6 @@ class _MediaThumbnailTileState extends State<MediaThumbnailTile> {
                   return _MediaPlaceholder(item: widget.item);
                 },
               ),
-              Positioned(
-                left: 7,
-                bottom: 7,
-                child: _TypeBadge(item: widget.item),
-              ),
               if (widget.selectionMode)
                 Positioned(
                   right: 7,
@@ -154,49 +149,6 @@ class _MediaPlaceholder extends StatelessWidget {
           size: 40,
           color: AppTheme.muted,
         ),
-      ),
-    );
-  }
-}
-
-class _TypeBadge extends StatelessWidget {
-  const _TypeBadge({required this.item});
-
-  final MediaItem item;
-
-  @override
-  Widget build(BuildContext context) {
-    final icon = item.isVideo
-        ? Icons.play_arrow_rounded
-        : item.isAnimated
-            ? Icons.gif_box_outlined
-            : Icons.image_outlined;
-    final label = item.isVideo
-        ? 'VIDEO'
-        : item.isAnimated
-            ? 'GIF'
-            : item.extension.toUpperCase();
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
-      decoration: BoxDecoration(
-        color: const Color(0xC9000000),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, color: Colors.white, size: 13),
-          const SizedBox(width: 4),
-          Text(
-            label,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 10,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ],
       ),
     );
   }
