@@ -27,6 +27,7 @@ class MainActivity : FlutterActivity() {
     private var pendingGalleryName: String = ""
     private var mediaBridge: GalleryMediaBridge? = null
     private var syncBridge: GallerySyncBridge? = null
+    private var shareHandler: ShareIntentHandler? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -36,6 +37,14 @@ class MainActivity : FlutterActivity() {
         mediaBridge = GalleryMediaBridge(this, flutterEngine.dartExecutor.binaryMessenger)
         syncBridge?.dispose()
         syncBridge = GallerySyncBridge(this, flutterEngine.dartExecutor.binaryMessenger)
+        shareHandler?.dispose()
+        shareHandler = ShareIntentHandler(
+            activity = this,
+            messenger = flutterEngine.dartExecutor.binaryMessenger,
+            resolveGalleryTreeUri = ::resolveGalleryTreeUri,
+        ).also { handler ->
+            handler.acceptIntent(intent)
+        }
     }
 
     private fun handleMethodCall(call: MethodCall, result: MethodChannel.Result) {
@@ -107,7 +116,15 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        shareHandler?.acceptIntent(intent)
+    }
+
     override fun onDestroy() {
+        shareHandler?.dispose()
+        shareHandler = null
         syncBridge?.dispose()
         syncBridge = null
         mediaBridge?.dispose()
@@ -118,6 +135,7 @@ class MainActivity : FlutterActivity() {
     @Deprecated("Deprecated in Android, kept for the system document picker callback.")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (shareHandler?.onActivityResult(requestCode, resultCode) == true) return
         if (requestCode != PICK_DIRECTORY_REQUEST) return
 
         val flutterResult = pendingPickerResult ?: return
@@ -246,6 +264,16 @@ class MainActivity : FlutterActivity() {
                 // Il permesso può essere già stato revocato dall'utente/sistema.
             }
         }
+    }
+
+    private fun resolveGalleryTreeUri(galleryUuid: String): Uri? {
+        val profile = loadProfiles().firstOrNull {
+            it.optString("galleryUuid") == galleryUuid
+        } ?: return null
+        val uriText = profile.optString("treeUri").trim()
+        if (uriText.isEmpty()) return null
+        val treeUri = Uri.parse(uriText)
+        return treeUri.takeIf(::hasPersistedAccess)
     }
 
     private fun profileToPlatformMap(profile: JSONObject): Map<String, Any> {

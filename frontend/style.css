@@ -2008,3 +2008,23 @@ main {
         gap: 6px;
     }
 }
+
+/* Crediti creatore */
+.creator-credit {
+    margin: 24px 0 0;
+    color: var(--muted);
+    text-align: center;
+    font-size: 13px;
+}
+
+.creator-credit a {
+    color: var(--accent);
+    font-weight: 700;
+    text-decoration: none;
+}
+
+.creator-credit a:hover,
+.creator-credit a:focus-visible {
+    text-decoration: underline;
+}
+
