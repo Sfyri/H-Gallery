@@ -6,6 +6,7 @@ import android.provider.DocumentsContract
 import android.webkit.MimeTypeMap
 import java.security.MessageDigest
 import java.util.Locale
+import java.util.UUID
 
 internal class GalleryTrashRepository(private val context: Context) {
     companion object {
@@ -115,6 +116,125 @@ internal class GalleryTrashRepository(private val context: Context) {
                 }
                 throw error
             }
+        } finally {
+            database.close()
+        }
+    }
+
+    @Synchronized
+    fun moveTodoToTrashBatch(
+        galleryUuid: String,
+        treeUri: Uri,
+        sources: List<TodoTrashSource>,
+    ): Int {
+        if (sources.isEmpty()) return 0
+
+        val database = GalleryIndexDatabase(context, galleryUuid)
+        try {
+            reconcileMissing(database)
+            val root = rootDocumentUri(treeUri)
+            val trashRoot = ensureDirectory(root, TRASH_FOLDER)
+            var moved = 0
+
+            for (source in sources) {
+                if (!documentExists(source.uri)) {
+                    throw IllegalStateException(
+                        "${source.filename} non è più disponibile in .toDo.",
+                    )
+                }
+
+                val originalParentPath = source.relativePath.substringBeforeLast('/', "")
+                val trashParent = ensurePath(trashRoot, originalParentPath)
+                val targetName = uniqueFilename(trashParent, source.filename)
+                val targetRelativePath = joinRelative(
+                    TRASH_FOLDER,
+                    joinRelative(originalParentPath, targetName),
+                )
+                val mimeType = source.mimeType.ifBlank {
+                    mimeTypeForExtension(source.extension)
+                }
+                val target = DocumentsContract.createDocument(
+                    context.contentResolver,
+                    trashParent,
+                    mimeType,
+                    targetName,
+                ) ?: throw IllegalStateException(
+                    "Android non ha creato ${source.filename} nel cestino.",
+                )
+
+                var sourceDeleted = false
+                try {
+                    val sourceSha = calculateSha256(source.uri)
+                    copyDocument(source.uri, target)
+                    val copiedSha = calculateSha256(target)
+                    if (!copiedSha.equals(sourceSha, ignoreCase = true)) {
+                        throw IllegalStateException(
+                            "La verifica SHA-256 della copia di ${source.filename} nel cestino non è riuscita.",
+                        )
+                    }
+                    if (!DocumentsContract.deleteDocument(context.contentResolver, source.uri)) {
+                        throw IllegalStateException(
+                            "Android non ha rimosso ${source.filename} da .toDo.",
+                        )
+                    }
+                    sourceDeleted = true
+
+                    val metadata = queryDocument(target)
+                    database.recordTodoTrashed(
+                        mediaSyncUuid = UUID.randomUUID().toString(),
+                        originalRelativePath = source.relativePath,
+                        trashRelativePath = targetRelativePath,
+                        trashDocumentUri = target.toString(),
+                        trashDocumentId = DocumentsContract.getDocumentId(target),
+                        trashFilename = targetName,
+                        extension = source.extension,
+                        mediaType = source.mediaType,
+                        isAnimated = source.isAnimated,
+                        mimeType = mimeType,
+                        sizeBytes = metadata?.sizeBytes?.coerceAtLeast(0L)
+                            ?: source.sizeBytes,
+                        modifiedEpochMs = metadata?.modifiedEpochMs?.coerceAtLeast(0L)
+                            ?: source.modifiedEpochMs,
+                        sha256 = sourceSha,
+                    )
+                    moved += 1
+                } catch (error: Exception) {
+                    if (sourceDeleted) {
+                        try {
+                            val originalParent = ensurePath(root, originalParentPath)
+                            val restored = DocumentsContract.createDocument(
+                                context.contentResolver,
+                                originalParent,
+                                mimeType,
+                                source.filename,
+                            )
+                            if (restored != null) {
+                                copyDocument(target, restored)
+                                if (calculateSha256(restored).equals(
+                                        calculateSha256(target),
+                                        ignoreCase = true,
+                                    )
+                                ) {
+                                    DocumentsContract.deleteDocument(
+                                        context.contentResolver,
+                                        target,
+                                    )
+                                }
+                            }
+                        } catch (_: Exception) {
+                            // Conserva almeno la copia nel cestino se il rollback fisico fallisce.
+                        }
+                    } else {
+                        try {
+                            DocumentsContract.deleteDocument(context.contentResolver, target)
+                        } catch (_: Exception) {
+                            // Non nascondere l'errore originale.
+                        }
+                    }
+                    throw error
+                }
+            }
+            return moved
         } finally {
             database.close()
         }

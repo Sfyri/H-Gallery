@@ -109,6 +109,7 @@ internal data class CharacterRecord(
     val franchiseName: String,
     val franchiseCode: String,
     val franchiseRelativePath: String,
+    val aliases: List<String>,
 )
 
 internal data class PendingCharacterScoreRecord(
@@ -173,6 +174,7 @@ internal data class TrashSourceRecord(
 internal data class TrashDatabaseRecord(
     val trashId: Long,
     val mediaSyncUuid: String,
+    val sourceKind: String,
     val originalRelativePath: String,
     val trashRelativePath: String,
     val trashDocumentUri: String,
@@ -198,7 +200,7 @@ internal class GalleryIndexDatabase(
     DATABASE_VERSION,
 ) {
     companion object {
-        private const val DATABASE_VERSION = 9
+        private const val DATABASE_VERSION = 11
     }
 
     override fun onConfigure(db: SQLiteDatabase) {
@@ -274,6 +276,21 @@ internal class GalleryIndexDatabase(
         }
         if (oldVersion < 9) {
             ensureCharacterScoreColumns(db)
+        }
+        if (oldVersion < 10) {
+            createCharacterAliasSchema(db)
+        }
+        if (oldVersion < 11) {
+            ensureTrashSourceKindColumn(db)
+        }
+    }
+
+    private fun ensureTrashSourceKindColumn(db: SQLiteDatabase) {
+        val columns = columnNames(db, "trash_items")
+        if ("source_kind" !in columns) {
+            db.execSQL(
+                "ALTER TABLE trash_items ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'gallery'",
+            )
         }
     }
 
@@ -368,6 +385,8 @@ internal class GalleryIndexDatabase(
             CREATE TABLE IF NOT EXISTS trash_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 media_sync_uuid TEXT NOT NULL UNIQUE,
+                source_kind TEXT NOT NULL DEFAULT 'gallery'
+                    CHECK(source_kind IN ('gallery', 'todo')),
                 original_relative_path TEXT NOT NULL,
                 trash_relative_path TEXT NOT NULL UNIQUE,
                 trash_document_uri TEXT NOT NULL,
@@ -532,6 +551,7 @@ internal class GalleryIndexDatabase(
             )
             """.trimIndent(),
         )
+        createCharacterAliasSchema(db)
         db.execSQL(
             """
             CREATE TABLE IF NOT EXISTS tags (
@@ -588,6 +608,90 @@ internal class GalleryIndexDatabase(
             "CREATE INDEX IF NOT EXISTS idx_media_tags_tag ON media_tags(tag_id, media_sync_uuid)",
         )
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_tags_type ON tags(type, name)")
+    }
+
+    private fun createCharacterAliasSchema(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS character_aliases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                character_id INTEGER NOT NULL,
+                alias TEXT NOT NULL COLLATE NOCASE,
+                FOREIGN KEY(character_id) REFERENCES characters(id) ON DELETE CASCADE,
+                UNIQUE(character_id, alias)
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_character_aliases_alias " +
+                "ON character_aliases(alias COLLATE NOCASE)",
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_character_aliases_character " +
+                "ON character_aliases(character_id, alias COLLATE NOCASE)",
+        )
+    }
+
+    private fun characterAliasesById(
+        db: SQLiteDatabase,
+        characterIds: Collection<Long>,
+    ): Map<Long, List<String>> {
+        val ids = characterIds.distinct()
+        if (ids.isEmpty()) return emptyMap()
+        val placeholders = ids.joinToString(",") { "?" }
+        val values = linkedMapOf<Long, MutableList<String>>()
+        db.rawQuery(
+            """
+            SELECT character_id, alias
+            FROM character_aliases
+            WHERE character_id IN ($placeholders)
+            ORDER BY alias COLLATE NOCASE
+            """.trimIndent(),
+            ids.map { it.toString() }.toTypedArray(),
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                values.getOrPut(cursor.getLong(0)) { mutableListOf() }
+                    .add(cursor.getString(1))
+            }
+        }
+        return values
+    }
+
+    private fun normalizeCharacterAliases(
+        characterName: String,
+        aliases: List<String>,
+    ): List<String> {
+        val seen = hashSetOf<String>()
+        val canonical = normalizeMetadataName(characterName).lowercase(Locale.ROOT)
+        return aliases.mapNotNull { raw ->
+            val cleaned = normalizeMetadataName(raw)
+            val key = cleaned.lowercase(Locale.ROOT)
+            cleaned.takeIf {
+                cleaned.isNotEmpty() &&
+                    key != canonical &&
+                    seen.add(key)
+            }
+        }
+    }
+
+    private fun insertCharacterAliases(
+        db: SQLiteDatabase,
+        characterId: Long,
+        characterName: String,
+        aliases: List<String>,
+    ) {
+        for (alias in normalizeCharacterAliases(characterName, aliases)) {
+            val values = ContentValues().apply {
+                put("character_id", characterId)
+                put("alias", alias)
+            }
+            db.insertWithOnConflict(
+                "character_aliases",
+                null,
+                values,
+                SQLiteDatabase.CONFLICT_IGNORE,
+            )
+        }
     }
 
     fun reconcile(scanned: List<IndexedMediaDocument>): ReconcileResult {
@@ -1060,12 +1164,18 @@ internal class GalleryIndexDatabase(
                         WHERE mc.media_sync_uuid = m.sync_uuid
                           AND (
                               c.name LIKE ? ESCAPE '\' COLLATE NOCASE OR
-                              f.name LIKE ? ESCAPE '\' COLLATE NOCASE
+                              f.name LIKE ? ESCAPE '\' COLLATE NOCASE OR
+                              EXISTS (
+                                  SELECT 1
+                                  FROM character_aliases ca
+                                  WHERE ca.character_id = c.id
+                                    AND ca.alias LIKE ? ESCAPE '\' COLLATE NOCASE
+                              )
                           )
                     )
                 )
             """.trimIndent()
-            repeat(5) { args += pattern }
+            repeat(6) { args += pattern }
         }
 
         when (kind) {
@@ -1513,13 +1623,21 @@ internal class GalleryIndexDatabase(
                     JOIN characters c ON c.id = mc.character_id
                     JOIN franchises f ON f.id = c.franchise_id
                     WHERE mc.media_sync_uuid = m.sync_uuid
-                      AND (c.name LIKE ? ESCAPE '\' COLLATE NOCASE OR
-                           f.name LIKE ? ESCAPE '\' COLLATE NOCASE)
+                      AND (
+                           c.name LIKE ? ESCAPE '\' COLLATE NOCASE OR
+                           f.name LIKE ? ESCAPE '\' COLLATE NOCASE OR
+                           EXISTS (
+                               SELECT 1
+                               FROM character_aliases ca
+                               WHERE ca.character_id = c.id
+                                 AND ca.alias LIKE ? ESCAPE '\' COLLATE NOCASE
+                           )
+                      )
                 )
               )
             LIMIT 1
             """.trimIndent(),
-            arrayOf(relativePath, pattern, pattern, pattern),
+            arrayOf(relativePath, pattern, pattern, pattern, pattern),
         ).use { it.moveToFirst() }
     }
 
@@ -1687,8 +1805,9 @@ internal class GalleryIndexDatabase(
     }
 
     fun listCharacters(): List<CharacterRecord> {
+        val db = readableDatabase
         val rows = mutableListOf<CharacterRecord>()
-        readableDatabase.rawQuery(
+        db.rawQuery(
             """
             SELECT c.id, c.sync_uuid, c.franchise_id, c.name, c.relative_path,
                    f.name, f.code, f.relative_path
@@ -1709,18 +1828,23 @@ internal class GalleryIndexDatabase(
                     franchiseName = cursor.getString(5),
                     franchiseCode = cursor.getString(6),
                     franchiseRelativePath = cursor.getString(7),
+                    aliases = emptyList(),
                 )
             }
         }
-        return rows
+        val aliasesById = characterAliasesById(db, rows.map { it.id })
+        return rows.map { record ->
+            record.copy(aliases = aliasesById[record.id].orEmpty())
+        }
     }
 
     fun charactersByIds(ids: List<Long>): List<CharacterRecord> {
         val uniqueIds = ids.distinct()
         if (uniqueIds.isEmpty()) return emptyList()
+        val db = readableDatabase
         val placeholders = uniqueIds.joinToString(",") { "?" }
         val rows = mutableMapOf<Long, CharacterRecord>()
-        readableDatabase.rawQuery(
+        db.rawQuery(
             """
             SELECT c.id, c.sync_uuid, c.franchise_id, c.name, c.relative_path,
                    f.name, f.code, f.relative_path
@@ -1741,11 +1865,17 @@ internal class GalleryIndexDatabase(
                     franchiseName = cursor.getString(5),
                     franchiseCode = cursor.getString(6),
                     franchiseRelativePath = cursor.getString(7),
+                    aliases = emptyList(),
                 )
                 rows[record.id] = record
             }
         }
-        return uniqueIds.mapNotNull(rows::get)
+        val aliasesById = characterAliasesById(db, rows.keys)
+        return uniqueIds.mapNotNull { id ->
+            rows[id]?.let { record ->
+                record.copy(aliases = aliasesById[id].orEmpty())
+            }
+        }
     }
 
     fun rankingFranchises(): List<Map<String, Any>> {
@@ -1979,6 +2109,7 @@ internal class GalleryIndexDatabase(
         name: String,
         relativePath: String,
         derivedCode: String,
+        replaceableCodes: Set<String> = emptySet(),
     ): FranchiseRecord {
         val db = writableDatabase
         db.rawQuery(
@@ -1992,10 +2123,25 @@ internal class GalleryIndexDatabase(
         ).use { cursor ->
             if (cursor.moveToFirst()) {
                 val id = cursor.getLong(0)
+                val currentCode = cursor.getString(3)
+                val shouldRefreshCode =
+                    replaceableCodes.any { it.equals(currentCode, ignoreCase = true) } &&
+                        !currentCode.equals(derivedCode, ignoreCase = true)
+                val finalCode = if (shouldRefreshCode) {
+                    uniqueFranchiseCode(
+                        db = db,
+                        requested = derivedCode,
+                        excludedFranchiseId = id,
+                    )
+                } else {
+                    currentCode
+                }
+
                 val now = System.currentTimeMillis()
                 val values = ContentValues().apply {
                     put("name", name)
                     put("relative_path", relativePath)
+                    if (shouldRefreshCode) put("code", finalCode)
                     put("is_active", 1)
                     put("updated_at_epoch_ms", now)
                 }
@@ -2004,7 +2150,7 @@ internal class GalleryIndexDatabase(
                     id = id,
                     syncUuid = cursor.getString(1),
                     name = name,
-                    code = cursor.getString(3),
+                    code = finalCode,
                     relativePath = relativePath,
                 )
             }
@@ -2054,24 +2200,50 @@ internal class GalleryIndexDatabase(
                     ?: throw IllegalStateException("Personaggio non leggibile dopo l'aggiornamento.")
             }
         }
-        return insertCharacter(db, franchiseId, name, relativePath)
+        return insertCharacter(
+            db = db,
+            franchiseId = franchiseId,
+            name = name,
+            relativePath = relativePath,
+            aliases = emptyList(),
+        )
     }
 
-    fun createCharacter(franchiseId: Long, name: String, relativePath: String): CharacterRecord {
+    fun createCharacter(
+        franchiseId: Long,
+        name: String,
+        relativePath: String,
+        aliases: List<String>,
+    ): CharacterRecord {
         val db = writableDatabase
-        db.rawQuery(
-            """
-            SELECT 1 FROM characters
-            WHERE franchise_id = ? AND name = ? COLLATE NOCASE
-            LIMIT 1
-            """.trimIndent(),
-            arrayOf(franchiseId.toString(), name),
-        ).use { cursor ->
-            if (cursor.moveToFirst()) {
-                throw IllegalArgumentException("Questo personaggio esiste già nella serie selezionata.")
+        db.beginTransaction()
+        try {
+            db.rawQuery(
+                """
+                SELECT 1 FROM characters
+                WHERE franchise_id = ? AND name = ? COLLATE NOCASE
+                LIMIT 1
+                """.trimIndent(),
+                arrayOf(franchiseId.toString(), name),
+            ).use { cursor ->
+                if (cursor.moveToFirst()) {
+                    throw IllegalArgumentException(
+                        "Questo personaggio esiste già nella serie selezionata.",
+                    )
+                }
             }
+            val record = insertCharacter(
+                db = db,
+                franchiseId = franchiseId,
+                name = name,
+                relativePath = relativePath,
+                aliases = aliases,
+            )
+            db.setTransactionSuccessful()
+            return record
+        } finally {
+            db.endTransaction()
         }
-        return insertCharacter(db, franchiseId, name, relativePath)
     }
 
     fun recordOrganizedMedia(
@@ -2740,6 +2912,7 @@ internal class GalleryIndexDatabase(
             }
             val trash = ContentValues().apply {
                 put("media_sync_uuid", mediaSyncUuid)
+                put("source_kind", "gallery")
                 put("original_relative_path", originalRelativePath)
                 put("trash_relative_path", trashRelativePath)
                 put("trash_document_uri", trashDocumentUri)
@@ -2757,6 +2930,71 @@ internal class GalleryIndexDatabase(
             if (db.update("media", media, "sync_uuid = ?", arrayOf(mediaSyncUuid)) != 1) {
                 throw IllegalStateException("Il database non ha aggiornato il media nel cestino.")
             }
+            val operation = ContentValues().apply {
+                put("operation_type", "trash")
+                put("source_relative_path", originalRelativePath)
+                put("destination_relative_path", trashRelativePath)
+                put("created_at_epoch_ms", now)
+            }
+            db.insertOrThrow("operations", null, operation)
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun recordTodoTrashed(
+        mediaSyncUuid: String,
+        originalRelativePath: String,
+        trashRelativePath: String,
+        trashDocumentUri: String,
+        trashDocumentId: String,
+        trashFilename: String,
+        extension: String,
+        mediaType: String,
+        isAnimated: Boolean,
+        mimeType: String,
+        sizeBytes: Long,
+        modifiedEpochMs: Long,
+        sha256: String,
+    ) {
+        val db = writableDatabase
+        val now = System.currentTimeMillis()
+        db.beginTransaction()
+        try {
+            val media = ContentValues().apply {
+                put("sync_uuid", mediaSyncUuid)
+                put("relative_path", originalRelativePath)
+                put("filename", originalRelativePath.substringAfterLast('/'))
+                put("extension", extension)
+                put("media_type", mediaType)
+                put("is_animated", if (isAnimated) 1 else 0)
+                put("mime_type", mimeType)
+                put("size_bytes", sizeBytes)
+                put("modified_epoch_ms", modifiedEpochMs)
+                put("document_uri", trashDocumentUri)
+                put("document_id", trashDocumentId)
+                put("sha256", sha256)
+                put("is_present", 0)
+                put("ai_generated", 0)
+                put("metadata_updated_epoch_ms", 0)
+                put("created_at_epoch_ms", now)
+                put("updated_at_epoch_ms", now)
+            }
+            db.insertOrThrow("media", null, media)
+
+            val trash = ContentValues().apply {
+                put("media_sync_uuid", mediaSyncUuid)
+                put("source_kind", "todo")
+                put("original_relative_path", originalRelativePath)
+                put("trash_relative_path", trashRelativePath)
+                put("trash_document_uri", trashDocumentUri)
+                put("trash_document_id", trashDocumentId)
+                put("trash_filename", trashFilename)
+                put("deleted_epoch_ms", now)
+            }
+            db.insertOrThrow("trash_items", null, trash)
+
             val operation = ContentValues().apply {
                 put("operation_type", "trash")
                 put("source_relative_path", originalRelativePath)
@@ -2863,7 +3101,7 @@ internal class GalleryIndexDatabase(
     fun trashRecord(trashId: Long): TrashDatabaseRecord? {
         readableDatabase.rawQuery(
             """
-            SELECT t.id, t.media_sync_uuid, t.original_relative_path, t.trash_relative_path,
+            SELECT t.id, t.media_sync_uuid, t.source_kind, t.original_relative_path, t.trash_relative_path,
                    t.trash_document_uri, t.trash_document_id, t.trash_filename, t.deleted_epoch_ms,
                    m.extension, m.media_type, m.is_animated, m.mime_type, m.size_bytes,
                    m.modified_epoch_ms, m.sha256
@@ -2877,19 +3115,20 @@ internal class GalleryIndexDatabase(
             return TrashDatabaseRecord(
                 trashId = cursor.getLong(0),
                 mediaSyncUuid = cursor.getString(1),
-                originalRelativePath = cursor.getString(2),
-                trashRelativePath = cursor.getString(3),
-                trashDocumentUri = cursor.getString(4),
-                trashDocumentId = cursor.getString(5),
-                trashFilename = cursor.getString(6),
-                deletedEpochMs = cursor.getLong(7),
-                extension = cursor.getString(8),
-                mediaType = cursor.getString(9),
-                isAnimated = cursor.getInt(10) != 0,
-                mimeType = cursor.getString(11),
-                sizeBytes = cursor.getLong(12),
-                modifiedEpochMs = cursor.getLong(13),
-                sha256 = cursor.getString(14),
+                sourceKind = cursor.getString(2),
+                originalRelativePath = cursor.getString(3),
+                trashRelativePath = cursor.getString(4),
+                trashDocumentUri = cursor.getString(5),
+                trashDocumentId = cursor.getString(6),
+                trashFilename = cursor.getString(7),
+                deletedEpochMs = cursor.getLong(8),
+                extension = cursor.getString(9),
+                mediaType = cursor.getString(10),
+                isAnimated = cursor.getInt(11) != 0,
+                mimeType = cursor.getString(12),
+                sizeBytes = cursor.getLong(13),
+                modifiedEpochMs = cursor.getLong(14),
+                sha256 = cursor.getString(15),
             )
         }
     }
@@ -2950,24 +3189,33 @@ internal class GalleryIndexDatabase(
         try {
             val record = trashRecord(trashId)
                 ?: throw IllegalStateException("Elemento del cestino non trovato.")
-            db.rawQuery(
-                "SELECT 1 FROM media WHERE relative_path = ? AND is_present = 1 LIMIT 1",
-                arrayOf(relativePath),
-            ).use { cursor ->
-                if (cursor.moveToFirst()) throw IllegalStateException("Esiste già un media nella destinazione.")
+            if (record.sourceKind == "todo") {
+                // I media provenienti da .toDo non fanno parte dell'indice Gallery.
+                // Dopo il ripristino fisico in .toDo rimuoviamo quindi il record
+                // sintetico usato esclusivamente per visualizzarli nel cestino.
+                db.delete("media", "sync_uuid = ?", arrayOf(record.mediaSyncUuid))
+            } else {
+                db.rawQuery(
+                    "SELECT 1 FROM media WHERE relative_path = ? AND is_present = 1 LIMIT 1",
+                    arrayOf(relativePath),
+                ).use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        throw IllegalStateException("Esiste già un media nella destinazione.")
+                    }
+                }
+                val media = ContentValues().apply {
+                    put("relative_path", relativePath)
+                    put("filename", filename)
+                    put("document_uri", documentUri)
+                    put("document_id", documentId)
+                    put("size_bytes", sizeBytes)
+                    put("modified_epoch_ms", modifiedEpochMs)
+                    put("is_present", 1)
+                    put("updated_at_epoch_ms", now)
+                }
+                db.update("media", media, "sync_uuid = ?", arrayOf(record.mediaSyncUuid))
+                db.delete("trash_items", "id = ?", arrayOf(trashId.toString()))
             }
-            val media = ContentValues().apply {
-                put("relative_path", relativePath)
-                put("filename", filename)
-                put("document_uri", documentUri)
-                put("document_id", documentId)
-                put("size_bytes", sizeBytes)
-                put("modified_epoch_ms", modifiedEpochMs)
-                put("is_present", 1)
-                put("updated_at_epoch_ms", now)
-            }
-            db.update("media", media, "sync_uuid = ?", arrayOf(record.mediaSyncUuid))
-            db.delete("trash_items", "id = ?", arrayOf(trashId.toString()))
             val operation = ContentValues().apply {
                 put("operation_type", "restore")
                 put("source_relative_path", record.trashRelativePath)
@@ -3003,6 +3251,7 @@ internal class GalleryIndexDatabase(
             // cancellazioni eseguite mentre la galleria era scollegata.
             val normalizedSha256 = record.sha256.trim().lowercase(Locale.ROOT)
             if (createSyncTombstone &&
+                record.sourceKind == "gallery" &&
                 syncGroupUuid.isNotBlank() &&
                 record.mediaSyncUuid.isNotBlank() &&
                 normalizedSha256.length == 64 &&
@@ -3038,7 +3287,15 @@ internal class GalleryIndexDatabase(
     }
 
     private fun characterById(id: Long): CharacterRecord? {
-        readableDatabase.rawQuery(
+        return characterById(readableDatabase, id)
+    }
+
+    private fun characterById(
+        db: SQLiteDatabase,
+        id: Long,
+    ): CharacterRecord? {
+        var record: CharacterRecord? = null
+        db.rawQuery(
             """
             SELECT c.id, c.sync_uuid, c.franchise_id, c.name, c.relative_path,
                    f.name, f.code, f.relative_path
@@ -3049,18 +3306,23 @@ internal class GalleryIndexDatabase(
             """.trimIndent(),
             arrayOf(id.toString()),
         ).use { cursor ->
-            if (!cursor.moveToFirst()) return null
-            return CharacterRecord(
-                id = cursor.getLong(0),
-                syncUuid = cursor.getString(1),
-                franchiseId = cursor.getLong(2),
-                name = cursor.getString(3),
-                relativePath = cursor.getString(4),
-                franchiseName = cursor.getString(5),
-                franchiseCode = cursor.getString(6),
-                franchiseRelativePath = cursor.getString(7),
-            )
+            if (cursor.moveToFirst()) {
+                record = CharacterRecord(
+                    id = cursor.getLong(0),
+                    syncUuid = cursor.getString(1),
+                    franchiseId = cursor.getLong(2),
+                    name = cursor.getString(3),
+                    relativePath = cursor.getString(4),
+                    franchiseName = cursor.getString(5),
+                    franchiseCode = cursor.getString(6),
+                    franchiseRelativePath = cursor.getString(7),
+                    aliases = emptyList(),
+                )
+            }
         }
+        val value = record ?: return null
+        val aliases = characterAliasesById(db, listOf(id))[id].orEmpty()
+        return value.copy(aliases = aliases)
     }
 
     private fun insertFranchise(
@@ -3089,6 +3351,7 @@ internal class GalleryIndexDatabase(
         franchiseId: Long,
         name: String,
         relativePath: String,
+        aliases: List<String>,
     ): CharacterRecord {
         val now = System.currentTimeMillis()
         val values = ContentValues().apply {
@@ -3101,20 +3364,39 @@ internal class GalleryIndexDatabase(
             put("updated_at_epoch_ms", now)
         }
         val id = db.insertOrThrow("characters", null, values)
-        return characterById(id)
+        insertCharacterAliases(
+            db = db,
+            characterId = id,
+            characterName = name,
+            aliases = aliases,
+        )
+        return characterById(db, id)
             ?: throw IllegalStateException("Personaggio non leggibile dopo la creazione.")
     }
 
-    private fun uniqueFranchiseCode(db: SQLiteDatabase, requested: String): String {
+    private fun uniqueFranchiseCode(
+        db: SQLiteDatabase,
+        requested: String,
+        excludedFranchiseId: Long? = null,
+    ): String {
         val base = requested.uppercase(Locale.ROOT).filter { it in 'A'..'Z' || it in '0'..'9' }
             .take(10)
             .ifBlank { "FR" }
+
         fun exists(candidate: String): Boolean {
-            db.rawQuery(
-                "SELECT 1 FROM franchises WHERE code = ? COLLATE NOCASE LIMIT 1",
-                arrayOf(candidate),
-            ).use { return it.moveToFirst() }
+            val query: String
+            val args: Array<String>
+            if (excludedFranchiseId == null) {
+                query = "SELECT 1 FROM franchises WHERE code = ? COLLATE NOCASE LIMIT 1"
+                args = arrayOf(candidate)
+            } else {
+                query =
+                    "SELECT 1 FROM franchises WHERE code = ? COLLATE NOCASE AND id <> ? LIMIT 1"
+                args = arrayOf(candidate, excludedFranchiseId.toString())
+            }
+            db.rawQuery(query, args).use { return it.moveToFirst() }
         }
+
         if (!exists(base)) return base
         var number = 1
         while (true) {

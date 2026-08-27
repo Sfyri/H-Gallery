@@ -5,6 +5,7 @@ import '../models/organization_models.dart';
 import '../services/media_metadata_editor_service.dart';
 import '../services/organization_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/tag_chip.dart';
 
 class MediaMetadataEditorPage extends StatefulWidget {
   const MediaMetadataEditorPage({
@@ -90,12 +91,88 @@ class _MediaMetadataEditorPageState extends State<MediaMetadataEditorPage> {
     return values;
   }
 
-  void _appendName(TextEditingController controller, String value) {
-    final values = _parseNames(controller.text);
-    if (values.any((entry) => entry.toLowerCase() == value.toLowerCase())) return;
-    values.add(value);
-    controller.text = values.join(', ');
-    controller.selection = TextSelection.collapsed(offset: controller.text.length);
+  bool _isNameSeparator(String value) {
+    return value == ',' || value == ';' || value == '\n';
+  }
+
+  int _controllerOffset(TextEditingController controller) {
+    final offset = controller.selection.extentOffset;
+    if (offset < 0 || offset > controller.text.length) {
+      return controller.text.length;
+    }
+    return offset;
+  }
+
+  int _fragmentStart(TextEditingController controller) {
+    final text = controller.text;
+    var start = _controllerOffset(controller);
+    while (start > 0 && !_isNameSeparator(text[start - 1])) {
+      start -= 1;
+    }
+    return start;
+  }
+
+  int _fragmentEnd(TextEditingController controller) {
+    final text = controller.text;
+    var end = _controllerOffset(controller);
+    while (end < text.length && !_isNameSeparator(text[end])) {
+      end += 1;
+    }
+    return end;
+  }
+
+  List<String> _matchingSuggestions(
+    TextEditingController controller,
+    List<String> available,
+  ) {
+    if (!controller.selection.isValid) return const <String>[];
+
+    final text = controller.text;
+    final start = _fragmentStart(controller);
+    final end = _fragmentEnd(controller);
+    final fragment = text.substring(start, _controllerOffset(controller)).trim().toLowerCase();
+    if (fragment.isEmpty) return const <String>[];
+
+    final completedText = '${text.substring(0, start)}${text.substring(end)}';
+    final completed = _parseNames(completedText)
+        .map((value) => value.toLowerCase())
+        .toSet();
+
+    final matches = available.where((value) {
+      final key = value.toLowerCase();
+      return key != fragment &&
+          !completed.contains(key) &&
+          key.contains(fragment);
+    }).toList(growable: true);
+
+    matches.sort((a, b) {
+      final aKey = a.toLowerCase();
+      final bKey = b.toLowerCase();
+      final aStarts = aKey.startsWith(fragment);
+      final bStarts = bKey.startsWith(fragment);
+      if (aStarts != bStarts) return aStarts ? -1 : 1;
+      return aKey.compareTo(bKey);
+    });
+
+    return matches.take(8).toList(growable: false);
+  }
+
+  void _applySuggestion(TextEditingController controller, String value) {
+    final text = controller.text;
+    final start = _fragmentStart(controller);
+    final end = _fragmentEnd(controller);
+
+    var insertion = value;
+    if (start > 0 && (text[start - 1] == ',' || text[start - 1] == ';')) {
+      insertion = ' $value';
+    }
+
+    final updated = '${text.substring(0, start)}$insertion${text.substring(end)}';
+    final caret = start + insertion.length;
+    controller.value = TextEditingValue(
+      text: updated,
+      selection: TextSelection.collapsed(offset: caret),
+    );
     setState(() {});
   }
 
@@ -192,6 +269,7 @@ class _MediaMetadataEditorPageState extends State<MediaMetadataEditorPage> {
       return;
     }
     var name = '';
+    var aliases = '';
     var franchiseId = catalog.franchises.first.id;
     final result = await showDialog<Map<String, Object?>>(
       context: context,
@@ -223,6 +301,14 @@ class _MediaMetadataEditorPageState extends State<MediaMetadataEditorPage> {
                 onChanged: (value) => name = value,
                 decoration: const InputDecoration(labelText: 'Nome personaggio'),
               ),
+              const SizedBox(height: 12),
+              TextField(
+                onChanged: (value) => aliases = value,
+                decoration: const InputDecoration(
+                  labelText: 'Soprannomi (opzionale)',
+                  helperText: 'Separali con virgole.',
+                ),
+              ),
             ],
           ),
           actions: [
@@ -237,6 +323,7 @@ class _MediaMetadataEditorPageState extends State<MediaMetadataEditorPage> {
                 Navigator.of(dialogContext).pop(<String, Object?>{
                   'franchiseId': franchiseId,
                   'name': cleaned,
+                  'aliases': aliases,
                 });
               },
               child: const Text('Crea'),
@@ -251,6 +338,7 @@ class _MediaMetadataEditorPageState extends State<MediaMetadataEditorPage> {
         widget.galleryUuid,
         franchiseId: result['franchiseId'] as int,
         name: result['name'] as String,
+        aliases: _parseNames(result['aliases']?.toString() ?? ''),
       );
       final updatedCatalog = await _organizationService.getCatalog(widget.galleryUuid);
       if (!mounted) return;
@@ -305,6 +393,13 @@ class _MediaMetadataEditorPageState extends State<MediaMetadataEditorPage> {
     final availableCharacters = catalog.characters
         .where((character) => !_selectedCharacterIds.contains(character.id))
         .toList(growable: false);
+    final currentTags = _parseNames(_tagsController.text);
+    final currentArtists = _parseNames(_artistsController.text);
+    final tagSuggestions = _matchingSuggestions(_tagsController, catalog.tags);
+    final artistSuggestions = _matchingSuggestions(
+      _artistsController,
+      catalog.artists,
+    );
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(18, 14, 18, 32),
@@ -404,16 +499,25 @@ class _MediaMetadataEditorPageState extends State<MediaMetadataEditorPage> {
           enabled: !_saving,
           minLines: 1,
           maxLines: 3,
+          onChanged: (_) => setState(() {}),
           decoration: const InputDecoration(
             hintText: 'food, pizza, wallpaper',
             helperText: 'Separa più tag con virgole, punto e virgola o una nuova riga.',
           ),
         ),
-        if (catalog.tags.isNotEmpty) ...[
+        if (currentTags.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          _TagValueWrap(
+            values: currentTags,
+            type: HGalleryTagType.general,
+          ),
+        ],
+        if (tagSuggestions.isNotEmpty) ...[
           const SizedBox(height: 10),
           _SuggestionWrap(
-            values: catalog.tags.take(12).toList(growable: false),
-            onSelected: (value) => _appendName(_tagsController, value),
+            values: tagSuggestions,
+            type: HGalleryTagType.general,
+            onSelected: (value) => _applySuggestion(_tagsController, value),
           ),
         ],
         const SizedBox(height: 24),
@@ -423,16 +527,25 @@ class _MediaMetadataEditorPageState extends State<MediaMetadataEditorPage> {
           enabled: !_saving,
           minLines: 1,
           maxLines: 3,
+          onChanged: (_) => setState(() {}),
           decoration: const InputDecoration(
             hintText: 'Nome artista',
             helperText: 'Separa più artisti con virgole, punto e virgola o una nuova riga.',
           ),
         ),
-        if (catalog.artists.isNotEmpty) ...[
+        if (currentArtists.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          _TagValueWrap(
+            values: currentArtists,
+            type: HGalleryTagType.artist,
+          ),
+        ],
+        if (artistSuggestions.isNotEmpty) ...[
           const SizedBox(height: 10),
           _SuggestionWrap(
-            values: catalog.artists.take(12).toList(growable: false),
-            onSelected: (value) => _appendName(_artistsController, value),
+            values: artistSuggestions,
+            type: HGalleryTagType.artist,
+            onSelected: (value) => _applySuggestion(_artistsController, value),
           ),
         ],
         const SizedBox(height: 20),
@@ -443,6 +556,14 @@ class _MediaMetadataEditorPageState extends State<MediaMetadataEditorPage> {
           value: _aiGenerated,
           onChanged: _saving ? null : (value) => setState(() => _aiGenerated = value),
         ),
+        if (_aiGenerated)
+          const Align(
+            alignment: Alignment.centerLeft,
+            child: HGalleryTagChip(
+              label: 'AI',
+              type: HGalleryTagType.system,
+            ),
+          ),
         if (_error != null) ...[
           const SizedBox(height: 12),
           Text(_error!, style: const TextStyle(color: AppTheme.error)),
@@ -480,25 +601,64 @@ class _SectionTitle extends StatelessWidget {
   }
 }
 
-class _SuggestionWrap extends StatelessWidget {
-  const _SuggestionWrap({required this.values, required this.onSelected});
+class _TagValueWrap extends StatelessWidget {
+  const _TagValueWrap({
+    required this.values,
+    required this.type,
+  });
+
   final List<String> values;
+  final HGalleryTagType type;
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Wrap(
+        spacing: 7,
+        runSpacing: 7,
+        children: values
+            .map(
+              (value) => HGalleryTagChip(
+                label: value,
+                type: type,
+              ),
+            )
+            .toList(growable: false),
+      ),
+    );
+  }
+}
+
+class _SuggestionWrap extends StatelessWidget {
+  const _SuggestionWrap({
+    required this.values,
+    required this.type,
+    required this.onSelected,
+  });
+
+  final List<String> values;
+  final HGalleryTagType type;
   final ValueChanged<String> onSelected;
 
   @override
   Widget build(BuildContext context) {
-    return Wrap(
-      spacing: 7,
-      runSpacing: 7,
-      children: values
-          .map(
-            (value) => ActionChip(
-              avatar: const Icon(Icons.add_rounded, size: 16),
-              label: Text(value),
-              onPressed: () => onSelected(value),
-            ),
-          )
-          .toList(growable: false),
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Wrap(
+        spacing: 7,
+        runSpacing: 7,
+        children: values
+            .map(
+              (value) => HGalleryTagChip(
+                label: value,
+                type: type,
+                showAddIcon: true,
+                onPressed: () => onSelected(value),
+              ),
+            )
+            .toList(growable: false),
+      ),
     );
   }
 }

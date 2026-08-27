@@ -43,6 +43,7 @@ class _NewMediaTabState extends State<NewMediaTab> {
   bool _refreshing = false;
   bool _loadingMore = false;
   bool _selectingAll = false;
+  bool _deleting = false;
 
   bool get _selectionMode => _selected.isNotEmpty;
 
@@ -192,6 +193,86 @@ class _NewMediaTabState extends State<NewMediaTab> {
     );
   }
 
+  Future<void> _deleteSelected() async {
+    if (_selected.isEmpty || _deleting) return;
+
+    final service = widget.mediaService;
+    if (service is! TodoMediaService) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Cestino H-Gallery non disponibile.')),
+      );
+      return;
+    }
+
+    final selectedCount = _selected.length;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: Text(
+            selectedCount == 1
+                ? 'Spostare il media nel cestino?'
+                : 'Spostare i media nel cestino?',
+          ),
+          content: Text(
+            selectedCount == 1
+                ? 'Il file selezionato verrà spostato nel cestino di H-Gallery.'
+                : '$selectedCount file selezionati verranno spostati nel cestino di H-Gallery.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Annulla'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Sposta nel cestino'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    final tokens = _selected.toList(growable: false);
+    setState(() => _deleting = true);
+
+    try {
+      final moved = await service.moveMediaToTrashBatch(
+        widget.gallery.galleryUuid,
+        tokens,
+      );
+      if (!mounted) return;
+
+      if (moved > 0) {
+        widget.onOrganized?.call();
+      }
+      setState(_selected.clear);
+      await _reload();
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            moved == 1
+                ? '1 media spostato nel cestino.'
+                : '$moved media spostati nel cestino.',
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      await _reload();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(_deleteErrorMessage(error))),
+      );
+    } finally {
+      if (mounted) setState(() => _deleting = false);
+    }
+  }
+
   Future<void> _organizeSelected() async {
     if (_selected.isEmpty) return;
 
@@ -232,9 +313,7 @@ class _NewMediaTabState extends State<NewMediaTab> {
           stats: _stats,
           selectedCount: _selected.length,
           selectionMode: _selectionMode,
-          refreshing: _refreshing,
           selectingAll: _selectingAll,
-          onRefresh: () => _reload(showFeedback: true),
           onSelectAll: _selectAll,
           onClearSelection: _clearSelection,
         ),
@@ -247,8 +326,8 @@ class _NewMediaTabState extends State<NewMediaTab> {
                     controller: _scrollController,
                     physics: const AlwaysScrollableScrollPhysics(),
                     padding: const EdgeInsets.fromLTRB(12, 4, 12, 104),
-                    gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                      maxCrossAxisExtent: 190,
+                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 3,
                       mainAxisSpacing: 8,
                       crossAxisSpacing: 8,
                       childAspectRatio: 0.82,
@@ -290,10 +369,37 @@ class _NewMediaTabState extends State<NewMediaTab> {
                       color: AppTheme.panel,
                       border: Border(top: BorderSide(color: AppTheme.border)),
                     ),
-                    child: FilledButton.icon(
-                      onPressed: _organizeSelected,
-                      icon: const Icon(Icons.drive_file_move_outline),
-                      label: Text('Organizza (${_selected.length})'),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: _deleting || _refreshing
+                                ? null
+                                : _deleteSelected,
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: AppTheme.error,
+                            ),
+                            icon: _deleting
+                                ? const SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(Icons.delete_outline_rounded),
+                            label: const Text('Elimina'),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: FilledButton.icon(
+                            onPressed: _deleting ? null : _organizeSelected,
+                            icon: const Icon(Icons.drive_file_move_outline),
+                            label: Text('Organizza (${_selected.length})'),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 )
@@ -301,6 +407,13 @@ class _NewMediaTabState extends State<NewMediaTab> {
         ),
       ],
     );
+  }
+
+  String _deleteErrorMessage(Object? error) {
+    if (error is PlatformException) {
+      return error.message ?? 'Impossibile spostare i media selezionati nel cestino.';
+    }
+    return 'Impossibile spostare i media selezionati nel cestino.';
   }
 
   String _errorMessage(Object? error) {
@@ -316,9 +429,7 @@ class _TodoHeader extends StatelessWidget {
     required this.stats,
     required this.selectedCount,
     required this.selectionMode,
-    required this.refreshing,
     required this.selectingAll,
-    required this.onRefresh,
     required this.onSelectAll,
     required this.onClearSelection,
   });
@@ -326,9 +437,7 @@ class _TodoHeader extends StatelessWidget {
   final GalleryStats stats;
   final int selectedCount;
   final bool selectionMode;
-  final bool refreshing;
   final bool selectingAll;
-  final VoidCallback onRefresh;
   final VoidCallback onSelectAll;
   final VoidCallback onClearSelection;
 
@@ -354,11 +463,16 @@ class _TodoHeader extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        selectionMode ? '$selectedCount selezionati' : '.toDo',
-                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
-                      ),
-                      const SizedBox(height: 2),
+                      if (selectionMode) ...[
+                        Text(
+                          '$selectedCount selezionati',
+                          style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                      ],
                       Text(
                         '${stats.total} media · ${stats.photos} foto · ${stats.animated} GIF · ${stats.videos} video',
                         style: const TextStyle(color: AppTheme.muted, fontSize: 12),
@@ -366,20 +480,9 @@ class _TodoHeader extends StatelessWidget {
                     ],
                   ),
                 ),
-                IconButton(
-                  tooltip: 'Rileggi .toDo',
-                  onPressed: refreshing ? null : onRefresh,
-                  icon: refreshing
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.refresh_rounded),
-                ),
               ],
             ),
-            if (stats.total > 0) ...[
+            if (stats.total > 0 && selectionMode) ...[
               const SizedBox(height: 10),
               Row(
                 children: [
@@ -394,14 +497,12 @@ class _TodoHeader extends StatelessWidget {
                         : const Icon(Icons.select_all_rounded),
                     label: const Text('Seleziona tutto'),
                   ),
-                  if (selectionMode) ...[
-                    const SizedBox(width: 6),
-                    TextButton.icon(
-                      onPressed: onClearSelection,
-                      icon: const Icon(Icons.close_rounded),
-                      label: const Text('Annulla'),
-                    ),
-                  ],
+                  const SizedBox(width: 6),
+                  TextButton.icon(
+                    onPressed: onClearSelection,
+                    icon: const Icon(Icons.close_rounded),
+                    label: const Text('Annulla'),
+                  ),
                 ],
               ),
             ],

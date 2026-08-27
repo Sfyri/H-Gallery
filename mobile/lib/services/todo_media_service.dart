@@ -80,6 +80,23 @@ class TodoMediaService implements MediaService {
     );
   }
 
+
+  Future<int> moveMediaToTrashBatch(
+    String galleryUuid,
+    List<String> syncUuids,
+  ) async {
+    if (syncUuids.isEmpty) return 0;
+
+    return await _channel.invokeMethod<int>(
+          'trashTodoMediaBatch',
+          <String, Object?>{
+            'galleryUuid': galleryUuid,
+            'tokens': syncUuids,
+          },
+        ) ??
+        0;
+  }
+
   @override
   Future<ViewerSource> prepareViewerSource(
     String galleryUuid,

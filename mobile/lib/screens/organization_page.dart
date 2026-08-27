@@ -84,6 +84,9 @@ class _OrganizationPageState extends State<OrganizationPage> {
     return characters.where((character) {
       return character.name.toLowerCase().contains(_query) ||
           character.franchiseName.toLowerCase().contains(_query) ||
+          character.aliases.any(
+            (alias) => alias.toLowerCase().contains(_query),
+          ) ||
           character.label.toLowerCase().contains(_query);
     }).toList(growable: false);
   }
@@ -148,6 +151,7 @@ class _OrganizationPageState extends State<OrganizationPage> {
 
     var franchiseId = franchises.first.id;
     var name = '';
+    var aliases = '';
     final submitted = await showDialog<bool>(
       context: context,
       builder: (context) => StatefulBuilder(
@@ -180,6 +184,15 @@ class _OrganizationPageState extends State<OrganizationPage> {
                 decoration: const InputDecoration(labelText: 'Nome personaggio'),
                 onChanged: (value) => name = value,
               ),
+              const SizedBox(height: 12),
+              TextField(
+                textCapitalization: TextCapitalization.words,
+                decoration: const InputDecoration(
+                  labelText: 'Soprannomi (opzionale)',
+                  helperText: 'Separali con virgole.',
+                ),
+                onChanged: (value) => aliases = value,
+              ),
             ],
           ),
           actions: [
@@ -201,6 +214,7 @@ class _OrganizationPageState extends State<OrganizationPage> {
         widget.gallery.galleryUuid,
         franchiseId: franchiseId,
         name: name,
+        aliases: _parseNames(aliases),
       );
       _selectedCharacters.add(created.id);
     });
@@ -235,16 +249,13 @@ class _OrganizationPageState extends State<OrganizationPage> {
 
     setState(() => _busy = true);
     try {
-      final preview = await widget.service.preview(
+      await widget.service.preview(
         widget.gallery.galleryUuid,
         tokens: widget.items.map((item) => item.syncUuid).toList(growable: false),
         characterIds: _selectedCharacters.toList(growable: false),
         aiGenerated: _aiGenerated,
       );
       if (!mounted) return;
-
-      final allowDuplicates = await _confirmPreview(preview);
-      if (allowDuplicates == null || !mounted) return;
 
       final result = await widget.service.organize(
         widget.gallery.galleryUuid,
@@ -253,7 +264,7 @@ class _OrganizationPageState extends State<OrganizationPage> {
         tags: _parseNames(_tagsController.text),
         artists: _parseNames(_artistsController.text),
         aiGenerated: _aiGenerated,
-        allowDuplicates: allowDuplicates,
+        allowDuplicates: false,
       );
       if (!mounted) return;
       await _showResult(result);
@@ -267,98 +278,6 @@ class _OrganizationPageState extends State<OrganizationPage> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
-  }
-
-  Future<bool?> _confirmPreview(OrganizationPreview preview) {
-    return showDialog<bool>(
-      context: context,
-      builder: (context) {
-        final shown = preview.items.take(6).toList(growable: false);
-        return AlertDialog(
-          title: const Text('Conferma organizzazione'),
-          content: SizedBox(
-            width: 520,
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _SummaryRow(label: 'Media', value: '${preview.requested}'),
-                  _SummaryRow(label: 'Destinazione', value: preview.destinationFolder),
-                  _SummaryRow(label: 'Dimensione', value: _formatBytes(preview.totalBytes)),
-                  if (preview.duplicateCount > 0)
-                    _SummaryRow(
-                      label: 'Duplicati',
-                      value: '${preview.duplicateCount}',
-                      warning: true,
-                    ),
-                  const SizedBox(height: 14),
-                  const Text(
-                    'Anteprima',
-                    style: TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                  const SizedBox(height: 8),
-                  for (final item in shown)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 7),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Icon(
-                            item.duplicate
-                                ? Icons.content_copy_rounded
-                                : Icons.arrow_forward_rounded,
-                            size: 17,
-                            color: item.duplicate ? AppTheme.error : AppTheme.muted,
-                          ),
-                          const SizedBox(width: 7),
-                          Expanded(
-                            child: Text(
-                              item.duplicate
-                                  ? '${item.sourceRelativePath}\nDuplicato: ${item.duplicateRelativePath}'
-                                  : item.destinationRelativePath,
-                              style: const TextStyle(fontSize: 12, height: 1.35),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  if (preview.items.length > shown.length)
-                    Text(
-                      '…e altri ${preview.items.length - shown.length} media.',
-                      style: const TextStyle(color: AppTheme.muted, fontSize: 12),
-                    ),
-                  if (preview.duplicateCount > 0) ...[
-                    const SizedBox(height: 12),
-                    const Text(
-                      'Per sicurezza i duplicati vengono lasciati in .toDo, a meno che tu scelga esplicitamente di includerli.',
-                      style: TextStyle(color: AppTheme.muted, height: 1.4),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Annulla'),
-            ),
-            if (preview.duplicateCount > 0)
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(true),
-                child: const Text('Includi duplicati'),
-              ),
-            FilledButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: Text(
-                preview.duplicateCount > 0 ? 'Organizza senza duplicati' : 'Organizza',
-              ),
-            ),
-          ],
-        );
-      },
-    );
   }
 
   Future<void> _showResult(OrganizationBatchResult result) {
@@ -409,21 +328,96 @@ class _OrganizationPageState extends State<OrganizationPage> {
         .toList(growable: false);
   }
 
+  bool _isNameSeparator(String value) {
+    return value == ',' || value == ';' || value == '\n';
+  }
+
+  int _controllerOffset(TextEditingController controller) {
+    final offset = controller.selection.extentOffset;
+    if (offset < 0 || offset > controller.text.length) {
+      return controller.text.length;
+    }
+    return offset;
+  }
+
+  int _fragmentStart(TextEditingController controller) {
+    final text = controller.text;
+    var start = _controllerOffset(controller);
+    while (start > 0 && !_isNameSeparator(text[start - 1])) {
+      start -= 1;
+    }
+    return start;
+  }
+
+  int _fragmentEnd(TextEditingController controller) {
+    final text = controller.text;
+    var end = _controllerOffset(controller);
+    while (end < text.length && !_isNameSeparator(text[end])) {
+      end += 1;
+    }
+    return end;
+  }
+
+  List<String> _matchingSuggestions(
+    TextEditingController controller,
+    List<String> available,
+  ) {
+    if (!controller.selection.isValid) return const <String>[];
+
+    final text = controller.text;
+    final start = _fragmentStart(controller);
+    final end = _fragmentEnd(controller);
+    final fragment = text.substring(start, _controllerOffset(controller)).trim().toLowerCase();
+    if (fragment.isEmpty) return const <String>[];
+
+    final completedText = '${text.substring(0, start)}${text.substring(end)}';
+    final completed = _parseNames(completedText)
+        .map((value) => value.toLowerCase())
+        .toSet();
+
+    final matches = available.where((value) {
+      final key = value.toLowerCase();
+      return key != fragment &&
+          !completed.contains(key) &&
+          key.contains(fragment);
+    }).toList(growable: true);
+
+    matches.sort((a, b) {
+      final aKey = a.toLowerCase();
+      final bKey = b.toLowerCase();
+      final aStarts = aKey.startsWith(fragment);
+      final bStarts = bKey.startsWith(fragment);
+      if (aStarts != bStarts) return aStarts ? -1 : 1;
+      return aKey.compareTo(bKey);
+    });
+
+    return matches.take(8).toList(growable: false);
+  }
+
+  void _applySuggestion(TextEditingController controller, String value) {
+    final text = controller.text;
+    final start = _fragmentStart(controller);
+    final end = _fragmentEnd(controller);
+
+    var insertion = value;
+    if (start > 0 && (text[start - 1] == ',' || text[start - 1] == ';')) {
+      insertion = ' $value';
+    }
+
+    final updated = '${text.substring(0, start)}$insertion${text.substring(end)}';
+    final caret = start + insertion.length;
+    controller.value = TextEditingValue(
+      text: updated,
+      selection: TextSelection.collapsed(offset: caret),
+    );
+    setState(() {});
+  }
+
   String _errorMessage(Object? error) {
     if (error is PlatformException) {
       return error.message ?? 'Organizzazione non riuscita.';
     }
     return 'Organizzazione non riuscita.';
-  }
-
-  String _formatBytes(int bytes) {
-    if (bytes < 1024) return '$bytes B';
-    final kb = bytes / 1024;
-    if (kb < 1024) return '${kb.toStringAsFixed(kb >= 100 ? 0 : 1)} KB';
-    final mb = kb / 1024;
-    if (mb < 1024) return '${mb.toStringAsFixed(mb >= 100 ? 0 : 1)} MB';
-    final gb = mb / 1024;
-    return '${gb.toStringAsFixed(gb >= 100 ? 0 : 2)} GB';
   }
 
   @override
@@ -463,18 +457,18 @@ class _OrganizationPageState extends State<OrganizationPage> {
     final selected = catalog.characters
         .where((character) => _selectedCharacters.contains(character.id))
         .toList(growable: false);
+    final tagSuggestions = _matchingSuggestions(_tagsController, catalog.tags);
+    final artistSuggestions = _matchingSuggestions(
+      _artistsController,
+      catalog.artists,
+    );
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
       children: [
         _SectionCard(
           title: '${widget.items.length} media selezionati',
-          child: Text(
-            widget.items.length == 1
-                ? widget.items.first.filename
-                : '${widget.items.take(3).map((item) => item.filename).join(', ')}${widget.items.length > 3 ? '…' : ''}',
-            style: const TextStyle(color: AppTheme.muted, height: 1.4),
-          ),
+          child: const SizedBox.shrink(),
         ),
         const SizedBox(height: 12),
         _SectionCard(
@@ -589,28 +583,43 @@ class _OrganizationPageState extends State<OrganizationPage> {
               TextField(
                 controller: _tagsController,
                 enabled: !_busy,
+                onChanged: (_) => setState(() {}),
                 decoration: InputDecoration(
                   labelText: 'Tag',
                   hintText: catalog.tags.take(4).join(', '),
                   helperText: 'Separali con virgole.',
                 ),
               ),
+              if (tagSuggestions.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                _NameSuggestionWrap(
+                  values: tagSuggestions,
+                  onSelected: (value) => _applySuggestion(_tagsController, value),
+                ),
+              ],
               const SizedBox(height: 12),
               TextField(
                 controller: _artistsController,
                 enabled: !_busy,
+                onChanged: (_) => setState(() {}),
                 decoration: InputDecoration(
                   labelText: 'Artisti',
                   hintText: catalog.artists.take(4).join(', '),
                   helperText: 'Separali con virgole.',
                 ),
               ),
+              if (artistSuggestions.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                _NameSuggestionWrap(
+                  values: artistSuggestions,
+                  onSelected: (value) => _applySuggestion(_artistsController, value),
+                ),
+              ],
               const SizedBox(height: 8),
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
                 value: _aiGenerated,
                 title: const Text('Generato con IA'),
-                subtitle: const Text('Organizza nella sottocartella .AI.'),
                 onChanged: _busy ? null : (value) => setState(() => _aiGenerated = value),
               ),
             ],
@@ -623,6 +632,36 @@ class _OrganizationPageState extends State<OrganizationPage> {
           label: const Text('Verifica e organizza'),
         ),
       ],
+    );
+  }
+}
+
+class _NameSuggestionWrap extends StatelessWidget {
+  const _NameSuggestionWrap({
+    required this.values,
+    required this.onSelected,
+  });
+
+  final List<String> values;
+  final ValueChanged<String> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Wrap(
+        spacing: 7,
+        runSpacing: 7,
+        children: values
+            .map(
+              (value) => ActionChip(
+                avatar: const Icon(Icons.add_rounded, size: 16),
+                label: Text(value),
+                onPressed: () => onSelected(value),
+              ),
+            )
+            .toList(growable: false),
+      ),
     );
   }
 }

@@ -49,6 +49,7 @@ class OrganizationService {
     String galleryUuid, {
     required int franchiseId,
     required String name,
+    List<String> aliases = const <String>[],
   }) async {
     final value = await _channel.invokeMapMethod<Object?, Object?>(
       'createCharacter',
@@ -56,6 +57,7 @@ class OrganizationService {
         'galleryUuid': galleryUuid,
         'franchiseId': franchiseId,
         'name': name,
+        'aliases': aliases,
       },
     );
     if (value == null) {

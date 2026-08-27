@@ -290,6 +290,28 @@ internal class GalleryMediaBridge(
                 }
             }
 
+            "trashTodoMediaBatch" -> {
+                val galleryUuid = requiredGalleryUuid(call, result) ?: return
+                val treeUri = resolveTreeUri(galleryUuid, result) ?: return
+                val tokens = stringListArgument(call.arguments, "tokens")
+                if (tokens.isEmpty()) {
+                    result.error(
+                        "INVALID_TODO_SELECTION",
+                        "Seleziona almeno un media da spostare nel cestino.",
+                        null,
+                    )
+                    return
+                }
+                runAsync(result, "TODO_TRASH_FAILED") {
+                    try {
+                        val sources = todoRepository.resolveMedia(treeUri, tokens)
+                        trash.moveTodoToTrashBatch(galleryUuid, treeUri, sources)
+                    } finally {
+                        clearGalleryCaches(galleryUuid)
+                    }
+                }
+            }
+
             "loadTodoThumbnail" -> {
                 val galleryUuid = requiredGalleryUuid(call, result) ?: return
                 resolveTreeUri(galleryUuid, result) ?: return
@@ -336,8 +358,15 @@ internal class GalleryMediaBridge(
                         return
                     }
                 val name = call.argument<String>("name")?.trim().orEmpty()
+                val aliases = stringListArgument(call.arguments, "aliases")
                 runAsync(result, "CHARACTER_CREATE_FAILED") {
-                    organization.createCharacter(galleryUuid, treeUri, franchiseId, name)
+                    organization.createCharacter(
+                        galleryUuid,
+                        treeUri,
+                        franchiseId,
+                        name,
+                        aliases,
+                    )
                 }
             }
 

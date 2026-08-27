@@ -19,17 +19,19 @@ class GalleryReadyPage extends StatefulWidget {
 }
 
 class _GalleryReadyPageState extends State<GalleryReadyPage> {
-  int _index = 0;
+  int _index = 2;
   int _galleryRevision = 0;
 
   String get _subtitle {
     switch (_index) {
-      case 1:
+      case 0:
         return 'New · .toDo';
-      case 2:
-        return 'Cerca e filtra';
-      case 3:
+      case 1:
         return 'Classifica personaggi';
+      case 2:
+        return 'Gallery';
+      case 3:
+        return 'Cerca e filtra';
       case 4:
         return 'Cestino';
       default:
@@ -74,14 +76,18 @@ class _GalleryReadyPageState extends State<GalleryReadyPage> {
       body: IndexedStack(
         index: _index,
         children: [
+          NewMediaTab(
+            gallery: widget.gallery,
+            onOrganized: () => setState(() => _galleryRevision += 1),
+          ),
+          RankingMediaTab(
+            gallery: widget.gallery,
+            refreshToken: _galleryRevision,
+          ),
           GalleryMediaTab(
             gallery: widget.gallery,
             refreshToken: _galleryRevision,
             onChanged: () => setState(() => _galleryRevision += 1),
-          ),
-          NewMediaTab(
-            gallery: widget.gallery,
-            onOrganized: () => setState(() => _galleryRevision += 1),
           ),
           SearchMediaTab(
             gallery: widget.gallery,
@@ -89,10 +95,6 @@ class _GalleryReadyPageState extends State<GalleryReadyPage> {
             onChanged: () async {
               if (mounted) setState(() => _galleryRevision += 1);
             },
-          ),
-          RankingMediaTab(
-            gallery: widget.gallery,
-            refreshToken: _galleryRevision,
           ),
           TrashMediaTab(
             gallery: widget.gallery,
@@ -106,24 +108,24 @@ class _GalleryReadyPageState extends State<GalleryReadyPage> {
         onDestinationSelected: (value) => setState(() => _index = value),
         destinations: const [
           NavigationDestination(
-            icon: Icon(Icons.photo_library_outlined),
-            selectedIcon: Icon(Icons.photo_library_rounded),
-            label: 'Gallery',
-          ),
-          NavigationDestination(
             icon: Icon(Icons.inbox_outlined),
             selectedIcon: Icon(Icons.inbox_rounded),
             label: 'New',
           ),
           NavigationDestination(
-            icon: Icon(Icons.search_outlined),
-            selectedIcon: Icon(Icons.search_rounded),
-            label: 'Search',
-          ),
-          NavigationDestination(
             icon: Icon(Icons.leaderboard_outlined),
             selectedIcon: Icon(Icons.leaderboard_rounded),
             label: 'Classifica',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.photo_library_outlined),
+            selectedIcon: Icon(Icons.photo_library_rounded),
+            label: 'Gallery',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.search_outlined),
+            selectedIcon: Icon(Icons.search_rounded),
+            label: 'Search',
           ),
           NavigationDestination(
             icon: Icon(Icons.delete_outline_rounded),

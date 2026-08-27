@@ -33,6 +33,7 @@ class CharacterOption {
     required this.relativePath,
     required this.franchiseName,
     required this.franchiseCode,
+    required this.aliases,
     required this.label,
   });
 
@@ -43,6 +44,7 @@ class CharacterOption {
   final String relativePath;
   final String franchiseName;
   final String franchiseCode;
+  final List<String> aliases;
   final String label;
 
   factory CharacterOption.fromPlatform(Map<Object?, Object?> value) {
@@ -54,6 +56,7 @@ class CharacterOption {
       relativePath: _readString(value, 'relativePath'),
       franchiseName: _readString(value, 'franchiseName'),
       franchiseCode: _readString(value, 'franchiseCode'),
+      aliases: _readStringList(value['aliases']),
       label: _readString(value, 'label'),
     );
   }

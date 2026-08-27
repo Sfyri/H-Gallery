@@ -5,6 +5,20 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import java.util.Locale
 
+
+internal data class TodoTrashSource(
+    val token: String,
+    val relativePath: String,
+    val filename: String,
+    val extension: String,
+    val mediaType: String,
+    val isAnimated: Boolean,
+    val mimeType: String,
+    val sizeBytes: Long,
+    val modifiedEpochMs: Long,
+    val uri: Uri,
+)
+
 internal class GalleryTodoMediaRepository(private val context: Context) {
     companion object {
         private val IMAGE_EXTENSIONS = setOf(
@@ -41,16 +55,20 @@ internal class GalleryTodoMediaRepository(private val context: Context) {
         val uri: Uri,
         val parentUri: Uri,
     ) {
+        fun token(): String {
+            return TodoMediaToken.encode(
+                mediaType = mediaType,
+                extension = extension,
+                modifiedEpochMs = modifiedEpochMs,
+                uri = uri,
+                parentUri = parentUri,
+                relativePath = relativePath,
+            )
+        }
+
         fun toPlatformMap(): Map<String, Any> {
             return mapOf(
-                "syncUuid" to TodoMediaToken.encode(
-                    mediaType = mediaType,
-                    extension = extension,
-                    modifiedEpochMs = modifiedEpochMs,
-                    uri = uri,
-                    parentUri = parentUri,
-                    relativePath = relativePath,
-                ),
+                "syncUuid" to token(),
                 "relativePath" to relativePath,
                 "filename" to filename,
                 "extension" to extension,
@@ -60,6 +78,21 @@ internal class GalleryTodoMediaRepository(private val context: Context) {
                 "sizeBytes" to sizeBytes,
                 "modifiedEpochMs" to modifiedEpochMs,
                 "sha256" to "",
+            )
+        }
+
+        fun toTrashSource(): TodoTrashSource {
+            return TodoTrashSource(
+                token = token(),
+                relativePath = relativePath,
+                filename = filename,
+                extension = extension,
+                mediaType = mediaType,
+                isAnimated = isAnimated,
+                mimeType = mimeType,
+                sizeBytes = sizeBytes,
+                modifiedEpochMs = modifiedEpochMs,
+                uri = uri,
             )
         }
     }
@@ -84,6 +117,26 @@ internal class GalleryTodoMediaRepository(private val context: Context) {
             .drop(safeOffset)
             .take(safeLimit)
             .map(TodoEntry::toPlatformMap)
+    }
+
+    fun resolveMedia(treeUri: Uri, tokens: List<String>): List<TodoTrashSource> {
+        val requested = tokens
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+        if (requested.isEmpty()) return emptyList()
+
+        val entriesByToken = scanTodo(treeUri).associateBy { it.token() }
+        val missingCount = requested.count { it !in entriesByToken }
+        if (missingCount > 0) {
+            throw IllegalArgumentException(
+                "Uno o più media selezionati non sono più presenti in .toDo. Rileggi la cartella e riprova.",
+            )
+        }
+
+        return requested.map { token ->
+            entriesByToken.getValue(token).toTrashSource()
+        }
     }
 
     private fun scanTodo(treeUri: Uri): List<TodoEntry> {

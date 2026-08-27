@@ -47,6 +47,11 @@ internal class GalleryOrganizationRepository(private val context: Context) {
         val prefix: String,
     )
 
+    private data class FranchiseCodeInference(
+        val code: String,
+        val replaceableCodes: Set<String>,
+    )
+
     private data class PlannedTodoItem(
         val token: String,
         val tokenData: TodoMediaTokenData,
@@ -113,6 +118,7 @@ internal class GalleryOrganizationRepository(private val context: Context) {
         treeUri: Uri,
         franchiseId: Long,
         rawName: String,
+        rawAliases: List<String>,
     ): Map<String, Any> {
         val name = validateFolderName(rawName, "personaggio")
         if (name.equals(MULTIPLE_FOLDER, true) ||
@@ -130,7 +136,14 @@ internal class GalleryOrganizationRepository(private val context: Context) {
             val franchiseDirectory = ensurePath(root, franchise.relativePath)
             ensureDirectory(franchiseDirectory, name)
             val relativePath = joinRelative(franchise.relativePath, name)
-            return characterToMap(database.createCharacter(franchiseId, name, relativePath))
+            return characterToMap(
+                database.createCharacter(
+                    franchiseId = franchiseId,
+                    name = name,
+                    relativePath = relativePath,
+                    aliases = rawAliases,
+                ),
+            )
         } finally {
             database.close()
         }
@@ -1003,10 +1016,12 @@ internal class GalleryOrganizationRepository(private val context: Context) {
             if (franchiseDirectory.mimeType != DocumentsContract.Document.MIME_TYPE_DIR) continue
             val name = franchiseDirectory.displayName
             if (name.startsWith('.') || name.startsWith('!')) continue
+            val codeInference = inferFranchiseCode(franchiseDirectory.uri, name)
             val franchise = database.ensureDiscoveredFranchise(
                 name = name,
                 relativePath = name,
-                derivedCode = inferFranchiseCode(franchiseDirectory.uri, name),
+                derivedCode = codeInference.code,
+                replaceableCodes = codeInference.replaceableCodes,
             )
             for (characterDirectory in queryChildren(franchiseDirectory.uri)) {
                 if (characterDirectory.mimeType != DocumentsContract.Document.MIME_TYPE_DIR) continue
@@ -1027,9 +1042,32 @@ internal class GalleryOrganizationRepository(private val context: Context) {
         }
     }
 
-    private fun inferFranchiseCode(franchiseDirectory: Uri, franchiseName: String): String {
+    private fun inferFranchiseCode(
+        franchiseDirectory: Uri,
+        franchiseName: String,
+    ): FranchiseCodeInference {
+        val fallbackCode = deriveFranchiseCode(franchiseName)
+        val legacyCodes = legacyDerivedFranchiseCodes(franchiseName)
         val characterDirectories = queryChildren(franchiseDirectory)
             .filter { it.mimeType == DocumentsContract.Document.MIME_TYPE_DIR }
+
+        fun resultFromMedia(rawCode: String): FranchiseCodeInference {
+            val inferred = rawCode.uppercase(Locale.ROOT)
+            val inferredIsLegacy = legacyCodes.any {
+                it.equals(inferred, ignoreCase = true)
+            }
+            return if (inferredIsLegacy) {
+                FranchiseCodeInference(
+                    code = fallbackCode,
+                    replaceableCodes = legacyCodes,
+                )
+            } else {
+                FranchiseCodeInference(
+                    code = inferred,
+                    replaceableCodes = legacyCodes + fallbackCode,
+                )
+            }
+        }
 
         for (characterDirectory in characterDirectories) {
             val characterName = characterDirectory.displayName
@@ -1040,7 +1078,7 @@ internal class GalleryOrganizationRepository(private val context: Context) {
                 Pattern.CASE_INSENSITIVE,
             )
             val inferred = findPrefixInMediaTree(characterDirectory.uri, pattern)
-            if (!inferred.isNullOrBlank()) return inferred.uppercase(Locale.ROOT)
+            if (!inferred.isNullOrBlank()) return resultFromMedia(inferred)
         }
 
         val multipleDirectory = characterDirectories.firstOrNull {
@@ -1052,10 +1090,27 @@ internal class GalleryOrganizationRepository(private val context: Context) {
                 Pattern.CASE_INSENSITIVE,
             )
             val inferred = findPrefixInMediaTree(multipleDirectory.uri, pattern)
-            if (!inferred.isNullOrBlank()) return inferred.uppercase(Locale.ROOT)
+            if (!inferred.isNullOrBlank()) return resultFromMedia(inferred)
         }
 
-        return deriveFranchiseCode(franchiseName)
+        return FranchiseCodeInference(
+            code = fallbackCode,
+            replaceableCodes = legacyCodes,
+        )
+    }
+
+    private fun legacyDerivedFranchiseCodes(franchiseName: String): Set<String> {
+        val compact = normalizeFilenameComponent(franchiseName)
+            .uppercase(Locale.ROOT)
+            .filter(::isAsciiAlphanumeric)
+        if (compact.isEmpty()) return emptySet()
+
+        return buildSet {
+            // Versioni precedenti potevano usare direttamente una porzione
+            // normalizzata del nome della serie come codice automatico.
+            add(compact.take(8))
+            add(compact.take(10))
+        }.filterTo(linkedSetOf()) { it.isNotBlank() }
     }
 
     private fun findPrefixInMediaTree(directory: Uri, pattern: Pattern): String? {
@@ -1402,6 +1457,7 @@ internal class GalleryOrganizationRepository(private val context: Context) {
         "relativePath" to record.relativePath,
         "franchiseName" to record.franchiseName,
         "franchiseCode" to record.franchiseCode,
+        "aliases" to record.aliases,
         "label" to "${record.franchiseName} / ${record.name}",
     )
 
